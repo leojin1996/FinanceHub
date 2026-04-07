@@ -696,6 +696,80 @@ def test_anthropic_provider_ignores_non_json_fenced_text_preamble() -> None:
     }
 
 
+def test_anthropic_provider_ignores_malformed_json_preamble_when_later_nested_schema_matches() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": 'Use this shape: {"summary_zh": ..., "summary_en": ...}',
+                },
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "后续嵌套对象应被提取",
+                        "summary_en": "Later nested object should be extracted",
+                    },
+                },
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return summary_zh and summary_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={
+            "type": "object",
+            "required": ["summary_zh", "summary_en"],
+            "properties": {
+                "summary_zh": {"type": "string"},
+                "summary_en": {"type": "string"},
+            },
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "summary_zh": "后续嵌套对象应被提取",
+        "summary_en": "Later nested object should be extracted",
+    }
+
+
+def test_anthropic_provider_rejects_malformed_json_preamble_without_later_structured_object() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": 'Use this shape: {"summary_zh": ..., "summary_en": ...}',
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(LLMInvalidResponseError, match="provider returned invalid JSON content"):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Return summary_zh and summary_en."},
+                {"role": "user", "content": "Provide the result."},
+            ],
+            response_schema={
+                "type": "object",
+                "required": ["summary_zh", "summary_en"],
+                "properties": {
+                    "summary_zh": {"type": "string"},
+                    "summary_en": {"type": "string"},
+                },
+            },
+            timeout_seconds=5.0,
+        )
+
+
 def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() -> None:
     provider, _ = _build_anthropic_provider(
         {

@@ -18,8 +18,6 @@ from financehub_market_api.recommendation.agents.provider import (
 )
 
 _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "anthropic_responses"
-_RANKING_REQUIRED_KEYS = {"ranked_ids"}
-_EXPLANATION_REQUIRED_KEYS = {"why_this_plan_zh", "why_this_plan_en"}
 
 
 def _provider() -> AnthropicChatProvider:
@@ -34,44 +32,49 @@ def _provider() -> AnthropicChatProvider:
 
 
 @pytest.mark.parametrize(
-    ("request_name", "response_schema", "required_keys"),
+    ("request_name", "response_schema", "output_model"),
     [
         (
             "user_profile",
             UserProfileAgentOutput.model_json_schema(),
-            {"profile_focus_zh", "profile_focus_en"},
+            UserProfileAgentOutput,
         ),
         (
             "market_intelligence",
             MarketIntelligenceAgentOutput.model_json_schema(),
-            {"summary_zh", "summary_en"},
+            MarketIntelligenceAgentOutput,
         ),
         (
             "fund_selection",
             ProductRankingAgentOutput.model_json_schema(),
-            _RANKING_REQUIRED_KEYS,
+            ProductRankingAgentOutput,
         ),
         (
             "wealth_selection",
             ProductRankingAgentOutput.model_json_schema(),
-            _RANKING_REQUIRED_KEYS,
+            ProductRankingAgentOutput,
         ),
         (
             "stock_selection",
             ProductRankingAgentOutput.model_json_schema(),
-            _RANKING_REQUIRED_KEYS,
+            ProductRankingAgentOutput,
         ),
         (
             "explanation",
             ExplanationAgentOutput.model_json_schema(),
-            _EXPLANATION_REQUIRED_KEYS,
+            ExplanationAgentOutput,
         ),
     ],
 )
 def test_parse_response_body_extracts_required_fields_from_sanitized_real_fixture(
     request_name: str,
     response_schema: dict[str, object],
-    required_keys: set[str],
+    output_model: type[
+        UserProfileAgentOutput
+        | MarketIntelligenceAgentOutput
+        | ProductRankingAgentOutput
+        | ExplanationAgentOutput
+    ],
 ) -> None:
     fixture_path = _FIXTURE_DIR / f"{request_name}.json"
     assert fixture_path.is_file(), f"Missing fixture file: {fixture_path}"
@@ -83,6 +86,5 @@ def test_parse_response_body_extracts_required_fields_from_sanitized_real_fixtur
         response_schema=response_schema,
     )
 
-    for key in required_keys:
-        assert key in payload
-        assert payload[key]
+    validated_output = output_model.model_validate(payload)
+    assert isinstance(validated_output, output_model)

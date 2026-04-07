@@ -276,14 +276,19 @@ def test_capture_all_agents_fails_when_fallback_state_is_incomplete(
 
 
 def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     cli_module = _load_capture_cli_module()
+    monkeypatch.chdir(tmp_path)
+    expected_fixtures_dir = (
+        Path(cli_module.__file__).resolve().parents[1] / "tests" / "fixtures" / "anthropic_responses"
+    )
 
     def _fake_capture_all_agents(*, risk_profile: str, fixtures_dir: Path) -> list[dict[str, str]]:
         assert risk_profile == "balanced"
-        assert fixtures_dir == Path("tests/fixtures/anthropic_responses")
+        assert fixtures_dir == expected_fixtures_dir
         return [
             {
                 "request_name": "user_profile",

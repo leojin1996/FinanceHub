@@ -504,6 +504,7 @@ class AnthropicChatProvider:
 
         required_keys = _extract_required_schema_keys(response_schema)
         text_candidates: list[dict[str, object]] = []
+        deferred_text_error: LLMInvalidResponseError | None = None
         for block in content_blocks:
             if not isinstance(block, dict) or block.get("type") != "text":
                 continue
@@ -512,9 +513,9 @@ class AnthropicChatProvider:
                 raise LLMInvalidResponseError("provider text block must contain a string")
             try:
                 text_candidates.extend(_extract_json_candidates_from_text(text))
-            except LLMInvalidResponseError:
-                if _looks_like_structured_json_text(text):
-                    raise
+            except LLMInvalidResponseError as exc:
+                if _looks_like_structured_json_text(text) and deferred_text_error is None:
+                    deferred_text_error = exc
                 continue
 
         if text_candidates and not required_keys:
@@ -527,6 +528,8 @@ class AnthropicChatProvider:
             )
         if len(text_schema_matches) == 1:
             return text_schema_matches[0]
+        if deferred_text_error is not None and not required_keys:
+            raise deferred_text_error
 
         recursive_candidates = _iter_dict_candidates(body, include_self=False)
         if recursive_candidates and not required_keys:
@@ -559,6 +562,8 @@ class AnthropicChatProvider:
         if len(recursive_schema_matches) == 1:
             return recursive_schema_matches[0]
 
+        if deferred_text_error is not None:
+            raise deferred_text_error
         if required_keys:
             raise LLMInvalidResponseError("provider response has no schema-matching structured content")
         raise LLMInvalidResponseError("provider response has no extractable structured content")
