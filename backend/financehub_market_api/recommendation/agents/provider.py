@@ -302,8 +302,13 @@ def _looks_like_structured_json_text(content: str) -> bool:
         return False
     if normalized.startswith("{") or normalized.startswith("["):
         return True
-    if "```" in normalized:
-        return True
+    for fenced_match in re.finditer(r"```([^\n`]*)\n?(.*?)```", normalized, re.DOTALL):
+        fence_language = fenced_match.group(1).strip().lower()
+        fence_body = fenced_match.group(2).lstrip()
+        if fence_language in {"json", "application/json"}:
+            return True
+        if fence_body.startswith("{") or fence_body.startswith("["):
+            return True
     return re.search(r'\{\s*"', normalized) is not None
 
 

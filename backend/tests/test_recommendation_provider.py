@@ -527,6 +527,55 @@ def test_anthropic_provider_ignores_incidental_braces_in_text_preamble() -> None
     }
 
 
+def test_anthropic_provider_ignores_non_json_fenced_text_preamble() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "I will call a tool next.\n"
+                        "```python\n"
+                        "def helper():\n"
+                        "    return 'not json'\n"
+                        "```\n"
+                    ),
+                },
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "非JSON代码块不应阻断提取",
+                        "summary_en": "Non-JSON fence should not block extraction",
+                    },
+                },
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return summary_zh and summary_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={
+            "type": "object",
+            "required": ["summary_zh", "summary_en"],
+            "properties": {
+                "summary_zh": {"type": "string"},
+                "summary_en": {"type": "string"},
+            },
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "summary_zh": "非JSON代码块不应阻断提取",
+        "summary_en": "Non-JSON fence should not block extraction",
+    }
+
+
 def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() -> None:
     provider, _ = _build_anthropic_provider(
         {
