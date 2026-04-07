@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from financehub_market_api.recommendation.agents.sample_capture import capture_all_agents
+from financehub_market_api.recommendation.agents.sample_capture import CaptureRunError, CaptureSummary, capture_all_agents
 
 
 def _default_fixtures_dir() -> Path:
@@ -27,17 +27,29 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = _parse_args()
-    summary = capture_all_agents(
-        risk_profile=args.risk_profile,
-        fixtures_dir=args.fixtures_dir,
-    )
+def _print_summary(summary: list[CaptureSummary]) -> None:
     for item in summary:
-        print(
-            f"{item['request_name']}: phase={item['phase']}, "
+        line = (
+            f"{item['request_name']}: phase={item['phase'] or '-'}, "
             f"fixture_path={item['fixture_path'] or '-'}"
         )
+        error = item.get("error")
+        if error:
+            line = f"{line}, error={error}"
+        print(line)
+
+
+def main() -> None:
+    args = _parse_args()
+    try:
+        summary = capture_all_agents(
+            risk_profile=args.risk_profile,
+            fixtures_dir=args.fixtures_dir,
+        )
+    except CaptureRunError as exc:
+        _print_summary(exc.summary)
+        raise SystemExit(1) from exc
+    _print_summary(summary)
 
 
 if __name__ == "__main__":

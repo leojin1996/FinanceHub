@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Callable, TypedDict, TypeVar, cast
 
 from financehub_market_api.models import RiskProfile
 from financehub_market_api.recommendation.agents.anthropic_runtime import (
@@ -31,8 +31,23 @@ _UNSTABLE_CAPTURE_KEYS = frozenset({"id", "created_at", "request_id"})
 
 class CaptureSummary(TypedDict):
     request_name: str
-    phase: str
+    phase: str | None
     fixture_path: str | None
+    error: str | None
+
+
+class CaptureRunError(RuntimeError):
+    def __init__(self, summary: list[CaptureSummary]) -> None:
+        self.summary = summary
+        failures = [
+            f"{item['request_name']}: {item['error']}"
+            for item in summary
+            if item["error"] is not None
+        ]
+        super().__init__("Capture completed with failures: " + "; ".join(failures))
+
+
+_T = TypeVar("_T")
 
 
 def capture_request_names() -> tuple[str, ...]:
@@ -108,7 +123,10 @@ def _latest_capture_for_request_name(capture_dir: Path, request_name: str) -> tu
     latest_payload: dict[str, object] | None = None
     latest_mtime_ns = -1
     for path in capture_dir.glob("*.json"):
-        payload = _load_capture_payload(path)
+        try:
+            payload = _load_capture_payload(path)
+        except RuntimeError:
+            continue
         if payload.get("request_name") != request_name:
             continue
         stat = path.stat()
@@ -157,63 +175,135 @@ def capture_all_agents(
 
     timeout_seconds = runtime_config.request_timeout_seconds
     routes = runtime_config.agent_routes
-    profile_focus = UserProfileRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "user_profile").model_name,
-        timeout_seconds,
-        "user_profile",
-    ).run(user_profile)
-    market_context = MarketIntelligenceRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "market_intelligence").model_name,
-        timeout_seconds,
-        "market_intelligence",
-    ).run(user_profile, profile_focus, state.market_context)
-    FundSelectionRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "fund_selection").model_name,
-        timeout_seconds,
-        "fund_selection",
-    ).run(user_profile, profile_focus, state.fund_items)
-    WealthSelectionRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "wealth_selection").model_name,
-        timeout_seconds,
-        "wealth_selection",
-    ).run(user_profile, profile_focus, state.wealth_management_items)
-    StockSelectionRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "stock_selection").model_name,
-        timeout_seconds,
-        "stock_selection",
-    ).run(user_profile, profile_focus, state.stock_items)
-    ExplanationRuntimeAgent(
-        provider,
-        _agent_route_or_raise(routes, "explanation").model_name,
-        timeout_seconds,
-        "explanation",
-    ).run(user_profile, profile_focus, market_context)
-
     capture_dir = provider_module._resolve_capture_dir(env_values)
     fixtures_path = Path(fixtures_dir) if fixtures_dir is not None else None
     summary: list[CaptureSummary] = []
-    for request_name in capture_request_names():
-        _, capture_payload = _latest_capture_for_request_name(capture_dir, request_name)
-        phase = str(capture_payload.get("phase", "unknown"))
+    stage_errors: dict[str, str] = {}
+
+    def _format_error(exc: Exception) -> str:
+        message = str(exc).strip()
+        return message or exc.__class__.__name__
+
+    def _record_summary(request_name: str, error: str | None, *, attempt_capture: bool) -> None:
+        phase: str | None = None
         fixture_path_value: str | None = None
-        if fixtures_path is not None:
-            fixture_path = _write_fixture_payload(
-                fixtures_dir=fixtures_path,
-                request_name=request_name,
-                phase=phase,
-                body=capture_payload.get("body"),
-            )
-            fixture_path_value = str(fixture_path)
+        summary_error = error
+
+        if attempt_capture:
+            try:
+                _, capture_payload = _latest_capture_for_request_name(capture_dir, request_name)
+            except RuntimeError as exc:
+                capture_error = _format_error(exc)
+                if summary_error is None:
+                    summary_error = capture_error
+                else:
+                    summary_error = f"{summary_error}; {capture_error}"
+            else:
+                phase = str(capture_payload.get("phase", "unknown"))
+                if fixtures_path is not None:
+                    fixture_path = _write_fixture_payload(
+                        fixtures_dir=fixtures_path,
+                        request_name=request_name,
+                        phase=phase,
+                        body=capture_payload.get("body"),
+                    )
+                    fixture_path_value = str(fixture_path)
+
         summary.append(
             CaptureSummary(
                 request_name=request_name,
                 phase=phase,
                 fixture_path=fixture_path_value,
+                error=summary_error,
             )
         )
+        if summary_error is not None:
+            stage_errors[request_name] = summary_error
+
+    def _run_stage(
+        request_name: str,
+        dependencies: tuple[str, ...],
+        runner: Callable[[], _T],
+    ) -> _T | None:
+        for dependency in dependencies:
+            if dependency in stage_errors:
+                _record_summary(
+                    request_name,
+                    f"skipped: {dependency} failed",
+                    attempt_capture=False,
+                )
+                return None
+
+        try:
+            result = runner()
+        except Exception as exc:
+            _record_summary(request_name, _format_error(exc), attempt_capture=True)
+            return None
+
+        _record_summary(request_name, None, attempt_capture=True)
+        return result
+
+    profile_focus = _run_stage(
+        "user_profile",
+        (),
+        lambda: UserProfileRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "user_profile").model_name,
+            timeout_seconds,
+            "user_profile",
+        ).run(user_profile),
+    )
+    market_context = _run_stage(
+        "market_intelligence",
+        ("user_profile",),
+        lambda: MarketIntelligenceRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "market_intelligence").model_name,
+            timeout_seconds,
+            "market_intelligence",
+        ).run(user_profile, profile_focus, state.market_context),
+    )
+    _run_stage(
+        "fund_selection",
+        ("user_profile",),
+        lambda: FundSelectionRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "fund_selection").model_name,
+            timeout_seconds,
+            "fund_selection",
+        ).run(user_profile, profile_focus, state.fund_items),
+    )
+    _run_stage(
+        "wealth_selection",
+        ("user_profile",),
+        lambda: WealthSelectionRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "wealth_selection").model_name,
+            timeout_seconds,
+            "wealth_selection",
+        ).run(user_profile, profile_focus, state.wealth_management_items),
+    )
+    _run_stage(
+        "stock_selection",
+        ("user_profile",),
+        lambda: StockSelectionRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "stock_selection").model_name,
+            timeout_seconds,
+            "stock_selection",
+        ).run(user_profile, profile_focus, state.stock_items),
+    )
+    _run_stage(
+        "explanation",
+        ("user_profile", "market_intelligence"),
+        lambda: ExplanationRuntimeAgent(
+            provider,
+            _agent_route_or_raise(routes, "explanation").model_name,
+            timeout_seconds,
+            "explanation",
+        ).run(user_profile, profile_focus, market_context),
+    )
+
+    if stage_errors:
+        raise CaptureRunError(summary)
     return summary

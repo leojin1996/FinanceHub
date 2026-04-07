@@ -17,6 +17,7 @@ from financehub_market_api.recommendation.agents.contracts import (
 )
 from financehub_market_api.recommendation.agents.provider import AgentModelRoute, AgentRuntimeConfig
 from financehub_market_api.recommendation.agents.sample_capture import (
+    CaptureRunError,
     build_fixture_payload,
     capture_all_agents,
     capture_request_names,
@@ -402,6 +403,139 @@ def test_capture_all_agents_executes_all_runtime_agents_in_order(
     assert run_order == list(request_names)
 
 
+def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_dir = tmp_path / "captures"
+    fixtures_dir = tmp_path / "fixtures"
+    request_names = capture_request_names()
+    runtime_config = AgentRuntimeConfig(
+        providers={},
+        agent_routes={
+            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
+            for request_name in request_names
+        },
+        request_timeout_seconds=7.5,
+    )
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_build_anthropic_provider_from_env",
+        lambda: (object(), runtime_config),
+    )
+    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
+    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
+    monkeypatch.setattr(
+        sample_capture_module.provider_module,
+        "_resolve_capture_dir",
+        lambda _: capture_dir,
+    )
+
+    run_order: list[str] = []
+
+    def _latest_capture_for_request_name(
+        capture_dir: Path, request_name: str
+    ) -> tuple[Path, dict[str, object]]:
+        del capture_dir
+        if request_name in {"user_profile", "market_intelligence", "fund_selection", "wealth_selection", "stock_selection"}:
+            return Path(f"/tmp/{request_name}.json"), {
+                "request_name": request_name,
+                "phase": "structured",
+                "body": {"id": f"msg-{request_name}", "content": [{"type": "text", "text": request_name}]},
+            }
+        raise RuntimeError(f"missing capture for {request_name}")
+
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_latest_capture_for_request_name",
+        _latest_capture_for_request_name,
+    )
+
+    monkeypatch.setattr(
+        sample_capture_module.UserProfileRuntimeAgent,
+        "run",
+        lambda self, user_profile: run_order.append("user_profile")
+        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
+    )
+
+    def _market_failure(self, user_profile, profile_focus, fallback_context):  # type: ignore[no-untyped-def]
+        del self, user_profile, profile_focus, fallback_context
+        run_order.append("market_intelligence")
+        raise RuntimeError("market failed")
+
+    monkeypatch.setattr(sample_capture_module.MarketIntelligenceRuntimeAgent, "run", _market_failure)
+    monkeypatch.setattr(
+        sample_capture_module.FundSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.WealthSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.StockSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+
+    def _unexpected_explanation(self, user_profile, profile_focus, market_context):  # type: ignore[no-untyped-def]
+        del self, user_profile, profile_focus, market_context
+        pytest.fail("explanation stage should be skipped when market_intelligence failed")
+
+    monkeypatch.setattr(sample_capture_module.ExplanationRuntimeAgent, "run", _unexpected_explanation)
+
+    with pytest.raises(CaptureRunError) as exc_info:
+        capture_all_agents(fixtures_dir=fixtures_dir)
+
+    summary = exc_info.value.summary
+    assert run_order == [
+        "user_profile",
+        "market_intelligence",
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+    ]
+    assert [item["request_name"] for item in summary] == list(request_names)
+    assert summary[0]["error"] is None
+    assert summary[1]["error"] == "market failed"
+    assert summary[1]["fixture_path"] == str(fixtures_dir / "market_intelligence.json")
+    assert summary[2]["error"] is None
+    assert summary[3]["error"] is None
+    assert summary[4]["error"] is None
+    assert summary[5]["error"] == "skipped: market_intelligence failed"
+    assert summary[5]["fixture_path"] is None
+    market_fixture = json.loads((fixtures_dir / "market_intelligence.json").read_text(encoding="utf-8"))
+    assert market_fixture["body"]["content"][0]["text"] == "market_intelligence"
+    assert "id" not in market_fixture["body"]
+
+
+def test_latest_capture_for_request_name_ignores_unreadable_non_matching_files(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    (capture_dir / "broken.json").write_text("{", encoding="utf-8")
+    target_path = capture_dir / "user_profile.json"
+    target_path.write_text(
+        json.dumps(
+            {
+                "request_name": "user_profile",
+                "phase": "structured",
+                "body": {"content": [{"type": "text", "text": "user_profile"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    path, payload = sample_capture_module._latest_capture_for_request_name(capture_dir, "user_profile")
+
+    assert path == target_path
+    assert payload["request_name"] == "user_profile"
+
+
 def test_capture_all_agents_surfaces_provider_config_missing_before_capture_toggle_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -415,3 +549,40 @@ def test_capture_all_agents_surfaces_provider_config_missing_before_capture_togg
 
     with pytest.raises(RuntimeError, match="Anthropic provider config is missing"):
         capture_all_agents()
+
+
+def test_capture_cli_main_prints_summary_lines_and_exits_non_zero_for_capture_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli_module = _load_capture_cli_module()
+
+    def _fake_capture_all_agents(*, risk_profile: str, fixtures_dir: Path) -> list[dict[str, str | None]]:
+        del risk_profile, fixtures_dir
+        raise CaptureRunError(
+            [
+                {
+                    "request_name": "user_profile",
+                    "phase": "structured",
+                    "fixture_path": "/tmp/user_profile.json",
+                    "error": None,
+                },
+                {
+                    "request_name": "market_intelligence",
+                    "phase": "structured",
+                    "fixture_path": "/tmp/market_intelligence.json",
+                    "error": "market failed",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(cli_module, "capture_all_agents", _fake_capture_all_agents)
+    monkeypatch.setattr(sys, "argv", ["capture_anthropic_agent_responses.py"])
+
+    with pytest.raises(SystemExit, match="1"):
+        cli_module.main()
+
+    assert capsys.readouterr().out.splitlines() == [
+        "user_profile: phase=structured, fixture_path=/tmp/user_profile.json",
+        "market_intelligence: phase=structured, fixture_path=/tmp/market_intelligence.json, error=market failed",
+    ]
