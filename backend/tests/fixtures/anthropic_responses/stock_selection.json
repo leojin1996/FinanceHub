@@ -1,0 +1,20 @@
+{
+  "request_name": "stock_selection",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "text": "```json\n{\n  \"ranked_ids\": [\n    \"stock-001\",\n    \"stock-002\"\n  ]\n}\n```",
+        "type": "text"
+      }
+    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message",
+    "usage": {
+      "input_tokens": 2503,
+      "output_tokens": 29
+    }
+  }
+}

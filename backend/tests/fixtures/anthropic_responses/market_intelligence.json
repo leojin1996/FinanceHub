@@ -1,0 +1,20 @@
+{
+  "request_name": "market_intelligence",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "text": "```json\n{\n  \"summary_zh\": \"当前市场环境下，建议采取稳健配置策略：核心资产以固定收益类产品为主，适度配置优质蓝筹股和行业龙头，控制权益仓位在合理区间。关注政策导向行业和防御性板块，通过分散投资降低波动风险，实现资产稳健增值。\",\n  \"summary_en\": \"In the current market environment, a prudent allocation strategy is recommended: core holdings in fixed-income products with moderate exposure to quality blue-chip stocks and industry leaders, maintaining equity positions within reasonable ranges. Focus on policy-supported sectors and defensive segments while diversifying to reduce volatility and achieve steady asset appreciation.\"\n}\n```",
+        "type": "text"
+      }
+    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message",
+    "usage": {
+      "input_tokens": 2425,
+      "output_tokens": 221
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "request_name": "fund_selection",
+  "capture_phase": "structured",
+  "body": {
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"ranked_ids\": [\n    \"fund-002\",\n    \"fund-001\"\n  ]\n}\n```"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "model": "claude-sonnet-4-5-20250929",
+    "usage": {
+      "input_tokens": 2523,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 29,
+      "claude_cache_creation_5_m_tokens": 0,
+      "claude_cache_creation_1_h_tokens": 0
+    }
+  }
+}
