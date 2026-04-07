@@ -302,7 +302,9 @@ def _looks_like_structured_json_text(content: str) -> bool:
         return False
     if normalized.startswith("{") or normalized.startswith("["):
         return True
-    return "```" in normalized or "{" in normalized
+    if "```" in normalized:
+        return True
+    return re.search(r'\{\s*"', normalized) is not None
 
 
 def _is_provider_metadata_object(candidate: Mapping[str, object]) -> bool:
