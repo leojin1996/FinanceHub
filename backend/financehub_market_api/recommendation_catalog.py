@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from financehub_market_api.recommendation_products import (
+    AGGRESSIVE_OPTION_SUBTITLES,
+    AGGRESSIVE_OPTION_TITLES,
+    DEFAULT_SUMMARY,
+    FUNDS,
+    RISK_NOTICE_EN,
+    RISK_NOTICE_ZH,
+    STOCKS,
+    WEALTH_MANAGEMENT,
+)
+from financehub_market_api.recommendation_profiles import (
+    AGGRESSIVE_ALLOCATIONS,
+    BASE_ALLOCATIONS,
+    PROFILE_LABELS_EN,
+    PROFILE_LABELS_ZH,
+    PROFILE_MARKET_SUMMARY_EN,
+    PROFILE_MARKET_SUMMARY_ZH,
+)
+
+__all__ = [
+    "AGGRESSIVE_ALLOCATIONS",
+    "AGGRESSIVE_OPTION_SUBTITLES",
+    "AGGRESSIVE_OPTION_TITLES",
+    "BASE_ALLOCATIONS",
+    "DEFAULT_SUMMARY",
+    "FUNDS",
+    "PROFILE_LABELS_EN",
+    "PROFILE_LABELS_ZH",
+    "PROFILE_MARKET_SUMMARY_EN",
+    "PROFILE_MARKET_SUMMARY_ZH",
+    "RISK_NOTICE_EN",
+    "RISK_NOTICE_ZH",
+    "STOCKS",
+    "WEALTH_MANAGEMENT",
+]

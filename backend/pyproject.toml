@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "financehub-market-api"
+version = "0.1.0"
+description = "Lightweight API for FinanceHub China market pages"
+requires-python = ">=3.11"
+dependencies = [
+  "akshare>=1.17,<2.0",
+  "fastapi>=0.116,<1.0",
+  "httpx>=0.28,<0.29",
+  "pydantic>=2.11,<3.0",
+  "redis>=5.2,<6.0",
+  "uvicorn>=0.35,<0.36",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
