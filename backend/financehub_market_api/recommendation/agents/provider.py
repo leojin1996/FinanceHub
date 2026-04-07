@@ -4,10 +4,12 @@ import json
 import os
 import re
 import time
+from datetime import UTC, datetime
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
+from uuid import uuid4
 
 import httpx
 
@@ -20,6 +22,9 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 ANTHROPIC_MAX_TOKENS = 100000
 ANTHROPIC_MAX_ATTEMPTS = 2
 ANTHROPIC_RETRY_BACKOFF_SECONDS = 1.0
+LLM_CAPTURE_RAW_RESPONSES_ENV = "FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES"
+LLM_CAPTURE_DIR_ENV = "FINANCEHUB_LLM_CAPTURE_DIR"
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 AGENT_MODEL_ROUTE_ENV_NAMES = {
     "user_profile": "USER_PROFILE",
     "market_intelligence": "MARKET_INTELLIGENCE",
@@ -112,6 +117,29 @@ def _parse_request_timeout_seconds(env_values: Mapping[str, str]) -> float:
     if timeout_seconds <= 0:
         return DEFAULT_REQUEST_TIMEOUT_SECONDS
     return timeout_seconds
+
+
+def _is_truthy_env_value(value: str | None) -> bool:
+    cleaned = _clean_env_value(value)
+    if cleaned is None:
+        return False
+    return cleaned.lower() in _TRUTHY_ENV_VALUES
+
+
+def _is_raw_capture_enabled(environ: Mapping[str, str]) -> bool:
+    return _is_truthy_env_value(environ.get(LLM_CAPTURE_RAW_RESPONSES_ENV))
+
+
+def _default_capture_dir() -> Path:
+    backend_root = Path(__file__).resolve().parents[3]
+    return backend_root / "tmp" / "llm-captures"
+
+
+def _resolve_capture_dir(environ: Mapping[str, str]) -> Path:
+    override_dir = _clean_env_value(environ.get(LLM_CAPTURE_DIR_ENV))
+    if override_dir is None:
+        return _default_capture_dir()
+    return Path(override_dir).expanduser()
 
 
 @dataclass(frozen=True)
@@ -344,6 +372,7 @@ class AnthropicChatProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object],
         timeout_seconds: float,
+        request_name: str | None = None,
     ) -> dict[str, object]:
         system_prompts = [
             message["content"]
@@ -374,19 +403,59 @@ class AnthropicChatProvider:
         }
 
         try:
-            return self._parse_response_body(
-                self._post_messages(structured_payload, timeout_seconds=timeout_seconds),
-                response_schema=response_schema,
+            structured_body = self._post_messages(structured_payload, timeout_seconds=timeout_seconds)
+            self._capture_raw_response(
+                body=structured_body,
+                model_name=model_name,
+                request_name=request_name,
+                phase="structured",
             )
+            return self._parse_response_body(structured_body, response_schema=response_schema)
         except LLMInvalidResponseError as structured_exc:
             fallback_payload = dict(payload)
             try:
-                return self._parse_response_body(
-                    self._post_messages(fallback_payload, timeout_seconds=timeout_seconds),
-                    response_schema=response_schema,
+                fallback_body = self._post_messages(fallback_payload, timeout_seconds=timeout_seconds)
+                self._capture_raw_response(
+                    body=fallback_body,
+                    model_name=model_name,
+                    request_name=request_name,
+                    phase="fallback",
                 )
+                return self._parse_response_body(fallback_body, response_schema=response_schema)
             except LLMInvalidResponseError as fallback_exc:
                 raise fallback_exc from structured_exc
+
+    def _capture_raw_response(
+        self,
+        *,
+        body: object,
+        model_name: str,
+        request_name: str | None,
+        phase: str,
+    ) -> None:
+        environ = os.environ
+        if not _is_raw_capture_enabled(environ):
+            return
+
+        capture_payload = {
+            "request_name": request_name,
+            "model_name": model_name,
+            "phase": phase,
+            "body": body,
+        }
+        capture_dir = _resolve_capture_dir(environ)
+        timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+        request_label = request_name or "unknown"
+        filename = f"{timestamp}-{phase}-{request_label}-{uuid4().hex}.json"
+        capture_path = capture_dir / filename
+        try:
+            capture_path.parent.mkdir(parents=True, exist_ok=True)
+            capture_path.write_text(
+                json.dumps(capture_payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except OSError:
+            return
 
     def _post_messages(
         self,

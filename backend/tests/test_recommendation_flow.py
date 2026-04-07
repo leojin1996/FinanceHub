@@ -119,6 +119,7 @@ class _SequenceProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object],
         timeout_seconds: float,
+        request_name: str | None = None,
     ) -> dict[str, object]:
         self.calls.append(
             {
@@ -126,6 +127,7 @@ class _SequenceProvider:
                 "messages": messages,
                 "response_schema": response_schema,
                 "timeout_seconds": timeout_seconds,
+                "request_name": request_name,
             }
         )
         if self._index >= len(self._responses):
@@ -294,6 +296,36 @@ def test_runtime_uses_configured_request_timeout_for_all_agents() -> None:
 
     assert recommendation.execution_trace.path == "agent_assisted"
     assert [call["timeout_seconds"] for call in provider.calls] == [30.0] * 6
+
+
+def test_runtime_threads_request_name_across_stages() -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=provider,
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert [call["request_name"] for call in provider.calls] == [
+        "user_profile",
+        "market_intelligence",
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+        "explanation",
+    ]
 
 
 def test_runtime_rejects_non_anthropic_agent_route() -> None:

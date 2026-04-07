@@ -138,10 +138,12 @@ class _BaseStructuredOutputAgent:
         provider: StructuredOutputProvider,
         model_name: str,
         request_timeout_seconds: float,
+        request_name: str,
     ) -> None:
         self._provider = provider
         self._model_name = model_name
         self._request_timeout_seconds = request_timeout_seconds
+        self._request_name = request_name
 
     def _execute(
         self,
@@ -159,6 +161,7 @@ class _BaseStructuredOutputAgent:
                 ],
                 response_schema=response_schema,
                 timeout_seconds=self._request_timeout_seconds,
+                request_name=self._request_name,
             )
         except LLMInvalidResponseError:
             raise
@@ -382,7 +385,7 @@ class AnthropicMultiAgentRuntime:
     ) -> _BaseStructuredOutputAgent:
         route = self._agent_routes[agent_name]
         provider = self._providers[ANTHROPIC_PROVIDER_NAME]
-        return agent_type(provider, route.model_name, self._request_timeout_seconds)
+        return agent_type(provider, route.model_name, self._request_timeout_seconds, agent_name)
 
     def apply(self, user_profile: UserProfile, state: RuleEvaluationState) -> MultiAgentRuntimeResult:
         validation_warning = self._missing_provider_warning()

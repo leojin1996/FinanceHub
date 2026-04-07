@@ -19,6 +19,7 @@ class StructuredOutputProvider(Protocol):
         messages: list[dict[str, str]],
         response_schema: dict[str, object],
         timeout_seconds: float,
+        request_name: str | None = None,
     ) -> dict[str, object]:
         """Execute one structured-output chat request and parse JSON content."""
 

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -174,6 +177,43 @@ def test_anthropic_provider_retries_without_output_config_when_structured_respon
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
     assert "output_config" in http_client.calls[0]["json"]
     assert "output_config" not in http_client.calls[1]["json"]
+
+
+def test_anthropic_provider_captures_raw_response_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_body = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+            }
+        ]
+    }
+    provider, _ = _build_anthropic_provider(response_body)
+    capture_dir = tmp_path / "llm-captures"
+    monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES", "true")
+    monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_DIR", str(capture_dir))
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+        request_name="market_intelligence",
+    )
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    capture_files = list(capture_dir.glob("*.json"))
+    assert len(capture_files) == 1
+    capture_payload = json.loads(capture_files[0].read_text(encoding="utf-8"))
+    assert capture_payload["request_name"] == "market_intelligence"
+    assert capture_payload["phase"] == "structured"
+    assert capture_payload["body"] == response_body
 
 
 def test_product_ranking_output_rejects_empty_ranked_ids() -> None:

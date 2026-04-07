@@ -18,3 +18,4 @@ __pycache__/
 .env
 .env.local
 .vscode/settings.json
+backend/tmp/

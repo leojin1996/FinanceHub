@@ -70,8 +70,9 @@ class _SequenceProvider:
         messages: list[dict[str, str]],
         response_schema: dict[str, object],
         timeout_seconds: float,
+        request_name: str | None = None,
     ) -> dict[str, object]:
-        del model_name, messages, response_schema, timeout_seconds
+        del model_name, messages, response_schema, timeout_seconds, request_name
         if self._index >= len(self._responses):
             raise AssertionError("unexpected provider call")
         response = self._responses[self._index]
