@@ -26,14 +26,6 @@ from financehub_market_api.recommendation.agents.provider import (
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.rules import RuleBasedFallbackEngine, map_user_profile
 
-_REQUEST_NAMES = (
-    "user_profile",
-    "market_intelligence",
-    "fund_selection",
-    "wealth_selection",
-    "stock_selection",
-    "explanation",
-)
 _UNSTABLE_CAPTURE_KEYS = frozenset({"id", "created_at", "request_id"})
 
 
@@ -44,11 +36,11 @@ class CaptureSummary(TypedDict):
 
 
 def capture_request_names() -> tuple[str, ...]:
-    return _REQUEST_NAMES
+    return tuple(provider_module.AGENT_MODEL_ROUTE_ENV_NAMES)
 
 
 def fixture_filename_for_request_name(request_name: str) -> str:
-    if request_name not in _REQUEST_NAMES:
+    if request_name not in capture_request_names():
         raise ValueError(f"unsupported request_name: {request_name}")
     return f"{request_name}.json"
 
@@ -66,7 +58,7 @@ def sanitize_captured_body(body: object) -> object:
 
 
 def build_fixture_payload(*, request_name: str, phase: str, body: object) -> dict[str, object]:
-    if request_name not in _REQUEST_NAMES:
+    if request_name not in capture_request_names():
         raise ValueError(f"unsupported request_name: {request_name}")
     return {
         "request_name": request_name,
@@ -205,7 +197,7 @@ def capture_all_agents(
     capture_dir = provider_module._resolve_capture_dir(env_values)
     fixtures_path = Path(fixtures_dir) if fixtures_dir is not None else None
     summary: list[CaptureSummary] = []
-    for request_name in _REQUEST_NAMES:
+    for request_name in capture_request_names():
         _, capture_payload = _latest_capture_for_request_name(capture_dir, request_name)
         phase = str(capture_payload.get("phase", "unknown"))
         fixture_path_value: str | None = None
