@@ -1,5 +1,6 @@
 .worktrees/
 .superpowers/
+docs/superpowers/
 .idea/
 node_modules/
 dist/
