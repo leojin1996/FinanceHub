@@ -536,6 +536,31 @@ def test_latest_capture_for_request_name_ignores_unreadable_non_matching_files(t
     assert payload["request_name"] == "user_profile"
 
 
+def test_latest_capture_for_request_name_fails_for_unreadable_matching_candidate(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "captures"
+    capture_dir.mkdir()
+    old_path = capture_dir / "user_profile-old.json"
+    old_path.write_text(
+        json.dumps(
+            {
+                "request_name": "user_profile",
+                "phase": "structured",
+                "body": {"content": [{"type": "text", "text": "old"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    broken_path = capture_dir / "2026-04-08-structured-user_profile-broken.json"
+    broken_path.write_text("{", encoding="utf-8")
+
+    old_mtime = old_path.stat().st_mtime - 60
+    old_path.touch()
+    os.utime(old_path, (old_mtime, old_mtime))
+
+    with pytest.raises(RuntimeError, match="Failed to read capture file"):
+        sample_capture_module._latest_capture_for_request_name(capture_dir, "user_profile")
+
+
 def test_capture_all_agents_surfaces_provider_config_missing_before_capture_toggle_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

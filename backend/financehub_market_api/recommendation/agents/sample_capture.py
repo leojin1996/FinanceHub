@@ -118,28 +118,30 @@ def _load_capture_payload(path: Path) -> dict[str, object]:
     return payload
 
 
+def _path_may_match_request_name(path: Path, request_name: str) -> bool:
+    return request_name in path.stem
+
+
 def _latest_capture_for_request_name(capture_dir: Path, request_name: str) -> tuple[Path, dict[str, object]]:
-    latest_path: Path | None = None
-    latest_payload: dict[str, object] | None = None
-    latest_mtime_ns = -1
-    for path in capture_dir.glob("*.json"):
+    paths = sorted(
+        capture_dir.glob("*.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for path in paths:
         try:
             payload = _load_capture_payload(path)
         except RuntimeError:
+            if _path_may_match_request_name(path, request_name):
+                raise
             continue
         if payload.get("request_name") != request_name:
             continue
-        stat = path.stat()
-        if stat.st_mtime_ns > latest_mtime_ns:
-            latest_path = path
-            latest_payload = payload
-            latest_mtime_ns = stat.st_mtime_ns
-    if latest_path is None or latest_payload is None:
-        raise RuntimeError(
-            f"No raw capture found for request_name={request_name} in {capture_dir}. "
-            f"Set {LLM_CAPTURE_RAW_RESPONSES_ENV}=true before running capture."
-        )
-    return latest_path, latest_payload
+        return path, payload
+    raise RuntimeError(
+        f"No raw capture found for request_name={request_name} in {capture_dir}. "
+        f"Set {LLM_CAPTURE_RAW_RESPONSES_ENV}=true before running capture."
+    )
 
 
 def _write_fixture_payload(
