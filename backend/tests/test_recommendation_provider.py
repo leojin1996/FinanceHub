@@ -8,6 +8,7 @@ from financehub_market_api.recommendation.agents.provider import (
     ANTHROPIC_PROVIDER_NAME,
     AgentRuntimeConfig,
     AnthropicChatProvider,
+    LLMInvalidResponseError,
     ProviderConfig,
 )
 from financehub_market_api.recommendation.agents.contracts import ProductRankingAgentOutput
@@ -318,6 +319,126 @@ def test_anthropic_provider_ignores_non_json_braces_before_object() -> None:
         "summary_zh": "建议均衡布局",
         "summary_en": "A balanced layout is recommended",
     }
+
+
+def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "从工具输入提取",
+                        "summary_en": "Extracted from tool input",
+                    },
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return summary_zh and summary_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={
+            "type": "object",
+            "required": ["summary_zh", "summary_en"],
+            "properties": {
+                "summary_zh": {"type": "string"},
+                "summary_en": {"type": "string"},
+            },
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "summary_zh": "从工具输入提取",
+        "summary_en": "Extracted from tool input",
+    }
+
+
+def test_anthropic_provider_rejects_nested_object_not_matching_schema() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {"summary_zh": "缺少英文字段"},
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(
+        LLMInvalidResponseError,
+        match="provider response has no schema-matching structured content",
+    ):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Return summary_zh and summary_en."},
+                {"role": "user", "content": "Provide the result."},
+            ],
+            response_schema={
+                "type": "object",
+                "required": ["summary_zh", "summary_en"],
+                "properties": {
+                    "summary_zh": {"type": "string"},
+                    "summary_en": {"type": "string"},
+                },
+            },
+            timeout_seconds=5.0,
+        )
+
+
+def test_anthropic_provider_rejects_ambiguous_multiple_schema_matches() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "第一版",
+                        "summary_en": "First",
+                    },
+                },
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "第二版",
+                        "summary_en": "Second",
+                    },
+                },
+            ]
+        }
+    )
+
+    with pytest.raises(
+        LLMInvalidResponseError,
+        match="provider response has multiple schema-matching structured objects",
+    ):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Return summary_zh and summary_en."},
+                {"role": "user", "content": "Provide the result."},
+            ],
+            response_schema={
+                "type": "object",
+                "required": ["summary_zh", "summary_en"],
+                "properties": {
+                    "summary_zh": {"type": "string"},
+                    "summary_en": {"type": "string"},
+                },
+            },
+            timeout_seconds=5.0,
+        )
 
 
 def test_anthropic_provider_retries_after_read_timeout() -> None:

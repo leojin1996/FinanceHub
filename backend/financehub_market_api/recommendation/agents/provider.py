@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import httpx
 
@@ -234,6 +234,97 @@ def _parse_json_content(content: str) -> dict[str, object]:
     raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
 
 
+def _extract_json_candidates_from_text(content: str) -> list[dict[str, object]]:
+    normalized_content = content.strip()
+    candidates = [normalized_content]
+
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", normalized_content, re.DOTALL)
+    if fenced_match is not None:
+        candidates.append(fenced_match.group(1).strip())
+
+    found: list[dict[str, object]] = []
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        else:
+            if not isinstance(parsed, dict):
+                raise LLMInvalidResponseError("provider JSON content must be an object")
+            found.append(parsed)
+            continue
+
+        for match in re.finditer(r"\{", candidate):
+            try:
+                parsed, _ = decoder.raw_decode(candidate, idx=match.start())
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+            if isinstance(parsed, dict):
+                found.append(parsed)
+
+    if found:
+        return found
+
+    raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
+
+
+def _extract_required_schema_keys(response_schema: Mapping[str, object] | None) -> set[str]:
+    if response_schema is None:
+        return set()
+    raw_required = response_schema.get("required")
+    if not isinstance(raw_required, list):
+        return set()
+    required_keys = {item for item in raw_required if isinstance(item, str)}
+    if len(required_keys) != len(raw_required):
+        return set()
+    return required_keys
+
+
+def _iter_dict_candidates(value: object, *, include_self: bool = True) -> Sequence[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    if isinstance(value, dict):
+        if include_self and all(isinstance(key, str) for key in value):
+            found.append(cast(dict[str, object], value))
+        for nested_value in value.values():
+            found.extend(_iter_dict_candidates(nested_value))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_iter_dict_candidates(item))
+    return found
+
+
+def _dedupe_dict_candidates(candidates: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    distinct: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        fingerprint = json.dumps(
+            candidate,
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        distinct.append(candidate)
+    return distinct
+
+
+def _match_schema_candidates(
+    candidates: Sequence[dict[str, object]],
+    *,
+    required_keys: set[str],
+) -> list[dict[str, object]]:
+    if not required_keys:
+        return list(candidates)
+    matching = [candidate for candidate in candidates if required_keys.issubset(candidate.keys())]
+    return _dedupe_dict_candidates(matching)
+
+
 def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
     if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
         return True
@@ -290,13 +381,15 @@ class AnthropicChatProvider:
 
         try:
             return self._parse_response_body(
-                self._post_messages(structured_payload, timeout_seconds=timeout_seconds)
+                self._post_messages(structured_payload, timeout_seconds=timeout_seconds),
+                response_schema=response_schema,
             )
         except LLMInvalidResponseError as structured_exc:
             fallback_payload = dict(payload)
             try:
                 return self._parse_response_body(
-                    self._post_messages(fallback_payload, timeout_seconds=timeout_seconds)
+                    self._post_messages(fallback_payload, timeout_seconds=timeout_seconds),
+                    response_schema=response_schema,
                 )
             except LLMInvalidResponseError as fallback_exc:
                 raise fallback_exc from structured_exc
@@ -330,7 +423,12 @@ class AnthropicChatProvider:
 
         raise AssertionError("anthropic request retry loop exited unexpectedly")
 
-    def _parse_response_body(self, body: object) -> dict[str, object]:
+    def _parse_response_body(
+        self,
+        body: object,
+        *,
+        response_schema: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
         try:
             content_blocks = body["content"]
         except (KeyError, TypeError) as exc:
@@ -339,15 +437,42 @@ class AnthropicChatProvider:
         if not isinstance(content_blocks, list):
             raise LLMInvalidResponseError("provider content blocks must be a list")
 
+        required_keys = _extract_required_schema_keys(response_schema)
+        text_candidates: list[dict[str, object]] = []
         for block in content_blocks:
             if not isinstance(block, dict) or block.get("type") != "text":
                 continue
             text = block.get("text")
             if not isinstance(text, str):
                 raise LLMInvalidResponseError("provider text block must contain a string")
-            return _parse_json_content(text)
+            text_candidates.extend(_extract_json_candidates_from_text(text))
 
-        raise LLMInvalidResponseError("provider response has no text content block")
+        if text_candidates and not required_keys:
+            return text_candidates[0]
+
+        text_schema_matches = _match_schema_candidates(text_candidates, required_keys=required_keys)
+        if len(text_schema_matches) > 1:
+            raise LLMInvalidResponseError(
+                "provider response has multiple schema-matching structured objects"
+            )
+        if len(text_schema_matches) == 1:
+            return text_schema_matches[0]
+
+        recursive_candidates = _iter_dict_candidates(body, include_self=False)
+        recursive_schema_matches = _match_schema_candidates(
+            recursive_candidates,
+            required_keys=required_keys,
+        )
+        if len(recursive_schema_matches) > 1:
+            raise LLMInvalidResponseError(
+                "provider response has multiple schema-matching structured objects"
+            )
+        if len(recursive_schema_matches) == 1:
+            return recursive_schema_matches[0]
+
+        if required_keys:
+            raise LLMInvalidResponseError("provider response has no schema-matching structured content")
+        raise LLMInvalidResponseError("provider response has no extractable structured content")
 
 
 def build_provider(
