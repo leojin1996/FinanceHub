@@ -441,6 +441,81 @@ def test_anthropic_provider_rejects_ambiguous_multiple_schema_matches() -> None:
         )
 
 
+def test_anthropic_provider_skips_non_json_text_and_extracts_nested_schema_object() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "I will call a tool to provide the structured result now.",
+                },
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "来自嵌套对象",
+                        "summary_en": "From nested object",
+                    },
+                },
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return summary_zh and summary_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={
+            "type": "object",
+            "required": ["summary_zh", "summary_en"],
+            "properties": {
+                "summary_zh": {"type": "string"},
+                "summary_en": {"type": "string"},
+            },
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "summary_zh": "来自嵌套对象",
+        "summary_en": "From nested object",
+    }
+
+
+def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "summary_zh": "兼容旧调用",
+                        "summary_en": "Compatible fallback",
+                    },
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return summary_zh and summary_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "summary_zh": "兼容旧调用",
+        "summary_en": "Compatible fallback",
+    }
+
+
 def test_anthropic_provider_retries_after_read_timeout() -> None:
     http_client = _SequentialFakeHttpClient(
         [

@@ -325,6 +325,10 @@ def _match_schema_candidates(
     return _dedupe_dict_candidates(matching)
 
 
+def _is_leaf_dict(candidate: Mapping[str, object]) -> bool:
+    return all(not isinstance(value, (dict, list)) for value in candidate.values())
+
+
 def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
     if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
         return True
@@ -445,7 +449,10 @@ class AnthropicChatProvider:
             text = block.get("text")
             if not isinstance(text, str):
                 raise LLMInvalidResponseError("provider text block must contain a string")
-            text_candidates.extend(_extract_json_candidates_from_text(text))
+            try:
+                text_candidates.extend(_extract_json_candidates_from_text(text))
+            except LLMInvalidResponseError:
+                continue
 
         if text_candidates and not required_keys:
             return text_candidates[0]
@@ -459,6 +466,12 @@ class AnthropicChatProvider:
             return text_schema_matches[0]
 
         recursive_candidates = _iter_dict_candidates(body, include_self=False)
+        if recursive_candidates and not required_keys:
+            leaf_candidates = [candidate for candidate in recursive_candidates if _is_leaf_dict(candidate)]
+            if leaf_candidates:
+                return leaf_candidates[0]
+            return recursive_candidates[0]
+
         recursive_schema_matches = _match_schema_candidates(
             recursive_candidates,
             required_keys=required_keys,
