@@ -433,8 +433,8 @@ class AnthropicChatProvider:
         request_name: str | None,
         phase: str,
     ) -> None:
-        environ = os.environ
-        if not _is_raw_capture_enabled(environ):
+        env_values = _build_env_values()
+        if not _is_raw_capture_enabled(env_values):
             return
 
         capture_payload = {
@@ -443,7 +443,7 @@ class AnthropicChatProvider:
             "phase": phase,
             "body": body,
         }
-        capture_dir = _resolve_capture_dir(environ)
+        capture_dir = _resolve_capture_dir(env_values)
         timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S.%fZ")
         request_label = request_name or "unknown"
         filename = f"{timestamp}-{phase}-{request_label}-{uuid4().hex}.json"
@@ -454,8 +454,10 @@ class AnthropicChatProvider:
                 json.dumps(capture_payload, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
             )
-        except OSError:
-            return
+        except OSError as exc:
+            raise LLMProviderError(
+                f"failed to write raw response capture at {capture_path}: {exc}"
+            ) from exc
 
     def _post_messages(
         self,

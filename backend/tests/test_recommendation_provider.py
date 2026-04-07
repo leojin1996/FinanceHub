@@ -5,6 +5,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from financehub_market_api.recommendation.agents import provider as provider_module
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
     ANTHROPIC_DEFAULT_MODEL,
@@ -12,6 +13,7 @@ from financehub_market_api.recommendation.agents.provider import (
     AgentRuntimeConfig,
     AnthropicChatProvider,
     LLMInvalidResponseError,
+    LLMProviderError,
     ProviderConfig,
 )
 from financehub_market_api.recommendation.agents.contracts import ProductRankingAgentOutput
@@ -212,8 +214,86 @@ def test_anthropic_provider_captures_raw_response_when_enabled(
     assert len(capture_files) == 1
     capture_payload = json.loads(capture_files[0].read_text(encoding="utf-8"))
     assert capture_payload["request_name"] == "market_intelligence"
+    assert capture_payload["model_name"] == "claude-sonnet-4-6"
     assert capture_payload["phase"] == "structured"
     assert capture_payload["body"] == response_body
+
+
+def test_anthropic_provider_capture_reads_env_file_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_body = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+            }
+        ]
+    }
+    provider, _ = _build_anthropic_provider(response_body)
+    capture_dir = tmp_path / "llm-captures"
+    env_path = tmp_path / ".env.local"
+    env_path.write_text(
+        "\n".join(
+            [
+                "FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES=true",
+                f"FINANCEHUB_LLM_CAPTURE_DIR={capture_dir}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES", raising=False)
+    monkeypatch.delenv("FINANCEHUB_LLM_CAPTURE_DIR", raising=False)
+    monkeypatch.setattr(provider_module, "_iter_env_file_candidates", lambda: [env_path])
+
+    provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+        request_name="market_intelligence",
+    )
+
+    capture_files = list(capture_dir.glob("*.json"))
+    assert len(capture_files) == 1
+    capture_payload = json.loads(capture_files[0].read_text(encoding="utf-8"))
+    assert capture_payload["request_name"] == "market_intelligence"
+    assert capture_payload["model_name"] == "claude-sonnet-4-6"
+
+
+def test_anthropic_provider_capture_write_failure_raises_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_body = {
+        "content": [
+            {
+                "type": "text",
+                "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+            }
+        ]
+    }
+    provider, _ = _build_anthropic_provider(response_body)
+    capture_dir = tmp_path / "not-a-directory"
+    capture_dir.write_text("occupied", encoding="utf-8")
+    monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES", "true")
+    monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_DIR", str(capture_dir))
+
+    with pytest.raises(LLMProviderError, match="failed to write raw response capture"):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+                {"role": "user", "content": "Return summary_zh and summary_en."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+            request_name="market_intelligence",
+        )
 
 
 def test_product_ranking_output_rejects_empty_ranked_ids() -> None:
