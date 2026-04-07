@@ -144,12 +144,12 @@ def capture_all_agents(
     fixtures_dir: str | Path | None = None,
 ) -> list[CaptureSummary]:
     env_values = provider_module._build_env_values()
+    provider, runtime_config = _build_anthropic_provider_from_env()
     if not provider_module._is_raw_capture_enabled(env_values):
         raise RuntimeError(
             f"{LLM_CAPTURE_RAW_RESPONSES_ENV} must be set to a truthy value to capture raw responses."
         )
 
-    provider, runtime_config = _build_anthropic_provider_from_env()
     user_profile = map_user_profile(risk_profile)
     state = RuleBasedFallbackEngine(StaticCandidateRepository()).run(user_profile)
     if state.market_context is None or state.allocation is None or state.aggressive_allocation is None:

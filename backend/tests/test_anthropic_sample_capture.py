@@ -307,3 +307,106 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
         "user_profile: phase=structured, fixture_path=/tmp/user_profile.json",
         "explanation: phase=fallback, fixture_path=/tmp/explanation.json",
     ]
+
+
+def test_capture_all_agents_executes_all_runtime_agents_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_names = capture_request_names()
+    runtime_config = AgentRuntimeConfig(
+        providers={},
+        agent_routes={
+            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
+            for request_name in request_names
+        },
+        request_timeout_seconds=7.5,
+    )
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_build_anthropic_provider_from_env",
+        lambda: (object(), runtime_config),
+    )
+    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
+    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
+    monkeypatch.setattr(
+        sample_capture_module.provider_module,
+        "_resolve_capture_dir",
+        lambda _: Path("/tmp/not-used"),
+    )
+
+    run_order: list[str] = []
+
+    def _latest_capture_for_request_name(
+        capture_dir: Path, request_name: str
+    ) -> tuple[Path, dict[str, object]]:
+        del capture_dir
+        return Path(f"/tmp/{request_name}.json"), {
+            "request_name": request_name,
+            "phase": "structured",
+            "body": {"content": [{"type": "text", "text": request_name}]},
+        }
+
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_latest_capture_for_request_name",
+        _latest_capture_for_request_name,
+    )
+
+    monkeypatch.setattr(
+        sample_capture_module.UserProfileRuntimeAgent,
+        "run",
+        lambda self, user_profile: run_order.append("user_profile")
+        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.MarketIntelligenceRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, fallback_context: run_order.append(
+            "market_intelligence"
+        )
+        or MarketIntelligenceAgentOutput(summary_zh="市场平稳", summary_en="Market is steady"),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.FundSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.WealthSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.StockSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.ExplanationRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, market_context: run_order.append("explanation")
+        or ExplanationAgentOutput(why_this_plan_zh=["理由一"], why_this_plan_en=["Reason one"]),
+    )
+
+    summary = capture_all_agents()
+
+    assert [item["request_name"] for item in summary] == list(request_names)
+    assert run_order == list(request_names)
+
+
+def test_capture_all_agents_surfaces_provider_config_missing_before_capture_toggle_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {})
+    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: False)
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_build_anthropic_provider_from_env",
+        lambda: (_ for _ in ()).throw(RuntimeError("Anthropic provider config is missing.")),
+    )
+
+    with pytest.raises(RuntimeError, match="Anthropic provider config is missing"):
+        capture_all_agents()
