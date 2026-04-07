@@ -5,7 +5,7 @@ from financehub_market_api.recommendation.repositories.real_data_adapters import
     MoneyFundWealthProxyAdapter,
 )
 from financehub_market_api.recommendation.repositories.real_data_repository import RealDataCandidateRepository
-from financehub_market_api.recommendation.agents import OpenAIMultiAgentRuntime
+from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
@@ -162,7 +162,7 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_re
 
     response = RecommendationService(
         orchestrator=RecommendationOrchestrator(
-            multi_agent_runtime=OpenAIMultiAgentRuntime(providers={})
+            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={})
         )
     ).get_recommendation("balanced")
 

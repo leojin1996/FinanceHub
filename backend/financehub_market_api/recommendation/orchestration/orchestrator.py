@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from financehub_market_api.models import RiskProfile
-from financehub_market_api.recommendation.agents import OpenAIMultiAgentRuntime
+from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.repositories import CandidateRepository, RealDataCandidateRepository
 from financehub_market_api.recommendation.rules import RuleBasedFallbackEngine, map_user_profile
 from financehub_market_api.recommendation.schemas import FinalRecommendation
@@ -12,11 +12,11 @@ class RecommendationOrchestrator:
         self,
         *,
         candidate_repository: CandidateRepository | None = None,
-        multi_agent_runtime: OpenAIMultiAgentRuntime | None = None,
+        multi_agent_runtime: AnthropicMultiAgentRuntime | None = None,
     ) -> None:
         repository = candidate_repository or RealDataCandidateRepository()
         self._fallback_engine = RuleBasedFallbackEngine(repository)
-        self._multi_agent_runtime = multi_agent_runtime or OpenAIMultiAgentRuntime.from_env()
+        self._multi_agent_runtime = multi_agent_runtime or AnthropicMultiAgentRuntime.from_env()
 
     def generate(self, risk_profile: RiskProfile) -> FinalRecommendation:
         user_profile = map_user_profile(risk_profile)

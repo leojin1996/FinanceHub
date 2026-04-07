@@ -219,13 +219,13 @@ def _build_stocks() -> StocksResponse:
 
 def _build_recommendation_response() -> RecommendationResponse:
     from financehub_market_api.recommendations import RecommendationService
-    from financehub_market_api.recommendation.agents import OpenAIMultiAgentRuntime
+    from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
     from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
     from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 
     orchestrator = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=OpenAIMultiAgentRuntime(providers={})
+        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={})
     )
     return RecommendationService(orchestrator=orchestrator).get_recommendation("balanced")
 

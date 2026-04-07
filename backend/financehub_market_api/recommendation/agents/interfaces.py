@@ -23,8 +23,8 @@ class StructuredOutputProvider(Protocol):
         """Execute one structured-output chat request and parse JSON content."""
 
 
-class OpenAICompatibleProvider(StructuredOutputProvider, Protocol):
-    """Backward-compatible alias for existing single-provider runtime tests."""
+class AnthropicProvider(StructuredOutputProvider, Protocol):
+    """Anthropic structured-output provider interface."""
 
 
 class UserProfileAgent(Protocol):

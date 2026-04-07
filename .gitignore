@@ -1,6 +1,6 @@
 .worktrees/
 .superpowers/
-docs/superpowers/
+docs/
 .idea/
 node_modules/
 dist/
@@ -17,3 +17,4 @@ __pycache__/
 .pytest_cache/
 .env
 .env.local
+.vscode/settings.json

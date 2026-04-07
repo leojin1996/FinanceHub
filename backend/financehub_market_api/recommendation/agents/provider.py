@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,12 +12,14 @@ from typing import Literal
 import httpx
 
 
-ProviderKind = Literal["openai_compatible", "anthropic"]
+ProviderKind = Literal["anthropic"]
 
-OPENAI_PROVIDER_NAME = "openai"
 ANTHROPIC_PROVIDER_NAME = "anthropic"
-OPENAI_DEFAULT_MODEL = "gpt-5.4"
 ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-6"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
+ANTHROPIC_MAX_TOKENS = 100000
+ANTHROPIC_MAX_ATTEMPTS = 2
+ANTHROPIC_RETRY_BACKOFF_SECONDS = 1.0
 AGENT_MODEL_ROUTE_ENV_NAMES = {
     "user_profile": "USER_PROFILE",
     "market_intelligence": "MARKET_INTELLIGENCE",
@@ -90,22 +94,24 @@ def _clean_env_value(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _default_model_for_provider(
-    provider_name: str,
-    env_values: Mapping[str, str],
-) -> str:
-    if provider_name == OPENAI_PROVIDER_NAME:
-        return (
-            _clean_env_value(env_values.get("FINANCEHUB_LLM_PROVIDER_OPENAI_MODEL_DEFAULT"))
-            or _clean_env_value(env_values.get("FINANCEHUB_LLM_MODEL_DEFAULT"))
-            or OPENAI_DEFAULT_MODEL
-        )
-    if provider_name == ANTHROPIC_PROVIDER_NAME:
-        return (
-            _clean_env_value(env_values.get("FINANCEHUB_LLM_PROVIDER_ANTHROPIC_MODEL_DEFAULT"))
-            or ANTHROPIC_DEFAULT_MODEL
-        )
-    return OPENAI_DEFAULT_MODEL
+def _default_anthropic_model(env_values: Mapping[str, str]) -> str:
+    return (
+        _clean_env_value(env_values.get("FINANCEHUB_LLM_PROVIDER_ANTHROPIC_MODEL_DEFAULT"))
+        or ANTHROPIC_DEFAULT_MODEL
+    )
+
+
+def _parse_request_timeout_seconds(env_values: Mapping[str, str]) -> float:
+    raw_value = _clean_env_value(env_values.get("FINANCEHUB_LLM_TIMEOUT_SECONDS"))
+    if raw_value is None:
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    if timeout_seconds <= 0:
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return timeout_seconds
 
 
 @dataclass(frozen=True)
@@ -123,30 +129,11 @@ class AgentModelRoute:
 
 
 DEFAULT_AGENT_MODEL_ROUTES = {
-    "user_profile": AgentModelRoute(
-        provider_name=OPENAI_PROVIDER_NAME,
-        model_name=OPENAI_DEFAULT_MODEL,
-    ),
-    "market_intelligence": AgentModelRoute(
+    agent_name: AgentModelRoute(
         provider_name=ANTHROPIC_PROVIDER_NAME,
         model_name=ANTHROPIC_DEFAULT_MODEL,
-    ),
-    "fund_selection": AgentModelRoute(
-        provider_name=OPENAI_PROVIDER_NAME,
-        model_name=OPENAI_DEFAULT_MODEL,
-    ),
-    "wealth_selection": AgentModelRoute(
-        provider_name=OPENAI_PROVIDER_NAME,
-        model_name=OPENAI_DEFAULT_MODEL,
-    ),
-    "stock_selection": AgentModelRoute(
-        provider_name=OPENAI_PROVIDER_NAME,
-        model_name=OPENAI_DEFAULT_MODEL,
-    ),
-    "explanation": AgentModelRoute(
-        provider_name=ANTHROPIC_PROVIDER_NAME,
-        model_name=ANTHROPIC_DEFAULT_MODEL,
-    ),
+    )
+    for agent_name in AGENT_MODEL_ROUTE_ENV_NAMES
 }
 
 
@@ -154,6 +141,7 @@ DEFAULT_AGENT_MODEL_ROUTES = {
 class AgentRuntimeConfig:
     providers: dict[str, ProviderConfig]
     agent_routes: dict[str, AgentModelRoute]
+    request_timeout_seconds: float
 
     @classmethod
     def from_env(
@@ -166,28 +154,12 @@ class AgentRuntimeConfig:
         return cls(
             providers=_load_provider_registry(env_values),
             agent_routes=_load_agent_model_routes(env_values),
+            request_timeout_seconds=_parse_request_timeout_seconds(env_values),
         )
 
 
 def _load_provider_registry(env_values: Mapping[str, str]) -> dict[str, ProviderConfig]:
     providers: dict[str, ProviderConfig] = {}
-
-    openai_api_key = _clean_env_value(
-        env_values.get("FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY")
-        or env_values.get("FINANCEHUB_LLM_API_KEY")
-    )
-    openai_base_url = _clean_env_value(
-        env_values.get("FINANCEHUB_LLM_PROVIDER_OPENAI_BASE_URL")
-        or env_values.get("FINANCEHUB_LLM_BASE_URL")
-    )
-    if openai_api_key and openai_base_url:
-        providers[OPENAI_PROVIDER_NAME] = ProviderConfig(
-            name=OPENAI_PROVIDER_NAME,
-            kind=_clean_env_value(env_values.get("FINANCEHUB_LLM_PROVIDER_OPENAI_KIND"))
-            or "openai_compatible",
-            api_key=openai_api_key,
-            base_url=_normalize_base_url(openai_base_url),
-        )
 
     anthropic_api_key = _clean_env_value(
         env_values.get("FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY")
@@ -201,8 +173,7 @@ def _load_provider_registry(env_values: Mapping[str, str]) -> dict[str, Provider
     if anthropic_api_key and anthropic_base_url:
         providers[ANTHROPIC_PROVIDER_NAME] = ProviderConfig(
             name=ANTHROPIC_PROVIDER_NAME,
-            kind=_clean_env_value(env_values.get("FINANCEHUB_LLM_PROVIDER_ANTHROPIC_KIND"))
-            or "anthropic",
+            kind="anthropic",
             api_key=anthropic_api_key,
             base_url=_normalize_base_url(anthropic_base_url),
         )
@@ -211,92 +182,65 @@ def _load_provider_registry(env_values: Mapping[str, str]) -> dict[str, Provider
 
 
 def _load_agent_model_routes(env_values: Mapping[str, str]) -> dict[str, AgentModelRoute]:
+    default_model = _default_anthropic_model(env_values)
     routes = {
         agent_name: AgentModelRoute(
-            provider_name=route.provider_name,
-            model_name=_default_model_for_provider(route.provider_name, env_values),
+            provider_name=ANTHROPIC_PROVIDER_NAME,
+            model_name=default_model,
         )
-        for agent_name, route in DEFAULT_AGENT_MODEL_ROUTES.items()
+        for agent_name in DEFAULT_AGENT_MODEL_ROUTES
     }
 
     for agent_name, env_name in AGENT_MODEL_ROUTE_ENV_NAMES.items():
-        current_route = routes[agent_name]
-        provider_name = _clean_env_value(
-            env_values.get(f"FINANCEHUB_LLM_AGENT_{env_name}_PROVIDER")
-        ) or current_route.provider_name
         model_name = _clean_env_value(env_values.get(f"FINANCEHUB_LLM_AGENT_{env_name}_MODEL"))
         routes[agent_name] = AgentModelRoute(
-            provider_name=provider_name,
-            model_name=model_name or _default_model_for_provider(provider_name, env_values),
+            provider_name=ANTHROPIC_PROVIDER_NAME,
+            model_name=model_name or default_model,
         )
 
     return routes
 
 
 def _parse_json_content(content: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise LLMInvalidResponseError("provider returned invalid JSON content") from exc
+    normalized_content = content.strip()
+    candidates = [normalized_content]
 
-    if not isinstance(parsed, dict):
-        raise LLMInvalidResponseError("provider JSON content must be an object")
-    return parsed
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", normalized_content, re.DOTALL)
+    if fenced_match is not None:
+        candidates.append(fenced_match.group(1).strip())
 
-
-class OpenAICompatibleChatProvider:
-    def __init__(
-        self,
-        config: ProviderConfig,
-        http_client: httpx.Client | None = None,
-    ) -> None:
-        self._config = config
-        self._http_client = http_client or httpx.Client()
-
-    def chat_json(
-        self,
-        *,
-        model_name: str,
-        messages: list[dict[str, str]],
-        response_schema: dict[str, object],
-        timeout_seconds: float,
-    ) -> dict[str, object]:
-        payload = {
-            "model": model_name,
-            "messages": messages,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "recommendation_agent_response",
-                    "schema": response_schema,
-                },
-            },
-        }
+    last_error: json.JSONDecodeError | None = None
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
         try:
-            response = self._http_client.post(
-                f"{self._config.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self._config.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=timeout_seconds,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.HTTPError as exc:
-            raise LLMProviderError(f"OpenAI-compatible provider request failed: {exc}") from exc
-        except ValueError as exc:
-            raise LLMInvalidResponseError("provider response is not valid JSON") from exc
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        else:
+            if not isinstance(parsed, dict):
+                raise LLMInvalidResponseError("provider JSON content must be an object")
+            return parsed
 
-        try:
-            content = body["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMInvalidResponseError("provider response has no assistant message content") from exc
+        for match in re.finditer(r"\{", candidate):
+            try:
+                parsed, _ = decoder.raw_decode(candidate, idx=match.start())
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            return parsed
 
-        if not isinstance(content, str):
-            raise LLMInvalidResponseError("provider assistant content must be a JSON string")
-        return _parse_json_content(content)
+    raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
+
+
+def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
+    if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code == 429 or 500 <= status_code < 600
+    return False
 
 
 class AnthropicChatProvider:
@@ -331,36 +275,62 @@ class AnthropicChatProvider:
         ]
         payload: dict[str, object] = {
             "model": model_name,
-            "max_tokens": 1024,
+            "max_tokens": ANTHROPIC_MAX_TOKENS,
             "messages": anthropic_messages,
-            "output_config": {
-                "format": {
-                    "type": "json_schema",
-                    "schema": response_schema,
-                }
-            },
         }
         if system_prompts:
             payload["system"] = "\n\n".join(system_prompts)
+        structured_payload = dict(payload)
+        structured_payload["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": response_schema,
+            }
+        }
 
         try:
-            response = self._http_client.post(
-                f"{self._config.base_url}/messages",
-                headers={
-                    "x-api-key": self._config.api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json=payload,
-                timeout=timeout_seconds,
+            return self._parse_response_body(
+                self._post_messages(structured_payload, timeout_seconds=timeout_seconds)
             )
-            response.raise_for_status()
-            body = response.json()
-        except httpx.HTTPError as exc:
-            raise LLMProviderError(f"Anthropic provider request failed: {exc}") from exc
-        except ValueError as exc:
-            raise LLMInvalidResponseError("provider response is not valid JSON") from exc
+        except LLMInvalidResponseError as structured_exc:
+            fallback_payload = dict(payload)
+            try:
+                return self._parse_response_body(
+                    self._post_messages(fallback_payload, timeout_seconds=timeout_seconds)
+                )
+            except LLMInvalidResponseError as fallback_exc:
+                raise fallback_exc from structured_exc
 
+    def _post_messages(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout_seconds: float,
+    ) -> object:
+        for attempt in range(ANTHROPIC_MAX_ATTEMPTS):
+            try:
+                response = self._http_client.post(
+                    f"{self._config.base_url}/messages",
+                    headers={
+                        "x-api-key": self._config.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json=payload,
+                    timeout=timeout_seconds,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as exc:
+                if attempt + 1 >= ANTHROPIC_MAX_ATTEMPTS or not _is_retryable_anthropic_error(exc):
+                    raise LLMProviderError(f"Anthropic provider request failed: {exc}") from exc
+                time.sleep(ANTHROPIC_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            except ValueError as exc:
+                raise LLMInvalidResponseError("provider response is not valid JSON") from exc
+
+        raise AssertionError("anthropic request retry loop exited unexpectedly")
+
+    def _parse_response_body(self, body: object) -> dict[str, object]:
         try:
             content_blocks = body["content"]
         except (KeyError, TypeError) as exc:
@@ -384,12 +354,10 @@ def build_provider(
     config: ProviderConfig,
     *,
     http_client: httpx.Client | None = None,
-) -> OpenAICompatibleChatProvider | AnthropicChatProvider:
-    if config.kind == "openai_compatible":
-        return OpenAICompatibleChatProvider(config, http_client=http_client)
-    if config.kind == "anthropic":
-        return AnthropicChatProvider(config, http_client=http_client)
-    raise ValueError(f"unsupported provider kind: {config.kind}")
+) -> AnthropicChatProvider:
+    if config.kind != "anthropic":
+        raise ValueError(f"unsupported provider kind: {config.kind}")
+    return AnthropicChatProvider(config, http_client=http_client)
 
 
 LLMProviderConfig = ProviderConfig

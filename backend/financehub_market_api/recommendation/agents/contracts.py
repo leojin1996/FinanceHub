@@ -14,7 +14,7 @@ class MarketIntelligenceAgentOutput(BaseModel):
 
 
 class ProductRankingAgentOutput(BaseModel):
-    ranked_ids: list[str]
+    ranked_ids: list[str] = Field(min_length=1)
 
 
 class ExplanationAgentOutput(BaseModel):

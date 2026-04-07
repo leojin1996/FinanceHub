@@ -5,12 +5,11 @@ from financehub_market_api.recommendation_flow import (
     build_recommendation_context,
     run_recommendation_flow,
 )
-
-from financehub_market_api.recommendation.agents import OpenAIMultiAgentRuntime
+from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.agents.provider import (
     ANTHROPIC_PROVIDER_NAME,
-    OPENAI_PROVIDER_NAME,
     AgentModelRoute,
+    LLMInvalidResponseError,
 )
 from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
@@ -77,7 +76,7 @@ def test_manual_context_labels_are_preserved_by_recommendation_flow() -> None:
 def test_orchestration_keeps_execution_trace_available_for_fallback_path() -> None:
     orchestrator = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=OpenAIMultiAgentRuntime(providers={}),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
     )
 
     final_recommendation = orchestrator.generate("balanced")
@@ -98,7 +97,7 @@ def test_orchestration_keeps_execution_trace_available_for_fallback_path() -> No
 def test_orchestration_without_llm_config_keeps_safe_rule_fallback() -> None:
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=OpenAIMultiAgentRuntime(providers={})
+        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
     ).generate("balanced")
 
     assert recommendation.execution_trace.path == "rules_fallback"
@@ -141,9 +140,9 @@ class _SequenceProvider:
 
 
 def test_provider_exception_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider([httpx.TimeoutException("request timed out")]),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -155,9 +154,109 @@ def test_provider_exception_downgrades_to_rule_fallback_with_warning() -> None:
     assert recommendation.execution_trace.warnings[0].code == "provider_error"
 
 
-def test_missing_anthropic_provider_downgrades_to_rule_fallback_with_warning() -> None:
-    openai_provider = _SequenceProvider([])
-    runtime = OpenAIMultiAgentRuntime(providers={OPENAI_PROVIDER_NAME: openai_provider})
+def test_user_profile_provider_error_uses_fallback_focus_and_keeps_agent_outputs() -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        provider=_SequenceProvider(
+            [
+                httpx.ReadTimeout("request timed out"),
+                {"summary_zh": "智能市场摘要", "summary_en": "Agent market summary"},
+                {"ranked_ids": ["fund-002", "fund-001"]},
+                {"ranked_ids": ["wm-002", "wm-001"]},
+                {"ranked_ids": ["stock-002", "stock-001"]},
+                {"why_this_plan_zh": ["智能解释1"], "why_this_plan_en": ["Agent reason 1"]},
+            ]
+        ),
+        model_name="claude-test",
+    )
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert recommendation.execution_trace.degraded is True
+    assert recommendation.execution_trace.warnings[0].stage == "user_profile"
+    assert recommendation.execution_trace.warnings[0].code == "provider_error"
+    assert recommendation.market_context.summary_zh == "智能市场摘要"
+    assert recommendation.why_this_plan_en == ["Agent reason 1"]
+    assert [product.id for product in recommendation.fund_items] == ["fund-002", "fund-001"]
+
+
+def test_market_intelligence_provider_error_keeps_rule_summary_and_continues() -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        provider=_SequenceProvider(
+            [
+                {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+                httpx.ReadTimeout("request timed out"),
+                {"ranked_ids": ["fund-002", "fund-001"]},
+                {"ranked_ids": ["wm-002", "wm-001"]},
+                {"ranked_ids": ["stock-002", "stock-001"]},
+                {"why_this_plan_zh": ["智能解释1"], "why_this_plan_en": ["Agent reason 1"]},
+            ]
+        ),
+        model_name="claude-test",
+    )
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert recommendation.execution_trace.degraded is True
+    assert recommendation.execution_trace.warnings[0].stage == "market_intelligence"
+    assert recommendation.execution_trace.warnings[0].code == "provider_error"
+    assert recommendation.market_context.summary_zh == "当前市场更适合稳健资产与权益增强搭配，控制整体波动。"
+    assert recommendation.why_this_plan_en == ["Agent reason 1"]
+    assert [product.id for product in recommendation.fund_items] == ["fund-002", "fund-001"]
+
+
+def test_explanation_provider_error_keeps_rule_rationale_and_agent_summary() -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        provider=_SequenceProvider(
+            [
+                {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+                {"summary_zh": "智能市场摘要", "summary_en": "Agent market summary"},
+                {"ranked_ids": ["fund-002", "fund-001"]},
+                {"ranked_ids": ["wm-002", "wm-001"]},
+                {"ranked_ids": ["stock-002", "stock-001"]},
+                httpx.ReadTimeout("request timed out"),
+            ]
+        ),
+        model_name="claude-test",
+    )
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert recommendation.execution_trace.degraded is True
+    assert recommendation.execution_trace.warnings[0].stage == "explanation"
+    assert recommendation.execution_trace.warnings[0].code == "provider_error"
+    assert recommendation.market_context.summary_zh == "智能市场摘要"
+    assert recommendation.why_this_plan_en[0] == (
+        "Your profile screens as Balanced, so the base plan prioritizes overall volatility control."
+    )
+    assert [product.id for product in recommendation.fund_items] == ["fund-002", "fund-001"]
+
+
+@pytest.mark.parametrize(
+    "provider_error_message",
+    [
+        "provider response has no content blocks",
+        "provider response has no text content block",
+    ],
+)
+def test_empty_provider_response_downgrades_to_rule_fallback_with_clear_warning(
+    provider_error_message: str,
+) -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        provider=_SequenceProvider([LLMInvalidResponseError(provider_error_message)]),
+        model_name="claude-test",
+    )
 
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -166,19 +265,42 @@ def test_missing_anthropic_provider_downgrades_to_rule_fallback_with_warning() -
 
     assert recommendation.execution_trace.path == "rules_fallback"
     assert recommendation.execution_trace.degraded is True
-    assert recommendation.execution_trace.warnings[0].code == "agent_provider_missing"
-    assert recommendation.execution_trace.warnings[0].stage == "market_intelligence"
-    assert openai_provider.calls == []
+    assert recommendation.execution_trace.warnings[0].stage == "provider"
+    assert recommendation.execution_trace.warnings[0].code == "provider_empty_response"
+    assert "returned an empty structured response" in recommendation.execution_trace.warnings[0].message
 
 
-def test_invalid_agent_route_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
-        providers={
-            OPENAI_PROVIDER_NAME: _SequenceProvider([]),
-            ANTHROPIC_PROVIDER_NAME: _SequenceProvider([]),
-        },
+def test_runtime_uses_configured_request_timeout_for_all_agents() -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    runtime = AnthropicMultiAgentRuntime(
+        provider=provider,
+        model_name="claude-test",
+        request_timeout_seconds=30.0,
+    )
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert [call["timeout_seconds"] for call in provider.calls] == [30.0] * 6
+
+
+def test_runtime_rejects_non_anthropic_agent_route() -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        providers={ANTHROPIC_PROVIDER_NAME: _SequenceProvider([])},
         agent_routes={
-            "market_intelligence": AgentModelRoute(provider_name="", model_name="claude-opus-4-6")
+            "market_intelligence": AgentModelRoute(provider_name="openai", model_name="claude-opus-4-6")
         },
     )
 
@@ -189,12 +311,25 @@ def test_invalid_agent_route_downgrades_to_rule_fallback_with_warning() -> None:
 
     assert recommendation.execution_trace.path == "rules_fallback"
     assert recommendation.execution_trace.degraded is True
-    assert recommendation.execution_trace.warnings[0].code == "agent_model_route_invalid"
+    assert recommendation.execution_trace.warnings[0].code == "agent_provider_invalid"
     assert recommendation.execution_trace.warnings[0].stage == "market_intelligence"
 
 
+def test_missing_anthropic_provider_downgrades_to_rule_fallback_with_warning() -> None:
+    runtime = AnthropicMultiAgentRuntime(providers={})
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "rules_fallback"
+    assert recommendation.execution_trace.degraded is True
+    assert recommendation.execution_trace.warnings[0].code == "llm_config_missing"
+
+
 def test_invalid_agent_payload_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(
             [
                 {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
@@ -202,7 +337,7 @@ def test_invalid_agent_payload_downgrades_to_rule_fallback_with_warning() -> Non
                 {"ranked_ids": "not-a-list"},
             ]
         ),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -214,8 +349,49 @@ def test_invalid_agent_payload_downgrades_to_rule_fallback_with_warning() -> Non
     assert recommendation.execution_trace.warnings[0].code == "invalid_agent_output"
 
 
-def test_empty_ranked_ids_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+def test_empty_ranking_provider_responses_keep_agent_authored_summary_and_explanation() -> None:
+    runtime = AnthropicMultiAgentRuntime(
+        provider=_SequenceProvider(
+            [
+                {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+                {"summary_zh": "智能市场摘要", "summary_en": "Agent market summary"},
+                LLMInvalidResponseError("provider response has no text content block"),
+                LLMInvalidResponseError("provider response has no text content block"),
+                LLMInvalidResponseError("provider response has no text content block"),
+                {
+                    "why_this_plan_zh": ["智能解释1", "智能解释2"],
+                    "why_this_plan_en": ["Agent reason 1", "Agent reason 2"],
+                },
+            ]
+        ),
+        model_name="claude-test",
+    )
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=runtime,
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert recommendation.execution_trace.execution_mode == "agent_assisted"
+    assert recommendation.execution_trace.degraded is True
+    assert [warning.code for warning in recommendation.execution_trace.warnings] == [
+        "provider_empty_response",
+        "provider_empty_response",
+        "provider_empty_response",
+    ]
+    assert [warning.stage for warning in recommendation.execution_trace.warnings] == [
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+    ]
+    assert recommendation.market_context.summary_zh == "智能市场摘要"
+    assert recommendation.why_this_plan_en == ["Agent reason 1", "Agent reason 2"]
+    assert [product.id for product in recommendation.fund_items] == ["fund-001", "fund-002"]
+
+
+def test_empty_ranked_ids_keep_agent_assisted_mode_with_warning() -> None:
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(
             [
                 {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
@@ -229,20 +405,96 @@ def test_empty_ranked_ids_downgrades_to_rule_fallback_with_warning() -> None:
                 },
             ]
         ),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
         multi_agent_runtime=runtime,
     ).generate("balanced")
 
-    assert recommendation.execution_trace.path == "rules_fallback"
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert recommendation.execution_trace.execution_mode == "agent_assisted"
     assert recommendation.execution_trace.degraded is True
     assert recommendation.execution_trace.warnings[0].code == "agent_ranking_unusable"
+    assert recommendation.execution_trace.warnings[0].stage == "fund_selection"
+    assert [product.id for product in recommendation.fund_items] == ["fund-001", "fund-002"]
+    assert recommendation.market_context.summary_zh == "市场维持震荡"
+    assert recommendation.why_this_plan_en == ["Agent reason 1", "Agent reason 2"]
+
+
+def test_ranking_prompts_require_non_empty_output_and_original_order_fallback() -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+            {"summary_zh": "市场维持震荡", "summary_en": "Market is range-bound"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {
+                "why_this_plan_zh": ["智能解释1", "智能解释2"],
+                "why_this_plan_en": ["Agent reason 1", "Agent reason 2"],
+            },
+        ]
+    )
+    RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=provider,
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    ranking_user_prompts = [
+        call["messages"][1]["content"]
+        for call in provider.calls[2:5]
+    ]
+
+    for prompt in ranking_user_prompts:
+        assert "Never return an empty list." in prompt
+        assert "If uncertain, return every candidate ID exactly once in the original order." in prompt
+
+
+def test_ranking_prompts_include_richer_candidate_features() -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+            {"summary_zh": "市场维持震荡", "summary_en": "Market is range-bound"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {
+                "why_this_plan_zh": ["智能解释1", "智能解释2"],
+                "why_this_plan_en": ["Agent reason 1", "Agent reason 2"],
+            },
+        ]
+    )
+    RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=provider,
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    fund_prompt = provider.calls[2]["messages"][1]["content"]
+    wealth_prompt = provider.calls[3]["messages"][1]["content"]
+    stock_prompt = provider.calls[4]["messages"][1]["content"]
+
+    assert "tags_zh=低回撤, 债券底仓, 适合稳健增值" in fund_prompt
+    assert "liquidity=T+1" in fund_prompt
+    assert "rationale_zh=作为组合底仓，波动较低，更适合用来承接稳健增值目标。" in fund_prompt
+
+    assert "tags_en=Short tenor, Liquidity-friendly, Stable base" in wealth_prompt
+    assert "liquidity=90天" in wealth_prompt
+    assert "rationale_en=Fits the role of a stable base allocation while preserving reasonable liquidity." in wealth_prompt
+
+    assert "code=600036" in stock_prompt
+    assert "tags_zh=高股息, 大盘蓝筹, 增强配置" in stock_prompt
+    assert "rationale_en=As a satellite equity holding, it leans on earnings stability and dividend quality to keep volatility more contained." in stock_prompt
 
 
 def test_ranked_ids_without_candidate_overlap_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(
             [
                 {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
@@ -256,7 +508,7 @@ def test_ranked_ids_without_candidate_overlap_downgrades_to_rule_fallback_with_w
                 },
             ]
         ),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -269,7 +521,7 @@ def test_ranked_ids_without_candidate_overlap_downgrades_to_rule_fallback_with_w
 
 
 def test_ranked_ids_with_partial_unknown_entries_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(
             [
                 {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
@@ -283,7 +535,7 @@ def test_ranked_ids_with_partial_unknown_entries_downgrades_to_rule_fallback_wit
                 },
             ]
         ),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -296,7 +548,7 @@ def test_ranked_ids_with_partial_unknown_entries_downgrades_to_rule_fallback_wit
 
 
 def test_agent_assisted_execution_is_tracked_separately_from_pure_rule_fallback() -> None:
-    runtime = OpenAIMultiAgentRuntime(
+    runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(
             [
                 {"profile_focus_zh": "稳健增值", "profile_focus_en": "steady growth"},
@@ -310,7 +562,7 @@ def test_agent_assisted_execution_is_tracked_separately_from_pure_rule_fallback(
                 },
             ]
         ),
-        model_name="gpt-test",
+        model_name="claude-test",
     )
     recommendation = RecommendationOrchestrator(
         candidate_repository=StaticCandidateRepository(),
@@ -324,69 +576,3 @@ def test_agent_assisted_execution_is_tracked_separately_from_pure_rule_fallback(
     assert recommendation.market_context.summary_zh == "智能摘要：配置需均衡"
     assert recommendation.fund_items[0].id == "fund-002"
     assert recommendation.why_this_plan_en[0] == "Agent reason 1"
-
-
-def test_agent_assisted_execution_routes_market_and_explanation_to_anthropic() -> None:
-    openai_provider = _SequenceProvider(
-        [
-            {"profile_focus_zh": "稳健增值", "profile_focus_en": "steady growth"},
-            {"ranked_ids": ["fund-002", "fund-001"]},
-            {"ranked_ids": ["wm-002", "wm-001"]},
-            {"ranked_ids": ["stock-002", "stock-001"]},
-        ]
-    )
-    anthropic_provider = _SequenceProvider(
-        [
-            {"summary_zh": "Anthropic 市场摘要", "summary_en": "Anthropic market summary"},
-            {
-                "why_this_plan_zh": ["Anthropic 解释1", "Anthropic 解释2"],
-                "why_this_plan_en": ["Anthropic reason 1", "Anthropic reason 2"],
-            },
-        ]
-    )
-    runtime = OpenAIMultiAgentRuntime(
-        providers={
-            OPENAI_PROVIDER_NAME: openai_provider,
-            ANTHROPIC_PROVIDER_NAME: anthropic_provider,
-        }
-    )
-
-    recommendation = RecommendationOrchestrator(
-        candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=runtime,
-    ).generate("balanced")
-
-    assert recommendation.execution_trace.path == "agent_assisted"
-    assert [call["model_name"] for call in openai_provider.calls] == ["gpt-5.4"] * 4
-    assert [call["model_name"] for call in anthropic_provider.calls] == ["claude-opus-4-6"] * 2
-    assert "UserProfileAgent" in openai_provider.calls[0]["messages"][0]["content"]
-    assert "MarketIntelligenceAgent" in anthropic_provider.calls[0]["messages"][0]["content"]
-    assert "ExplanationAgent" in anthropic_provider.calls[1]["messages"][0]["content"]
-    assert recommendation.market_context.summary_zh == "Anthropic 市场摘要"
-    assert recommendation.why_this_plan_en[0] == "Anthropic reason 1"
-
-
-def test_invalid_anthropic_output_downgrades_to_rule_fallback_with_warning() -> None:
-    runtime = OpenAIMultiAgentRuntime(
-        providers={
-            OPENAI_PROVIDER_NAME: _SequenceProvider(
-                [
-                    {"profile_focus_zh": "稳健增值", "profile_focus_en": "steady growth"},
-                ]
-            ),
-            ANTHROPIC_PROVIDER_NAME: _SequenceProvider(
-                [
-                    {"summary_zh": "Only one field"},
-                ]
-            ),
-        }
-    )
-
-    recommendation = RecommendationOrchestrator(
-        candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=runtime,
-    ).generate("balanced")
-
-    assert recommendation.execution_trace.path == "rules_fallback"
-    assert recommendation.execution_trace.degraded is True
-    assert recommendation.execution_trace.warnings[0].code == "invalid_agent_output"
