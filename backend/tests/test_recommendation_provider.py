@@ -516,6 +516,62 @@ def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() 
     }
 
 
+def test_anthropic_provider_rejects_non_object_json_text_for_bare_object_schema() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "[]",
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(LLMInvalidResponseError, match="provider JSON content must be an object"):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Return a JSON object."},
+                {"role": "user", "content": "Provide the result."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+        )
+
+
+def test_anthropic_provider_bare_object_schema_prefers_nested_object_with_list_values() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "ranked_ids": ["fund_a", "fund_b"],
+                        "note": "ordered by confidence",
+                    },
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return a JSON object."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "ranked_ids": ["fund_a", "fund_b"],
+        "note": "ordered by confidence",
+    }
+
+
 def test_anthropic_provider_retries_after_read_timeout() -> None:
     http_client = _SequentialFakeHttpClient(
         [

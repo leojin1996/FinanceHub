@@ -201,39 +201,6 @@ def _load_agent_model_routes(env_values: Mapping[str, str]) -> dict[str, AgentMo
     return routes
 
 
-def _parse_json_content(content: str) -> dict[str, object]:
-    normalized_content = content.strip()
-    candidates = [normalized_content]
-
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", normalized_content, re.DOTALL)
-    if fenced_match is not None:
-        candidates.append(fenced_match.group(1).strip())
-
-    last_error: json.JSONDecodeError | None = None
-    decoder = json.JSONDecoder()
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-        else:
-            if not isinstance(parsed, dict):
-                raise LLMInvalidResponseError("provider JSON content must be an object")
-            return parsed
-
-        for match in re.finditer(r"\{", candidate):
-            try:
-                parsed, _ = decoder.raw_decode(candidate, idx=match.start())
-            except json.JSONDecodeError as exc:
-                last_error = exc
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            return parsed
-
-    raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
-
-
 def _extract_json_candidates_from_text(content: str) -> list[dict[str, object]]:
     normalized_content = content.strip()
     candidates = [normalized_content]
@@ -326,7 +293,23 @@ def _match_schema_candidates(
 
 
 def _is_leaf_dict(candidate: Mapping[str, object]) -> bool:
-    return all(not isinstance(value, (dict, list)) for value in candidate.values())
+    return all(not isinstance(value, dict) for value in candidate.values())
+
+
+def _looks_like_structured_json_text(content: str) -> bool:
+    normalized = content.strip()
+    if not normalized:
+        return False
+    if normalized.startswith("{") or normalized.startswith("["):
+        return True
+    return "```" in normalized or "{" in normalized
+
+
+def _is_provider_metadata_object(candidate: Mapping[str, object]) -> bool:
+    block_type = candidate.get("type")
+    if not isinstance(block_type, str):
+        return False
+    return "text" in candidate or "input" in candidate or "content" in candidate
 
 
 def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
@@ -452,6 +435,8 @@ class AnthropicChatProvider:
             try:
                 text_candidates.extend(_extract_json_candidates_from_text(text))
             except LLMInvalidResponseError:
+                if _looks_like_structured_json_text(text):
+                    raise
                 continue
 
         if text_candidates and not required_keys:
@@ -467,6 +452,19 @@ class AnthropicChatProvider:
 
         recursive_candidates = _iter_dict_candidates(body, include_self=False)
         if recursive_candidates and not required_keys:
+            non_metadata_candidates = [
+                candidate
+                for candidate in recursive_candidates
+                if not _is_provider_metadata_object(candidate)
+            ]
+            if non_metadata_candidates:
+                leaf_candidates = [
+                    candidate for candidate in non_metadata_candidates if _is_leaf_dict(candidate)
+                ]
+                if leaf_candidates:
+                    return leaf_candidates[0]
+                return non_metadata_candidates[0]
+
             leaf_candidates = [candidate for candidate in recursive_candidates if _is_leaf_dict(candidate)]
             if leaf_candidates:
                 return leaf_candidates[0]
