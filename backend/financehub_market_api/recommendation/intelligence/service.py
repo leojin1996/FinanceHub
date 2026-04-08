@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from financehub_market_api.models import LocalizedText, MarketEvidenceItem
 
 
 class MarketSnapshot(BaseModel):
-    sentiment: str
-    stance: str
+    sentiment: Literal["neutral", "positive"]
+    stance: Literal["defensive", "balanced", "offensive"]
     summary_zh: str
     summary_en: str
     evidence: list[MarketEvidenceItem] = Field(default_factory=list)
