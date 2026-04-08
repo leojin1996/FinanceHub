@@ -131,8 +131,12 @@ def _is_truthy_env_value(value: str | None) -> bool:
     return cleaned.lower() in _TRUTHY_ENV_VALUES
 
 
-def _is_raw_capture_enabled(environ: Mapping[str, str]) -> bool:
+def raw_capture_enabled(environ: Mapping[str, str]) -> bool:
     return _is_truthy_env_value(environ.get(LLM_CAPTURE_RAW_RESPONSES_ENV))
+
+
+def _is_raw_capture_enabled(environ: Mapping[str, str]) -> bool:
+    return raw_capture_enabled(environ)
 
 
 def _is_agent_trace_logging_enabled(environ: Mapping[str, str]) -> bool:
