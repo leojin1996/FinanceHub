@@ -18,7 +18,11 @@ from financehub_market_api.recommendation.graph.state import RecommendationGraph
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.memory import MemoryRecallService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
-from financehub_market_api.recommendation.repositories import StaticCandidateRepository
+from financehub_market_api.recommendation.repositories import (
+    CandidateRepository,
+    RealDataCandidateRepository,
+    StaticCandidateRepository,
+)
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
@@ -50,6 +54,15 @@ class _StaticVectorStore:
     def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
         del query_text
         return [{"id": product_id, "score": 1.0 - index * 0.05} for index, product_id in enumerate(self._ids[:limit])]
+
+
+def _build_product_candidates(repository: CandidateRepository) -> list[CandidateProduct]:
+    profile = map_user_profile("balanced")
+    return [
+        *repository.list_funds(profile),
+        *repository.list_wealth_management(profile),
+        *repository.list_stocks(profile),
+    ]
 
 
 class RecommendationGraphRuntime:
@@ -109,14 +122,21 @@ class RecommendationGraphRuntime:
         return final_state
 
     @classmethod
+    def with_default_services(cls) -> RecommendationGraphRuntime:
+        candidates = _build_product_candidates(RealDataCandidateRepository())
+        return cls(
+            GraphServices(
+                market_intelligence=MarketIntelligenceService(),
+                memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
+                product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore(candidates)),
+                compliance_review=ComplianceReviewService(),
+                product_candidates=candidates,
+            )
+        )
+
+    @classmethod
     def with_deterministic_services(cls) -> RecommendationGraphRuntime:
-        repository = StaticCandidateRepository()
-        profile = map_user_profile("balanced")
-        candidates = [
-            *repository.list_funds(profile),
-            *repository.list_wealth_management(profile),
-            *repository.list_stocks(profile),
-        ]
+        candidates = _build_product_candidates(StaticCandidateRepository())
         return cls(
             GraphServices(
                 market_intelligence=MarketIntelligenceService(),
@@ -129,13 +149,7 @@ class RecommendationGraphRuntime:
 
     @classmethod
     def with_high_risk_candidate(cls) -> RecommendationGraphRuntime:
-        repository = StaticCandidateRepository()
-        profile = map_user_profile("balanced")
-        candidates = [
-            *repository.list_funds(profile),
-            *repository.list_wealth_management(profile),
-            *repository.list_stocks(profile),
-        ]
+        candidates = _build_product_candidates(StaticCandidateRepository())
 
         adjusted_candidates: list[CandidateProduct] = []
         for candidate in candidates:

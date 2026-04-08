@@ -91,6 +91,15 @@ class _SingleVectorStore:
         return [{"id": "fund-001", "score": 0.99}][:limit]
 
 
+class _FakeFrame:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def iterrows(self):
+        for index, row in enumerate(self._rows):
+            yield index, row
+
+
 def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> None:
     runtime_candidate = CandidateProduct(
         id="fund-001",
@@ -121,3 +130,48 @@ def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> 
     assert response.sections.funds.items[0].id == "fund-001"
     assert response.sections.funds.items[0].nameZh == "运行时自定义基金A"
     assert response.sections.funds.items[0].nameZh != "中欧稳利债券A"
+
+
+def test_app_default_graph_runtime_uses_real_repository_candidates(monkeypatch) -> None:
+    from financehub_market_api.recommendation.repositories import real_data_adapters
+
+    monkeypatch.setattr(
+        real_data_adapters.ak,
+        "fund_open_fund_rank_em",
+        lambda symbol: _FakeFrame(
+            [
+                {
+                    "基金代码": "000001",
+                    "基金简称": "稳健债券A",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.1234",
+                    "手续费": "0.15%",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        real_data_adapters.ak,
+        "fund_money_rank_em",
+        lambda: _FakeFrame(
+            [
+                {
+                    "基金代码": "511990",
+                    "基金简称": "华宝添益",
+                    "日期": "2026-04-02",
+                    "年化收益率7日": "1.88%",
+                    "手续费": "0.00%",
+                }
+            ]
+        ),
+    )
+
+    service = RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services()
+    )
+
+    response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert response.executionMode == "agent_assisted"
+    assert response.sections.funds.items[0].nameZh == "稳健债券A"
+    assert response.sections.wealthManagement.items[0].nameZh == "华宝添益"

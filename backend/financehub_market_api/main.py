@@ -14,7 +14,7 @@ from .models import (
     RecommendationResponse,
     StocksResponse,
 )
-from .recommendation.orchestration import RecommendationOrchestrator
+from .recommendation.graph.runtime import RecommendationGraphRuntime
 from .recommendations import RecommendationService
 from .service import DataUnavailableError, MarketDataService
 from .upstreams.dolthub import DoltHubClient
@@ -34,7 +34,9 @@ def get_market_data_service() -> MarketDataService:
 
 @lru_cache(maxsize=1)
 def get_recommendation_service() -> RecommendationService:
-    return RecommendationService(orchestrator=RecommendationOrchestrator())
+    return RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services()
+    )
 
 
 def _normalize_recommendation_payload(
