@@ -361,9 +361,34 @@ def test_agent_trace_logging_records_start_and_finish_with_response_summary(
     event_messages = [
         record.message for record in caplog.records if record.message.startswith("agent_request_")
     ]
-    assert any(message.startswith("agent_request_start") for message in event_messages)
+    start_messages = [message for message in event_messages if message.startswith("agent_request_start")]
     finish_messages = [message for message in event_messages if message.startswith("agent_request_finish")]
-    assert finish_messages
+    assert len(start_messages) == 6
+    assert len(finish_messages) == 6
+    assert [call["request_name"] for call in provider.calls] == [
+        "user_profile",
+        "market_intelligence",
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+        "explanation",
+    ]
+    assert [message.split("request_name=", 1)[1].split(" ", 1)[0] for message in start_messages] == [
+        "user_profile",
+        "market_intelligence",
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+        "explanation",
+    ]
+    assert [message.split("request_name=", 1)[1].split(" ", 1)[0] for message in finish_messages] == [
+        "user_profile",
+        "market_intelligence",
+        "fund_selection",
+        "wealth_selection",
+        "stock_selection",
+        "explanation",
+    ]
     assert all("response_summary=" in message for message in finish_messages)
 
 
@@ -392,6 +417,46 @@ def test_agent_trace_logging_records_error_for_first_agent_provider_failure(
         'error_message="structured-output provider request failed: boom"' in message
         for message in error_messages
     )
+
+
+def test_agent_trace_logging_records_validation_error_without_finish_for_failed_stage(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=runtime_module.__name__)
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=_SequenceProvider([{"profile_focus_zh": "稳健"}]),
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "rules_fallback"
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("agent_request_")
+    ]
+    error_messages = [message for message in event_messages if message.startswith("agent_request_error")]
+    assert any(
+        "request_name=user_profile" in message and "error_type=ValidationError" in message
+        for message in error_messages
+    )
+    assert not any(
+        message.startswith("agent_request_finish") and "request_name=user_profile" in message
+        for message in event_messages
+    )
+
+
+def test_response_summary_trims_oversized_values() -> None:
+    long_text = "x" * 400
+
+    summary = runtime_module._response_summary({"summary_zh": long_text})
+
+    assert '"summary_zh": "' in summary
+    assert long_text not in summary
+    assert f'{"x" * 240}..."' in summary
 
 
 def test_runtime_rejects_non_anthropic_agent_route() -> None:

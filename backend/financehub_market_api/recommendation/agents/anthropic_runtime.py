@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Callable, TypeVar
 
 from pydantic import ValidationError
 
@@ -43,6 +44,13 @@ _EMPTY_PROVIDER_RESPONSE_MARKERS = (
 _MAX_TRACE_STRING_LENGTH = 240
 _MAX_TRACE_LIST_ITEMS = 8
 _MAX_TRACE_OBJECT_KEYS = 16
+_ValidatedOutputT = TypeVar("_ValidatedOutputT")
+
+
+@dataclass(frozen=True)
+class _TraceRequestContext:
+    trace_enabled: bool
+    started_at: float
 
 
 def _trim_trace_value(value: object) -> object:
@@ -185,11 +193,13 @@ class _BaseStructuredOutputAgent:
         system_prompt: str,
         user_prompt: str,
         response_schema: dict[str, object],
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], _TraceRequestContext]:
         env_values = _build_env_values()
-        trace_logs_enabled = _is_agent_trace_logging_enabled(env_values)
-        started_at = time.perf_counter()
-        if trace_logs_enabled:
+        trace_context = _TraceRequestContext(
+            trace_enabled=_is_agent_trace_logging_enabled(env_values),
+            started_at=time.perf_counter(),
+        )
+        if trace_context.trace_enabled:
             LOGGER.info(
                 "agent_request_start request_name=%s model_name=%s",
                 self._request_name,
@@ -207,35 +217,29 @@ class _BaseStructuredOutputAgent:
                 request_name=self._request_name,
             )
         except LLMInvalidResponseError as exc:
-            if trace_logs_enabled:
-                duration_ms = int((time.perf_counter() - started_at) * 1000)
-                LOGGER.info(
-                    "agent_request_error request_name=%s model_name=%s duration_ms=%s "
-                    "error_type=%s error_message=%s",
-                    self._request_name,
-                    self._model_name,
-                    duration_ms,
-                    type(exc).__name__,
-                    json.dumps(str(exc), ensure_ascii=False),
-                )
+            self._log_trace_error(trace_context, exc)
             raise
         except Exception as exc:  # noqa: BLE001
             wrapped_error = LLMProviderError(f"structured-output provider request failed: {exc}")
-            if trace_logs_enabled:
-                duration_ms = int((time.perf_counter() - started_at) * 1000)
-                LOGGER.info(
-                    "agent_request_error request_name=%s model_name=%s duration_ms=%s "
-                    "error_type=%s error_message=%s",
-                    self._request_name,
-                    self._model_name,
-                    duration_ms,
-                    type(wrapped_error).__name__,
-                    json.dumps(str(wrapped_error), ensure_ascii=False),
-                )
+            self._log_trace_error(trace_context, wrapped_error)
             raise wrapped_error from exc
 
-        if trace_logs_enabled:
-            duration_ms = int((time.perf_counter() - started_at) * 1000)
+        return payload, trace_context
+
+    def _validate_and_log(
+        self,
+        payload: dict[str, object],
+        trace_context: _TraceRequestContext,
+        validator: Callable[[dict[str, object]], _ValidatedOutputT],
+    ) -> _ValidatedOutputT:
+        try:
+            validated_payload = validator(payload)
+        except ValidationError as exc:
+            self._log_trace_error(trace_context, exc)
+            raise
+
+        if trace_context.trace_enabled:
+            duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
             LOGGER.info(
                 "agent_request_finish request_name=%s model_name=%s duration_ms=%s response_summary=%s",
                 self._request_name,
@@ -243,12 +247,26 @@ class _BaseStructuredOutputAgent:
                 duration_ms,
                 _response_summary(payload),
             )
-        return payload
+        return validated_payload
+
+    def _log_trace_error(self, trace_context: _TraceRequestContext, error: Exception) -> None:
+        if not trace_context.trace_enabled:
+            return
+        duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
+        LOGGER.info(
+            "agent_request_error request_name=%s model_name=%s duration_ms=%s "
+            "error_type=%s error_message=%s",
+            self._request_name,
+            self._model_name,
+            duration_ms,
+            type(error).__name__,
+            json.dumps(str(error), ensure_ascii=False),
+        )
 
 
 class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):
     def run(self, user_profile: UserProfile) -> UserProfileAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are UserProfileAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -257,7 +275,7 @@ class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=UserProfileAgentOutput.model_json_schema(),
         )
-        return UserProfileAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, UserProfileAgentOutput.model_validate)
 
 
 class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
@@ -267,7 +285,7 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         fallback_context: MarketContext,
     ) -> MarketIntelligenceAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are MarketIntelligenceAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -277,7 +295,7 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=MarketIntelligenceAgentOutput.model_json_schema(),
         )
-        return MarketIntelligenceAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, MarketIntelligenceAgentOutput.model_validate)
 
 
 class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -287,7 +305,7 @@ class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are FundSelectionAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -299,7 +317,7 @@ class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return ProductRankingAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
 
 
 class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -309,7 +327,7 @@ class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are WealthSelectionAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -321,7 +339,7 @@ class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return ProductRankingAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
 
 
 class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -331,7 +349,7 @@ class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are StockSelectionAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -343,7 +361,7 @@ class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return ProductRankingAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
 
 
 class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
@@ -353,7 +371,7 @@ class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         market_context: MarketIntelligenceAgentOutput,
     ) -> ExplanationAgentOutput:
-        payload = self._execute(
+        payload, trace_context = self._execute(
             system_prompt="You are ExplanationAgent. Return strict JSON only.",
             user_prompt=(
                 f"model={self._model_name}; risk_profile={user_profile.risk_profile}; "
@@ -363,7 +381,7 @@ class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ExplanationAgentOutput.model_json_schema(),
         )
-        return ExplanationAgentOutput.model_validate(payload)
+        return self._validate_and_log(payload, trace_context, ExplanationAgentOutput.model_validate)
 
 
 @dataclass(frozen=True)
