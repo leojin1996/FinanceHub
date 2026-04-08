@@ -511,7 +511,12 @@ class AnthropicMultiAgentRuntime:
 
     @classmethod
     def from_env(cls) -> AnthropicMultiAgentRuntime:
-        runtime_config = AgentRuntimeConfig.from_env()
+        env_values = _build_env_values()
+        runtime_config = AgentRuntimeConfig.from_env(
+            environ=env_values,
+            env_files=[],
+        )
+        trace_logs_enabled = _is_agent_trace_logging_enabled(env_values)
         providers: dict[str, StructuredOutputProvider] = {}
         for provider_name, provider_config in runtime_config.providers.items():
             try:
@@ -522,6 +527,7 @@ class AnthropicMultiAgentRuntime:
             providers=providers,
             agent_routes=runtime_config.agent_routes,
             request_timeout_seconds=runtime_config.request_timeout_seconds,
+            trace_logs_enabled=trace_logs_enabled,
         )
 
     def _missing_provider_warning(self) -> DegradedWarning | None:

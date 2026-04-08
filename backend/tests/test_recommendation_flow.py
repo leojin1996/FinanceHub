@@ -1,5 +1,6 @@
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import httpx
 import pytest
@@ -434,6 +435,57 @@ def test_agent_trace_logging_env_is_loaded_once_per_runtime(
     assert recommendation.execution_trace.path == "agent_assisted"
     assert counters["build_env_values"] == 1
     assert counters["trace_enabled"] == 1
+
+
+def test_runtime_from_env_reuses_single_env_snapshot_for_config_and_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counters = {"build_env_values": 0, "trace_enabled": 0}
+    env_snapshot = {"FINANCEHUB_LLM_AGENT_TRACE_LOGS": "true"}
+    captured: dict[str, object] = {}
+
+    def _fake_build_env_values() -> dict[str, str]:
+        counters["build_env_values"] += 1
+        return env_snapshot
+
+    def _fake_is_agent_trace_logging_enabled(environ: Mapping[str, str]) -> bool:
+        counters["trace_enabled"] += 1
+        assert environ is env_snapshot
+        return True
+
+    def _fake_runtime_config_from_env(
+        cls: type[runtime_module.AgentRuntimeConfig],
+        *,
+        environ: Mapping[str, str] | None = None,
+        env_files: Sequence[Path] | None = None,
+    ) -> runtime_module.AgentRuntimeConfig:
+        captured["environ"] = environ
+        captured["env_files"] = env_files
+        return cls(
+            providers={},
+            agent_routes={},
+            request_timeout_seconds=13.0,
+        )
+
+    monkeypatch.setattr(runtime_module, "_build_env_values", _fake_build_env_values)
+    monkeypatch.setattr(
+        runtime_module,
+        "_is_agent_trace_logging_enabled",
+        _fake_is_agent_trace_logging_enabled,
+    )
+    monkeypatch.setattr(
+        runtime_module.AgentRuntimeConfig,
+        "from_env",
+        classmethod(_fake_runtime_config_from_env),
+    )
+
+    runtime = runtime_module.AnthropicMultiAgentRuntime.from_env()
+
+    assert isinstance(runtime, runtime_module.AnthropicMultiAgentRuntime)
+    assert counters["build_env_values"] == 1
+    assert counters["trace_enabled"] == 1
+    assert captured["environ"] is env_snapshot
+    assert captured["env_files"] == []
 
 
 def test_agent_trace_logging_records_error_for_first_agent_provider_failure(
