@@ -199,8 +199,13 @@ Existing callers that do not send the new fields remain valid.
   - evidence summary
 - `agentTrace`
   - node names
+  - request names
+  - provider names
+  - model names
   - durations
   - degradation markers
+  - request summary
+  - response summary
   - graph version
 
 `executionMode` remains backward compatible:
@@ -469,19 +474,111 @@ Phase one keeps the existing trace-oriented mindset and extends it to the graph 
 ### Required Telemetry
 
 - request id
+- trace id
 - graph version
 - node start and finish logs
+- graph transition logs
 - node duration
+- request name
+- provider name
 - model name
+- input summary for each agent request
+- output summary for each agent response
+- retrieval summary:
+  - candidate counts
+  - vector hit counts
+  - filter drop counts
 - fallback cause
 - final recommendation status
 - compliance verdict
+- source freshness
+- token usage when available from the provider
+
+### Required Agent Log Events
+
+Each agent-capable node must emit structured logs for the full request lifecycle:
+
+- `agent_request_start`
+  - request id
+  - trace id
+  - node name
+  - request name
+  - provider name
+  - model name
+  - graph version
+  - sanitized input summary
+- `agent_request_finish`
+  - request id
+  - trace id
+  - node name
+  - request name
+  - provider name
+  - model name
+  - duration milliseconds
+  - sanitized response summary
+  - token usage when available
+- `agent_request_error`
+  - request id
+  - trace id
+  - node name
+  - request name
+  - provider name
+  - model name
+  - duration milliseconds
+  - error type
+  - sanitized error message
+  - fallback action
+
+The logged input and output content must be sufficient to trace what was asked and what the model returned. By default this means redacted, truncated summaries of:
+
+- the user- and tool-derived prompt payload passed into the node
+- the structured JSON or normalized text returned by the provider
+
+### Content Capture Rules
+
+Phase one distinguishes between default tracking logs and raw capture:
+
+- Default behavior:
+  - log sanitized request summaries
+  - log sanitized response summaries
+  - redact obvious secrets and personal identifiers where feasible
+  - trim oversized content to bounded lengths
+- Opt-in raw capture:
+  - persist raw provider request and response payloads only when an environment flag is enabled
+  - write captures to a controlled local directory for debugging
+  - keep raw capture disabled by default in normal production operation
+
+This allows developers to track agent prompts, answers, and model routing in day-to-day logs without turning every request into unrestricted raw transcript storage.
+
+### Graph-Level Events
+
+The runtime should also emit non-agent graph lifecycle logs:
+
+- `graph_run_start`
+- `graph_node_transition`
+- `graph_run_finish`
+
+These events should capture:
+
+- request id
+- trace id
+- graph version
+- current node
+- next node when applicable
+- final status:
+  - `ready`
+  - `limited`
+  - `blocked`
+  - `rules_fallback`
 
 ### Logging Rules
 
 - Logs must remain structured and safe for uvicorn output.
 - Raw provider payload capture remains opt-in through environment configuration.
+- Logs must include enough request and response content to trace agent behavior without requiring raw capture in the common case.
+- Logged request and response content should prefer redacted summaries over full transcripts by default.
 - User-facing responses must never leak internal prompt text or provider exceptions verbatim.
+- Sensitive request material such as credentials, tokens, and high-risk personal identifiers must never be emitted intentionally.
 
 ## Testing Strategy
 
@@ -502,6 +599,8 @@ Phase one keeps the existing trace-oriented mindset and extends it to the graph 
 - compliance revise-to-limited path
 - compliance blocked path
 - emergency service-level fallback path
+- agent request logging path with start, finish, and error events
+- raw capture disabled-by-default behavior
 
 ### API Contract Tests
 
@@ -515,6 +614,7 @@ Phase one keeps the existing trace-oriented mindset and extends it to the graph 
 - existing recommendation sections still populate funds, wealth management, and stocks in compatible structure
 - warnings still surface in predictable order
 - agent trace still records request names and stage timing
+- structured logs still record request names, model names, request summaries, and response summaries
 
 ## Migration Plan
 
@@ -569,3 +669,4 @@ The design is complete when the implementation can satisfy all of the following:
 7. The response can expose additive compliance, evidence, and trace fields without breaking older clients.
 8. Upstream agent failures degrade in layers, while compliance remains a hard gate.
 9. Tests cover full, degraded, limited, and blocked paths.
+10. Structured logs record agent requests, response summaries, provider and model names, and graph-level transitions for every recommendation run.
