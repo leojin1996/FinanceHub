@@ -369,10 +369,72 @@ def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
     )
 
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
-    event_messages = [record.message for record in caplog.records if "event=" in record.message]
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("provider_")
+    ]
     assert len(event_messages) == 2
-    assert "event=provider_structured_invalid" in event_messages[0]
-    assert "event=provider_fallback_success" in event_messages[1]
+    assert event_messages[0] == (
+        'provider_structured_invalid request_name=market_intelligence '
+        'model_name=claude-sonnet-4-6 '
+        'error_message="provider response has no extractable structured content"'
+    )
+    assert event_messages[1] == (
+        "provider_fallback_success request_name=market_intelligence "
+        "model_name=claude-sonnet-4-6"
+    )
+
+
+def test_anthropic_provider_logs_fallback_invalid(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = _SequentialFakeHttpClient(
+        [
+            {"content": []},
+            {"content": []},
+        ]
+    )
+    provider = AnthropicChatProvider(
+        ProviderConfig(
+            name=ANTHROPIC_PROVIDER_NAME,
+            kind="anthropic",
+            api_key="anthropic-test-key",
+            base_url="https://oneapi.hk/v1",
+        ),
+        http_client=http_client,
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=provider_module.__name__)
+
+    with pytest.raises(
+        LLMInvalidResponseError,
+        match="provider response has no extractable structured content",
+    ):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+                {"role": "user", "content": "Return summary_zh and summary_en."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+            request_name="market_intelligence",
+        )
+
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("provider_")
+    ]
+    assert len(event_messages) == 2
+    assert event_messages[0] == (
+        'provider_structured_invalid request_name=market_intelligence '
+        'model_name=claude-sonnet-4-6 '
+        'error_message="provider response has no extractable structured content"'
+    )
+    assert event_messages[1] == (
+        'provider_fallback_invalid request_name=market_intelligence '
+        'model_name=claude-sonnet-4-6 '
+        'error_message="provider response has no extractable structured content"'
+    )
 
 
 def test_product_ranking_output_rejects_empty_ranked_ids() -> None:

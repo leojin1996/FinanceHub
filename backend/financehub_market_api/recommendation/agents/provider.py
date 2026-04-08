@@ -466,9 +466,9 @@ class AnthropicChatProvider:
             return
 
         request_label = request_name or "unknown"
-        message = f"event={event} request_name={request_label} model_name={model_name}"
+        message = f"{event} request_name={request_label} model_name={model_name}"
         if error_message is not None:
-            message = f"{message} error_message={error_message}"
+            message = f'{message} error_message="{error_message}"'
         LOGGER.info(message)
 
     def _capture_raw_response(
