@@ -10,6 +10,13 @@ def _build_payload() -> RecommendationGenerationRequest:
     return RecommendationGenerationRequest.model_validate(
         {
             "userIntentText": "我有 10 万闲钱，想存一年，不想亏本",
+            "conversationMessages": [
+                {
+                    "role": "user",
+                    "content": "我有 10 万闲钱，想存一年，不想亏本",
+                    "occurredAt": "2026-04-08T10:00:00Z",
+                }
+            ],
             "historicalHoldings": [],
             "historicalTransactions": [],
             "includeAggressiveOption": True,
@@ -40,16 +47,24 @@ def _build_payload() -> RecommendationGenerationRequest:
 def test_build_initial_graph_state_seeds_request_context_and_trace_defaults() -> None:
     payload = _build_payload()
     state = build_initial_graph_state(payload)
+    second_state = build_initial_graph_state(_build_payload())
 
     assert state["request_context"].user_intent_text == "我有 10 万闲钱，想存一年，不想亏本"
     assert state["request_context"].request_id
     assert state["request_context"].trace_id
+    assert state["request_context"].request_id != second_state["request_context"].request_id
+    assert state["request_context"].trace_id != second_state["request_context"].trace_id
     assert state["warnings"] == []
     assert state["agent_trace"] == []
     assert state["final_response"] is None
 
     payload.userIntentText = "变更后的意图"
+    payload.conversationMessages[0].content = "修改后的对话内容"
     assert state["request_context"].payload.userIntentText == "我有 10 万闲钱，想存一年，不想亏本"
+    assert (
+        state["request_context"].payload.conversationMessages[0].content
+        == "我有 10 万闲钱，想存一年，不想亏本"
+    )
 
 
 def test_append_helpers_preserve_existing_state() -> None:
