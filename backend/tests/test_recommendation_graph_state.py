@@ -38,25 +38,33 @@ def _build_payload() -> RecommendationGenerationRequest:
 
 
 def test_build_initial_graph_state_seeds_request_context_and_trace_defaults() -> None:
-    state = build_initial_graph_state(_build_payload())
+    payload = _build_payload()
+    state = build_initial_graph_state(payload)
 
     assert state["request_context"].user_intent_text == "我有 10 万闲钱，想存一年，不想亏本"
+    assert state["request_context"].request_id
+    assert state["request_context"].trace_id
     assert state["warnings"] == []
     assert state["agent_trace"] == []
     assert state["final_response"] is None
 
+    payload.userIntentText = "变更后的意图"
+    assert state["request_context"].payload.userIntentText == "我有 10 万闲钱，想存一年，不想亏本"
+
 
 def test_append_helpers_preserve_existing_state() -> None:
     state = build_initial_graph_state(_build_payload())
+    original_warnings = state["warnings"]
+    original_agent_trace = state["agent_trace"]
 
-    append_warning(
+    warning_state = append_warning(
         state,
         stage="market_intelligence",
         code="provider_error",
         message="timeout",
     )
-    append_agent_trace_event(
-        state,
+    trace_state = append_agent_trace_event(
+        warning_state,
         node_name="market_intelligence",
         request_name="market_intelligence",
         status="error",
@@ -64,5 +72,11 @@ def test_append_helpers_preserve_existing_state() -> None:
         response_summary="timeout",
     )
 
-    assert state["warnings"][0].stage == "market_intelligence"
-    assert state["agent_trace"][0].requestName == "market_intelligence"
+    assert state["warnings"] == []
+    assert state["agent_trace"] == []
+    assert warning_state["warnings"] is not original_warnings
+    assert warning_state["agent_trace"] is original_agent_trace
+    assert trace_state["warnings"] is warning_state["warnings"]
+    assert trace_state["agent_trace"] is not original_agent_trace
+    assert trace_state["warnings"][0].stage == "market_intelligence"
+    assert trace_state["agent_trace"][0].requestName == "market_intelligence"

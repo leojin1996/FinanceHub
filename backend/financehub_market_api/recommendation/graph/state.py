@@ -80,7 +80,7 @@ def build_initial_graph_state(payload: RecommendationGenerationRequest) -> Recom
     return {
         "request_context": RequestContext(
             user_intent_text=payload.userIntentText,
-            payload=payload,
+            payload=payload.model_copy(deep=True),
         ),
         "user_intelligence": None,
         "market_intelligence": None,
@@ -99,8 +99,13 @@ def append_warning(
     code: str,
     message: str,
 ) -> RecommendationGraphState:
-    state["warnings"].append(RecommendationWarning(stage=stage, code=code, message=message))
-    return state
+    return {
+        **state,
+        "warnings": [
+            *state["warnings"],
+            RecommendationWarning(stage=stage, code=code, message=message),
+        ],
+    }
 
 
 def append_agent_trace_event(
@@ -115,16 +120,19 @@ def append_agent_trace_event(
     request_summary: str | None = None,
     response_summary: str | None = None,
 ) -> RecommendationGraphState:
-    state["agent_trace"].append(
-        AgentTraceEvent(
-            nodeName=node_name,
-            requestName=request_name,
-            status=status,
-            providerName=provider_name,
-            modelName=model_name,
-            durationMs=duration_ms,
-            requestSummary=request_summary,
-            responseSummary=response_summary,
-        )
-    )
-    return state
+    return {
+        **state,
+        "agent_trace": [
+            *state["agent_trace"],
+            AgentTraceEvent(
+                nodeName=node_name,
+                requestName=request_name,
+                status=status,
+                providerName=provider_name,
+                modelName=model_name,
+                durationMs=duration_ms,
+                requestSummary=request_summary,
+                responseSummary=response_summary,
+            ),
+        ],
+    }
