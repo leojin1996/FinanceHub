@@ -64,8 +64,19 @@ def test_graph_runtime_returns_limited_response_when_compliance_revises() -> Non
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
     assert response.recommendationStatus == "limited"
+    assert response.reviewStatus == "partial_pass"
     assert response.complianceReview is not None
     assert response.complianceReview.verdict == "revise_conservative"
+    assert response.sections.stocks.items == []
+    assert all(
+        item.riskLevel in {"R1", "R2"}
+        for section in (
+            response.sections.funds.items,
+            response.sections.wealthManagement.items,
+            response.sections.stocks.items,
+        )
+        for item in section
+    )
 
 
 class _SingleMemoryStore:

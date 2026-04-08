@@ -26,6 +26,7 @@ _RISK_PROFILE_TO_TIER = {
     "growth": "R4",
     "aggressive": "R5",
 }
+_RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
 
 _PROFILE_LABELS_ZH = {
     "conservative": "保守型",
@@ -190,6 +191,7 @@ def compliance_risk_officer_node(
 
     candidates_by_id = {candidate.id: candidate for candidate in product_candidates}
     selected_candidates: list[CandidateProduct] = []
+    selected_items: list[RetrievedCandidate] = []
     for item in retrieval_context.candidates:
         if item.runtime_candidate is not None:
             snapshot = item.runtime_candidate
@@ -208,10 +210,12 @@ def compliance_risk_officer_node(
                     tags_en=list(snapshot.tags_en),
                 )
             )
+            selected_items.append(item)
             continue
         candidate = candidates_by_id.get(item.product_id)
         if candidate is not None:
             selected_candidates.append(candidate)
+            selected_items.append(item)
 
     review_result = compliance_review_service.review(
         risk_tier=user_intelligence.risk_tier,
@@ -230,6 +234,25 @@ def compliance_risk_officer_node(
     }
 
     if review_result.verdict != "approve":
+        allowed_risk_level = _RISK_ORDER.get(user_intelligence.risk_tier, 0)
+        filtered_candidates: list[RetrievedCandidate] = []
+        filtered_out_reasons = list(retrieval_context.filtered_out_reasons)
+        for item, candidate in zip(selected_items, selected_candidates):
+            candidate_risk_level = _RISK_ORDER.get(candidate.risk_level, 99)
+            if candidate_risk_level <= allowed_risk_level:
+                filtered_candidates.append(item)
+            else:
+                filtered_out_reasons.append(
+                    f"{candidate.id} filtered: risk {candidate.risk_level} exceeds {user_intelligence.risk_tier}"
+                )
+        next_state = {
+            **next_state,
+            "retrieval_context": RetrievalContext(
+                recalled_memories=list(retrieval_context.recalled_memories),
+                candidates=filtered_candidates,
+                filtered_out_reasons=filtered_out_reasons,
+            ),
+        }
         next_state = append_warning(
             next_state,
             stage="compliance_review",

@@ -58,7 +58,9 @@ def test_conservative_profile_keeps_stock_exposure_small_and_review_partial() ->
     assert isinstance(response, RecommendationResponse)
     assert response.allocationDisplay.stock == 5
     assert response.reviewStatus == "partial_pass"
-    assert response.sections.stocks.items
+    assert response.recommendationStatus == "limited"
+    assert response.complianceReview is not None
+    assert response.sections.stocks.items == []
 
 
 def test_balanced_profile_returns_grouped_sections_and_aggressive_option() -> None:
@@ -172,5 +174,7 @@ def test_domain_service_returns_limited_response_for_high_risk_candidates() -> N
 
     assert response.executionMode == "agent_assisted"
     assert response.recommendationStatus == "limited"
+    assert response.reviewStatus == "partial_pass"
     assert response.complianceReview is not None
     assert response.complianceReview.verdict == "revise_conservative"
+    assert response.sections.stocks.items == []

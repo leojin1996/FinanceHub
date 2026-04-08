@@ -213,7 +213,7 @@ def assemble_graph_recommendation_response(
             ),
         )
 
-    review_status = "partial_pass" if risk_profile in {"conservative", "stable"} else "pass"
+    review_status = "pass" if recommendation_status == "ready" else "partial_pass"
     why_this_plan_zh = [
         f"您的风险画像为{profile_label_zh}，主方案优先兼顾稳健和流动性。",
         "该建议由多代理流程串行生成，并经过合规节点审阅。",
