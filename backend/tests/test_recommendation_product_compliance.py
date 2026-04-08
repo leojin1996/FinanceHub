@@ -37,6 +37,34 @@ def test_product_retrieval_service_filters_and_orders_candidates() -> None:
     assert [candidate.id for candidate in candidates] == ["fund-002", "fund-001"]
 
 
+def test_product_retrieval_service_filters_out_disallowed_risk_candidates() -> None:
+    service = ProductRetrievalService(vector_store=_StaticVectorStore())
+
+    candidates = service.retrieve(
+        query_text="一年期稳健债券",
+        candidates=[_candidate("fund-001", "R2"), _candidate("fund-002", "R4")],
+        allowed_risk_levels={"R2"},
+    )
+
+    assert [candidate.id for candidate in candidates] == ["fund-001"]
+
+
+def test_product_retrieval_service_appends_allowed_non_hit_candidates_in_input_order() -> None:
+    service = ProductRetrievalService(vector_store=_StaticVectorStore())
+
+    candidates = service.retrieve(
+        query_text="一年期稳健债券",
+        candidates=[
+            _candidate("fund-003", "R2"),
+            _candidate("fund-002", "R2"),
+            _candidate("fund-004", "R2"),
+        ],
+        allowed_risk_levels={"R2"},
+    )
+
+    assert [candidate.id for candidate in candidates] == ["fund-002", "fund-003", "fund-004"]
+
+
 def test_compliance_review_service_revises_conservative_when_risk_exceeds_profile() -> None:
     service = ComplianceReviewService()
 
@@ -44,3 +72,11 @@ def test_compliance_review_service_revises_conservative_when_risk_exceeds_profil
 
     assert review.verdict == "revise_conservative"
     assert review.disclosures_zh
+
+
+def test_compliance_review_service_fails_closed_on_unknown_candidate_risk_level() -> None:
+    service = ComplianceReviewService()
+
+    review = service.review(risk_tier="R2", candidates=[_candidate("fund-001", "RX")])
+
+    assert review.verdict == "revise_conservative"
