@@ -130,12 +130,28 @@ def _assemble_graph_sections(graph_state: RecommendationGraphState) -> Recommend
 
     if retrieval_context is not None:
         for item in retrieval_context.candidates:
-            product = _PRODUCT_LOOKUP.get(item.product_id)
-            api_product = (
-                product.to_api_model()
-                if product is not None
-                else _fallback_graph_product(item.product_id, item.category, item.rationale)
-            )
+            if item.runtime_candidate is not None:
+                snapshot = item.runtime_candidate
+                api_product = RecommendationProduct(
+                    id=snapshot.id,
+                    category=snapshot.category,
+                    code=snapshot.code,
+                    liquidity=snapshot.liquidity,
+                    nameZh=snapshot.name_zh,
+                    nameEn=snapshot.name_en,
+                    rationaleZh=snapshot.rationale_zh,
+                    rationaleEn=snapshot.rationale_en,
+                    riskLevel=snapshot.risk_level,
+                    tagsZh=list(snapshot.tags_zh),
+                    tagsEn=list(snapshot.tags_en),
+                )
+            else:
+                product = _PRODUCT_LOOKUP.get(item.product_id)
+                api_product = (
+                    product.to_api_model()
+                    if product is not None
+                    else _fallback_graph_product(item.product_id, item.category, item.rationale)
+                )
             if item.category == "fund":
                 funds.append(api_product)
             elif item.category == "wealth_management":

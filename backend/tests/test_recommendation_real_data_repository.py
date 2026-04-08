@@ -173,5 +173,6 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_re
     }
     assert response.sections.funds.titleZh == "基金推荐"
     assert response.sections.wealthManagement.titleZh == "银行理财推荐"
+    assert response.executionMode == "rules_fallback"
     assert response.sections.funds.items[0].nameZh == "稳健债券A"
     assert response.sections.wealthManagement.items[0].nameZh == "华宝添益"

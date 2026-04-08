@@ -38,11 +38,26 @@ class MarketIntelligenceState(BaseModel):
     evidence: list[MarketEvidenceItem] = Field(default_factory=list)
 
 
+class RuntimeCandidateSnapshot(BaseModel):
+    id: str
+    category: str
+    code: str | None = None
+    liquidity: str | None = None
+    name_zh: str
+    name_en: str
+    rationale_zh: str
+    rationale_en: str
+    risk_level: str
+    tags_zh: list[str] = Field(default_factory=list)
+    tags_en: list[str] = Field(default_factory=list)
+
+
 class RetrievedCandidate(BaseModel):
     product_id: str
     category: str
     score: float
     rationale: str
+    runtime_candidate: RuntimeCandidateSnapshot | None = None
 
 
 class RetrievalContext(BaseModel):

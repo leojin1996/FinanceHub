@@ -9,6 +9,7 @@ from financehub_market_api.recommendation.graph.state import (
     RecommendationGraphState,
     RetrievalContext,
     RetrievedCandidate,
+    RuntimeCandidateSnapshot,
     UserIntelligence,
     append_agent_trace_event,
     append_warning,
@@ -143,6 +144,19 @@ def product_match_expert_node(
                 category=candidate.category,
                 score=max(0.01, 1.0 - index * 0.08),
                 rationale=candidate.rationale_zh,
+                runtime_candidate=RuntimeCandidateSnapshot(
+                    id=candidate.id,
+                    category=candidate.category,
+                    code=candidate.code,
+                    liquidity=candidate.liquidity,
+                    name_zh=candidate.name_zh,
+                    name_en=candidate.name_en,
+                    rationale_zh=candidate.rationale_zh,
+                    rationale_en=candidate.rationale_en,
+                    risk_level=candidate.risk_level,
+                    tags_zh=list(candidate.tags_zh),
+                    tags_en=list(candidate.tags_en),
+                ),
             )
             for index, candidate in enumerate(retrieved)
         ],
@@ -175,11 +189,29 @@ def compliance_risk_officer_node(
         raise ValueError("user_intelligence and retrieval_context are required for compliance")
 
     candidates_by_id = {candidate.id: candidate for candidate in product_candidates}
-    selected_candidates = [
-        candidates_by_id[item.product_id]
-        for item in retrieval_context.candidates
-        if item.product_id in candidates_by_id
-    ]
+    selected_candidates: list[CandidateProduct] = []
+    for item in retrieval_context.candidates:
+        if item.runtime_candidate is not None:
+            snapshot = item.runtime_candidate
+            selected_candidates.append(
+                CandidateProduct(
+                    id=snapshot.id,
+                    category=snapshot.category,
+                    code=snapshot.code,
+                    liquidity=snapshot.liquidity,
+                    name_zh=snapshot.name_zh,
+                    name_en=snapshot.name_en,
+                    rationale_zh=snapshot.rationale_zh,
+                    rationale_en=snapshot.rationale_en,
+                    risk_level=snapshot.risk_level,
+                    tags_zh=list(snapshot.tags_zh),
+                    tags_en=list(snapshot.tags_en),
+                )
+            )
+            continue
+        candidate = candidates_by_id.get(item.product_id)
+        if candidate is not None:
+            selected_candidates.append(candidate)
 
     review_result = compliance_review_service.review(
         risk_tier=user_intelligence.risk_tier,
