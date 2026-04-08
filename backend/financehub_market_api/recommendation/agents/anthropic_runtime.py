@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping
 
 from pydantic import ValidationError
 
@@ -19,6 +22,8 @@ from financehub_market_api.recommendation.agents.provider import (
     DEFAULT_AGENT_MODEL_ROUTES,
     LLMInvalidResponseError,
     LLMProviderError,
+    _build_env_values,
+    _is_agent_trace_logging_enabled,
     build_provider,
 )
 from financehub_market_api.recommendation.schemas import (
@@ -29,10 +34,39 @@ from financehub_market_api.recommendation.schemas import (
     UserProfile,
 )
 
+LOGGER = logging.getLogger(__name__)
+
 _EMPTY_PROVIDER_RESPONSE_MARKERS = (
     "provider response has no content blocks",
     "provider response has no text content block",
 )
+_MAX_TRACE_STRING_LENGTH = 240
+_MAX_TRACE_LIST_ITEMS = 8
+_MAX_TRACE_OBJECT_KEYS = 16
+
+
+def _trim_trace_value(value: object) -> object:
+    if isinstance(value, str):
+        if len(value) <= _MAX_TRACE_STRING_LENGTH:
+            return value
+        return f"{value[:_MAX_TRACE_STRING_LENGTH]}..."
+
+    if isinstance(value, Mapping):
+        trimmed: dict[str, object] = {}
+        for index, (key, nested_value) in enumerate(value.items()):
+            if index >= _MAX_TRACE_OBJECT_KEYS:
+                break
+            trimmed[str(key)] = _trim_trace_value(nested_value)
+        return trimmed
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_trim_trace_value(item) for item in value[:_MAX_TRACE_LIST_ITEMS]]
+
+    return value
+
+
+def _response_summary(payload: Mapping[str, object]) -> str:
+    return json.dumps(_trim_trace_value(payload), ensure_ascii=False, sort_keys=True)
 
 
 def _render_candidates(candidates: list[CandidateProduct]) -> str:
@@ -152,8 +186,17 @@ class _BaseStructuredOutputAgent:
         user_prompt: str,
         response_schema: dict[str, object],
     ) -> dict[str, object]:
+        env_values = _build_env_values()
+        trace_logs_enabled = _is_agent_trace_logging_enabled(env_values)
+        started_at = time.perf_counter()
+        if trace_logs_enabled:
+            LOGGER.info(
+                "agent_request_start request_name=%s model_name=%s",
+                self._request_name,
+                self._model_name,
+            )
         try:
-            return self._provider.chat_json(
+            payload = self._provider.chat_json(
                 model_name=self._model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -163,10 +206,44 @@ class _BaseStructuredOutputAgent:
                 timeout_seconds=self._request_timeout_seconds,
                 request_name=self._request_name,
             )
-        except LLMInvalidResponseError:
+        except LLMInvalidResponseError as exc:
+            if trace_logs_enabled:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                LOGGER.info(
+                    "agent_request_error request_name=%s model_name=%s duration_ms=%s "
+                    "error_type=%s error_message=%s",
+                    self._request_name,
+                    self._model_name,
+                    duration_ms,
+                    type(exc).__name__,
+                    json.dumps(str(exc), ensure_ascii=False),
+                )
             raise
         except Exception as exc:  # noqa: BLE001
-            raise LLMProviderError(f"structured-output provider request failed: {exc}") from exc
+            wrapped_error = LLMProviderError(f"structured-output provider request failed: {exc}")
+            if trace_logs_enabled:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                LOGGER.info(
+                    "agent_request_error request_name=%s model_name=%s duration_ms=%s "
+                    "error_type=%s error_message=%s",
+                    self._request_name,
+                    self._model_name,
+                    duration_ms,
+                    type(wrapped_error).__name__,
+                    json.dumps(str(wrapped_error), ensure_ascii=False),
+                )
+            raise wrapped_error from exc
+
+        if trace_logs_enabled:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            LOGGER.info(
+                "agent_request_finish request_name=%s model_name=%s duration_ms=%s response_summary=%s",
+                self._request_name,
+                self._model_name,
+                duration_ms,
+                _response_summary(payload),
+            )
+        return payload
 
 
 class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):

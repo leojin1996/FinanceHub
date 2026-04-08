@@ -1,6 +1,9 @@
+import logging
+
 import httpx
 import pytest
 
+from financehub_market_api.recommendation.agents import anthropic_runtime as runtime_module
 from financehub_market_api.recommendation_flow import (
     build_recommendation_context,
     run_recommendation_flow,
@@ -326,6 +329,69 @@ def test_runtime_threads_request_name_across_stages() -> None:
         "stock_selection",
         "explanation",
     ]
+
+
+def test_agent_trace_logging_records_start_and_finish_with_response_summary(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=runtime_module.__name__)
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=provider,
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("agent_request_")
+    ]
+    assert any(message.startswith("agent_request_start") for message in event_messages)
+    finish_messages = [message for message in event_messages if message.startswith("agent_request_finish")]
+    assert finish_messages
+    assert all("response_summary=" in message for message in finish_messages)
+
+
+def test_agent_trace_logging_records_error_for_first_agent_provider_failure(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=runtime_module.__name__)
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=_SequenceProvider([httpx.ReadTimeout("boom")]),
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "rules_fallback"
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("agent_request_")
+    ]
+    error_messages = [message for message in event_messages if message.startswith("agent_request_error")]
+    assert any("request_name=user_profile" in message for message in error_messages)
+    assert any(
+        'error_message="structured-output provider request failed: boom"' in message
+        for message in error_messages
+    )
 
 
 def test_runtime_rejects_non_anthropic_agent_route() -> None:
