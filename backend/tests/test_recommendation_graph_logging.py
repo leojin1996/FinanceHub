@@ -56,6 +56,14 @@ def test_structured_executor_logs_start_and_finish_with_summaries(
     assert payload["summary_zh"] == "稳健"
     assert any("agent_request_start" in record.message for record in caplog.records)
     assert any("agent_request_finish" in record.message for record in caplog.records)
+    assert any(
+        "agent_request_start" in record.message and "request_summary=" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "agent_request_finish" in record.message and "response_summary=" in record.message
+        for record in caplog.records
+    )
 
 
 def test_structured_executor_logs_error_with_fallback_action(
@@ -79,3 +87,8 @@ def test_structured_executor_logs_error_with_fallback_action(
         )
 
     assert any("agent_request_error" in record.message for record in caplog.records)
+    assert any(
+        "agent_request_error" in record.message
+        and "use deterministic profile inference" in record.message
+        for record in caplog.records
+    )
