@@ -47,7 +47,11 @@ def _trim_trace_value(value: object) -> object:
 
 
 def summarize_payload(payload: Mapping[str, object]) -> str:
-    return json.dumps(_trim_trace_value(payload), ensure_ascii=False, sort_keys=True)
+    trimmed_payload = _trim_trace_value(payload)
+    try:
+        return json.dumps(trimmed_payload, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr(trimmed_payload)
 
 
 class StructuredAgentExecutor:
@@ -79,7 +83,7 @@ class StructuredAgentExecutor:
             {
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
-                "response_schema": dict(response_schema),
+                "response_schema": response_schema,
             }
         )
         LOGGER.info(
