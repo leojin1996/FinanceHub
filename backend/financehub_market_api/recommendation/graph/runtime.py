@@ -34,6 +34,7 @@ class GraphServices:
     product_retrieval: ProductRetrievalService
     compliance_review: ComplianceReviewService
     product_candidates: list[CandidateProduct]
+    candidate_repository: CandidateRepository | None = None
 
 
 class _StaticMemoryStore:
@@ -68,9 +69,9 @@ def _build_product_candidates(repository: CandidateRepository) -> list[Candidate
 class RecommendationGraphRuntime:
     def __init__(self, services: GraphServices) -> None:
         self._services = services
-        self._graph = self._build_graph()
+        self._graph = self._build_graph(services)
 
-    def _build_graph(self):
+    def _build_graph(self, services: GraphServices):
         graph = StateGraph(RecommendationGraphState)
 
         graph.add_node("user_profile_analyst", user_profile_analyst_node)
@@ -78,24 +79,24 @@ class RecommendationGraphRuntime:
             "market_intelligence",
             lambda state: market_intelligence_node(
                 state,
-                market_intelligence_service=self._services.market_intelligence,
+                market_intelligence_service=services.market_intelligence,
             ),
         )
         graph.add_node(
             "product_match_expert",
             lambda state: product_match_expert_node(
                 state,
-                product_retrieval_service=self._services.product_retrieval,
-                memory_recall_service=self._services.memory_recall,
-                product_candidates=self._services.product_candidates,
+                product_retrieval_service=services.product_retrieval,
+                memory_recall_service=services.memory_recall,
+                product_candidates=services.product_candidates,
             ),
         )
         graph.add_node(
             "compliance_risk_officer",
             lambda state: compliance_risk_officer_node(
                 state,
-                compliance_review_service=self._services.compliance_review,
-                product_candidates=self._services.product_candidates,
+                compliance_review_service=services.compliance_review,
+                product_candidates=services.product_candidates,
             ),
         )
         graph.add_node("manager_coordinator", manager_coordinator_node)
@@ -116,21 +117,42 @@ class RecommendationGraphRuntime:
         graph.add_edge("manager_coordinator", END)
         return graph.compile()
 
+    def _services_for_request(self) -> GraphServices:
+        repository = self._services.candidate_repository
+        if repository is None:
+            return self._services
+
+        product_candidates = _build_product_candidates(repository)
+        return replace(
+            self._services,
+            product_retrieval=ProductRetrievalService(
+                vector_store=_StaticVectorStore(product_candidates)
+            ),
+            product_candidates=product_candidates,
+        )
+
     def run(self, payload: RecommendationGenerationRequest) -> RecommendationGraphState:
         initial_state = build_initial_graph_state(payload)
-        final_state = self._graph.invoke(initial_state)
+        services = self._services_for_request()
+        graph = self._graph if services is self._services else self._build_graph(services)
+        final_state = graph.invoke(initial_state)
         return final_state
 
     @classmethod
-    def with_default_services(cls) -> RecommendationGraphRuntime:
-        candidates = _build_product_candidates(RealDataCandidateRepository())
+    def with_default_services(
+        cls,
+        *,
+        repository: CandidateRepository | None = None,
+    ) -> RecommendationGraphRuntime:
+        candidate_repository = repository or RealDataCandidateRepository()
         return cls(
             GraphServices(
                 market_intelligence=MarketIntelligenceService(),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
-                product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore(candidates)),
+                product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore([])),
                 compliance_review=ComplianceReviewService(),
-                product_candidates=candidates,
+                product_candidates=[],
+                candidate_repository=candidate_repository,
             )
         )
 

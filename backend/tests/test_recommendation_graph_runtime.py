@@ -100,6 +100,53 @@ class _FakeFrame:
             yield index, row
 
 
+class _RefreshingRepository:
+    def __init__(self) -> None:
+        self._fund_calls = 0
+
+    def list_funds(self, user_profile) -> list[CandidateProduct]:
+        del user_profile
+        self._fund_calls += 1
+        fund_name = "首次快照基金" if self._fund_calls == 1 else "恢复后基金"
+        return [
+            CandidateProduct(
+                id="fund-001",
+                category="fund",
+                code="000001",
+                liquidity="T+1",
+                name_zh=fund_name,
+                name_en=fund_name,
+                rationale_zh="测试基金候选。",
+                rationale_en="Test fund candidate.",
+                risk_level="R2",
+                tags_zh=["测试"],
+                tags_en=["test"],
+            )
+        ]
+
+    def list_wealth_management(self, user_profile) -> list[CandidateProduct]:
+        del user_profile
+        return [
+            CandidateProduct(
+                id="wm-001",
+                category="wealth_management",
+                code="511990",
+                liquidity="T+0",
+                name_zh="稳定现金管理",
+                name_en="Stable Cash Management",
+                rationale_zh="测试现金管理候选。",
+                rationale_en="Test cash management candidate.",
+                risk_level="R1",
+                tags_zh=["测试"],
+                tags_en=["test"],
+            )
+        ]
+
+    def list_stocks(self, user_profile) -> list[CandidateProduct]:
+        del user_profile
+        return []
+
+
 def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> None:
     runtime_candidate = CandidateProduct(
         id="fund-001",
@@ -175,3 +222,17 @@ def test_app_default_graph_runtime_uses_real_repository_candidates(monkeypatch) 
     assert response.executionMode == "agent_assisted"
     assert response.sections.funds.items[0].nameZh == "稳健债券A"
     assert response.sections.wealthManagement.items[0].nameZh == "华宝添益"
+
+
+def test_app_default_graph_runtime_refreshes_repository_candidates_between_requests() -> None:
+    service = RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=_RefreshingRepository()
+        )
+    )
+
+    first_response = service.generate_recommendation(_build_generation_request("balanced"))
+    second_response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert first_response.sections.funds.items[0].nameZh == "首次快照基金"
+    assert second_response.sections.funds.items[0].nameZh == "恢复后基金"
