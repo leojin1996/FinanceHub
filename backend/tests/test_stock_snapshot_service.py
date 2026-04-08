@@ -100,12 +100,40 @@ def test_split_rankings_returns_top_and_bottom_movers() -> None:
     top_gainers, top_losers = split_rankings(rows, limit=2)
 
     assert [item.model_dump() for item in top_gainers] == [
-        {"name": "宁德时代", "value": "+6.2%"},
-        {"name": "比亚迪", "value": "+4.8%"},
+        {
+            "code": "300750",
+            "name": "宁德时代",
+            "price": "188.55",
+            "priceValue": 188.55,
+            "change": "+11.01",
+            "changePercent": pytest.approx(6.2014, abs=1e-4),
+        },
+        {
+            "code": "002594",
+            "name": "比亚迪",
+            "price": "221.88",
+            "priceValue": 221.88,
+            "change": "+10.16",
+            "changePercent": pytest.approx(4.7988, abs=1e-4),
+        },
     ]
     assert [item.model_dump() for item in top_losers] == [
-        {"name": "招商银行", "value": "-3.5%"},
-        {"name": "贵州茅台", "value": "-0.6%"},
+        {
+            "code": "600036",
+            "name": "招商银行",
+            "price": "43.50",
+            "priceValue": 43.5,
+            "change": "-1.60",
+            "changePercent": pytest.approx(-3.5477, abs=1e-4),
+        },
+        {
+            "code": "600519",
+            "name": "贵州茅台",
+            "price": "1,608.00",
+            "priceValue": 1608.0,
+            "change": "-10.00",
+            "changePercent": pytest.approx(-0.618, abs=1e-4),
+        },
     ]
 
 
@@ -123,8 +151,22 @@ def test_split_rankings_returns_no_losers_when_all_rows_are_positive() -> None:
     top_gainers, top_losers = split_rankings(rows, limit=3)
 
     assert [item.model_dump() for item in top_gainers] == [
-        {"name": "比亚迪", "value": "+2.0%"},
-        {"name": "宁德时代", "value": "+1.0%"},
+        {
+            "code": "002594",
+            "name": "比亚迪",
+            "price": "102.00",
+            "priceValue": 102.0,
+            "change": "+2.00",
+            "changePercent": 2.0,
+        },
+        {
+            "code": "300750",
+            "name": "宁德时代",
+            "price": "101.00",
+            "priceValue": 101.0,
+            "change": "+1.00",
+            "changePercent": 1.0,
+        },
     ]
     assert top_losers == []
 
@@ -144,8 +186,22 @@ def test_split_rankings_returns_no_gainers_when_all_rows_are_negative() -> None:
 
     assert top_gainers == []
     assert [item.model_dump() for item in top_losers] == [
-        {"name": "比亚迪", "value": "-2.0%"},
-        {"name": "宁德时代", "value": "-1.0%"},
+        {
+            "code": "002594",
+            "name": "比亚迪",
+            "price": "98.00",
+            "priceValue": 98.0,
+            "change": "-2.00",
+            "changePercent": -2.0,
+        },
+        {
+            "code": "300750",
+            "name": "宁德时代",
+            "price": "99.00",
+            "priceValue": 99.0,
+            "change": "-1.00",
+            "changePercent": -1.0,
+        },
     ]
 
 
@@ -163,8 +219,22 @@ def test_split_rankings_uses_raw_change_for_near_ties() -> None:
     top_gainers, top_losers = split_rankings(rows, limit=2)
 
     assert [item.model_dump() for item in top_gainers] == [
-        {"name": "比亚迪", "value": "+1.0%"},
-        {"name": "宁德时代", "value": "+1.0%"},
+        {
+            "code": "002594",
+            "name": "比亚迪",
+            "price": "101.04",
+            "priceValue": 101.04,
+            "change": "+1.04",
+            "changePercent": pytest.approx(1.04, abs=1e-9),
+        },
+        {
+            "code": "300750",
+            "name": "宁德时代",
+            "price": "101.03",
+            "priceValue": 101.03,
+            "change": "+1.03",
+            "changePercent": pytest.approx(1.03, abs=1e-9),
+        },
     ]
     assert top_losers == []
 
