@@ -377,6 +377,58 @@ def test_post_recommendations_passes_risk_profile_and_returns_payload() -> None:
     assert isinstance(response.json()["warnings"], list)
 
 
+def test_generate_recommendations_accepts_extended_request_payload() -> None:
+    recommendation_service = FakeRecommendationService(_build_recommendation_response())
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "userIntentText": "稳健理财",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "稳健理财",
+                        "occurredAt": "2026-04-08T10:00:00Z",
+                    }
+                ],
+                "clientContext": {"channel": "web", "locale": "zh-CN"},
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    assert recommendation_service.last_generation_request is not None
+    assert recommendation_service.last_generation_request.userIntentText == "稳健理财"
+
+
 def test_post_recommendations_alias_accepts_legacy_payload() -> None:
     recommendation_service = FakeRecommendationService(_build_recommendation_response())
     client, clear = _install_override(

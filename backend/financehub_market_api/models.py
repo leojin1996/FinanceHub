@@ -11,6 +11,7 @@ RecommendationCategory = Literal["fund", "wealth_management", "stock"]
 ReviewStatus = Literal["pass", "partial_pass"]
 DimensionLevel = Literal["low", "mediumLow", "medium", "mediumHigh", "high"]
 ExecutionMode = Literal["agent_assisted", "rules_fallback"]
+RecommendationStatus = Literal["ready", "limited", "blocked"]
 
 
 class MetricCard(BaseModel):
@@ -146,12 +147,26 @@ class HistoricalTransaction(BaseModel):
     occurredAt: str | None = None
 
 
+class ConversationMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1)
+    occurredAt: str | None = None
+
+
+class RecommendationClientContext(BaseModel):
+    channel: str | None = None
+    locale: str | None = None
+
+
 class RecommendationGenerationRequest(BaseModel):
     riskAssessmentResult: RiskAssessmentResultPayload
     includeAggressiveOption: bool = True
     questionnaireAnswers: list[QuestionnaireAnswer] = Field(default_factory=list)
     historicalHoldings: list[HistoricalHolding] = Field(default_factory=list)
     historicalTransactions: list[HistoricalTransaction] = Field(default_factory=list)
+    userIntentText: str | None = None
+    conversationMessages: list[ConversationMessage] = Field(default_factory=list)
+    clientContext: RecommendationClientContext | None = None
 
 
 class AllocationDisplay(BaseModel):
@@ -217,6 +232,30 @@ class RecommendationWarning(BaseModel):
     message: str
 
 
+class ComplianceReviewPayload(BaseModel):
+    verdict: Literal["approve", "revise_conservative", "block"]
+    reasonSummary: LocalizedText
+    requiredDisclosures: LocalizedTextList
+    suitabilityNotes: LocalizedTextList
+
+
+class MarketEvidenceItem(BaseModel):
+    source: str
+    asOf: str
+    summary: LocalizedText
+
+
+class AgentTraceEvent(BaseModel):
+    nodeName: str
+    requestName: str
+    status: Literal["start", "finish", "error", "transition"]
+    providerName: str | None = None
+    modelName: str | None = None
+    durationMs: int | None = None
+    requestSummary: str | None = None
+    responseSummary: str | None = None
+
+
 class RecommendationResponse(BaseModel):
     aggressiveOption: RecommendationOption | None
     allocationDisplay: AllocationDisplay
@@ -229,3 +268,7 @@ class RecommendationResponse(BaseModel):
     summary: RecommendationSummary
     warnings: list[RecommendationWarning] = Field(default_factory=list)
     whyThisPlan: LocalizedTextList
+    recommendationStatus: RecommendationStatus = "ready"
+    complianceReview: ComplianceReviewPayload | None = None
+    marketEvidence: list[MarketEvidenceItem] = Field(default_factory=list)
+    agentTrace: list[AgentTraceEvent] = Field(default_factory=list)

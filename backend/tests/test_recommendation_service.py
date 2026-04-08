@@ -139,6 +139,62 @@ def test_domain_service_can_hide_aggressive_option_from_new_contract() -> None:
     assert response.aggressiveOption is None
 
 
+def test_generation_request_accepts_intent_and_conversation_messages() -> None:
+    intent_text = "我有 10 万闲钱，想存一年，不想亏本"
+    payload = RecommendationGenerationRequest.model_validate(
+        {
+            "userIntentText": intent_text,
+            "conversationMessages": [
+                {
+                    "role": "user",
+                    "content": intent_text,
+                    "occurredAt": "2026-04-08T10:00:00Z",
+                }
+            ],
+            "clientContext": {"channel": "web", "locale": "zh-CN"},
+            "historicalHoldings": [],
+            "historicalTransactions": [],
+            "includeAggressiveOption": True,
+            "questionnaireAnswers": [],
+            "riskAssessmentResult": {
+                "baseProfile": "balanced",
+                "dimensionLevels": {
+                    "capitalStability": "medium",
+                    "investmentExperience": "medium",
+                    "investmentHorizon": "medium",
+                    "returnObjective": "medium",
+                    "riskTolerance": "medium",
+                },
+                "dimensionScores": {
+                    "capitalStability": 12,
+                    "investmentExperience": 12,
+                    "investmentHorizon": 12,
+                    "returnObjective": 12,
+                    "riskTolerance": 12,
+                },
+                "finalProfile": "balanced",
+                "totalScore": 60,
+            },
+        }
+    )
+
+    assert payload.userIntentText == intent_text
+    assert payload.conversationMessages[0].role == "user"
+    assert payload.clientContext is not None
+    assert payload.clientContext.locale == "zh-CN"
+
+
+def test_recommendation_response_exposes_additive_graph_fields() -> None:
+    service = _build_api_service()
+
+    response = service.get_recommendation("balanced")
+
+    assert response.recommendationStatus == "ready"
+    assert response.complianceReview is None
+    assert response.marketEvidence == []
+    assert response.agentTrace == []
+
+
 def test_domain_service_returns_agent_generated_content_when_runtime_succeeds() -> None:
     anthropic_provider = _SequenceProvider(
         [
