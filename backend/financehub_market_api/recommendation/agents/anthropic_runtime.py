@@ -181,11 +181,13 @@ class _BaseStructuredOutputAgent:
         model_name: str,
         request_timeout_seconds: float,
         request_name: str,
+        trace_logs_enabled: bool,
     ) -> None:
         self._provider = provider
         self._model_name = model_name
         self._request_timeout_seconds = request_timeout_seconds
         self._request_name = request_name
+        self._trace_logs_enabled = trace_logs_enabled
 
     def _execute(
         self,
@@ -194,9 +196,8 @@ class _BaseStructuredOutputAgent:
         user_prompt: str,
         response_schema: dict[str, object],
     ) -> tuple[dict[str, object], _TraceRequestContext]:
-        env_values = _build_env_values()
         trace_context = _TraceRequestContext(
-            trace_enabled=_is_agent_trace_logging_enabled(env_values),
+            trace_enabled=self._trace_logs_enabled,
             started_at=time.perf_counter(),
         )
         if trace_context.trace_enabled:
@@ -471,10 +472,14 @@ class AnthropicMultiAgentRuntime:
         providers: Mapping[str, StructuredOutputProvider] | None = None,
         agent_routes: Mapping[str, AgentModelRoute] | None = None,
         request_timeout_seconds: float = 12.0,
+        trace_logs_enabled: bool | None = None,
     ) -> None:
         if provider is not None and providers is not None:
             raise ValueError("pass either provider/model_name or providers/agent_routes, not both")
         self._request_timeout_seconds = request_timeout_seconds
+        if trace_logs_enabled is None:
+            trace_logs_enabled = _is_agent_trace_logging_enabled(_build_env_values())
+        self._trace_logs_enabled = trace_logs_enabled
 
         if providers is None:
             legacy_model_name = model_name or "unconfigured"
@@ -552,7 +557,13 @@ class AnthropicMultiAgentRuntime:
     ) -> _BaseStructuredOutputAgent:
         route = self._agent_routes[agent_name]
         provider = self._providers[ANTHROPIC_PROVIDER_NAME]
-        return agent_type(provider, route.model_name, self._request_timeout_seconds, agent_name)
+        return agent_type(
+            provider,
+            route.model_name,
+            self._request_timeout_seconds,
+            agent_name,
+            self._trace_logs_enabled,
+        )
 
     def apply(self, user_profile: UserProfile, state: RuleEvaluationState) -> MultiAgentRuntimeResult:
         validation_warning = self._missing_provider_warning()

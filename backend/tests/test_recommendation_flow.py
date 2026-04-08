@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 
 import httpx
 import pytest
@@ -390,6 +391,49 @@ def test_agent_trace_logging_records_start_and_finish_with_response_summary(
         "explanation",
     ]
     assert all("response_summary=" in message for message in finish_messages)
+
+
+def test_agent_trace_logging_env_is_loaded_once_per_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counters = {"build_env_values": 0, "trace_enabled": 0}
+
+    def _fake_build_env_values() -> dict[str, str]:
+        counters["build_env_values"] += 1
+        return {"FINANCEHUB_LLM_AGENT_TRACE_LOGS": "true"}
+
+    def _fake_is_agent_trace_logging_enabled(_environ: Mapping[str, str]) -> bool:
+        counters["trace_enabled"] += 1
+        return True
+
+    monkeypatch.setattr(runtime_module, "_build_env_values", _fake_build_env_values)
+    monkeypatch.setattr(
+        runtime_module,
+        "_is_agent_trace_logging_enabled",
+        _fake_is_agent_trace_logging_enabled,
+    )
+
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=provider,
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert counters["build_env_values"] == 1
+    assert counters["trace_enabled"] == 1
 
 
 def test_agent_trace_logging_records_error_for_first_agent_provider_failure(
