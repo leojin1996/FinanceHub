@@ -39,10 +39,6 @@ class RecommendationService:
         if self._graph_runtime is not None:
             try:
                 graph_state = self._graph_runtime.run(payload)
-                return assemble_graph_recommendation_response(
-                    graph_state,
-                    include_aggressive_option=payload.includeAggressiveOption,
-                )
             except Exception as exc:
                 if self._orchestrator is None:
                     raise
@@ -56,6 +52,10 @@ class RecommendationService:
                     recommendation,
                     include_aggressive_option=payload.includeAggressiveOption,
                 )
+            return assemble_graph_recommendation_response(
+                graph_state,
+                include_aggressive_option=payload.includeAggressiveOption,
+            )
         if self._orchestrator is None:
             raise ValueError("recommendation runtime is not configured")
         recommendation = self._orchestrator.generate(payload.riskAssessmentResult.finalProfile)

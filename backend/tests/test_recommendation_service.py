@@ -1,3 +1,5 @@
+import pytest
+
 from financehub_market_api.models import RecommendationGenerationRequest, RecommendationResponse
 from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
@@ -202,3 +204,27 @@ def test_domain_service_falls_back_to_legacy_orchestrator_when_graph_runtime_rai
 
     assert response.executionMode == "rules_fallback"
     assert any(warning.code == "graph_runtime_error" for warning in response.warnings)
+
+
+def test_domain_service_does_not_fallback_when_graph_response_assembly_raises(
+    monkeypatch,
+) -> None:
+    service = DomainRecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_deterministic_services(),
+        orchestrator=RecommendationOrchestrator(
+            candidate_repository=StaticCandidateRepository(),
+            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
+        ),
+    )
+
+    def _raise_assembly_error(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("assembly failed")
+
+    monkeypatch.setattr(
+        "financehub_market_api.recommendation.services.recommendation_service.assemble_graph_recommendation_response",
+        _raise_assembly_error,
+    )
+
+    with pytest.raises(RuntimeError, match="assembly failed"):
+        service.generate_recommendation(_build_generation_request("balanced"))
