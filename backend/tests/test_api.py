@@ -516,5 +516,5 @@ def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -
     get_recommendation_service.cache_clear()
     service = get_recommendation_service()
 
-    assert getattr(service, "_orchestrator", None) is None
+    assert getattr(service, "_orchestrator", None) is not None
     assert getattr(service, "_graph_runtime", None) is not None

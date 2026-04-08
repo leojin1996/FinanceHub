@@ -19,23 +19,43 @@ class RecommendationService:
         orchestrator: RecommendationOrchestrator | None = None,
         graph_runtime: RecommendationGraphRuntime | None = None,
     ) -> None:
-        self._orchestrator = orchestrator
         if graph_runtime is not None:
             self._graph_runtime = graph_runtime
         elif orchestrator is not None:
             self._graph_runtime = None
         else:
             self._graph_runtime = RecommendationGraphRuntime.with_deterministic_services()
+        if orchestrator is not None:
+            self._orchestrator = orchestrator
+        elif self._graph_runtime is not None:
+            # Keep a legacy rules engine available only for emergency fallback.
+            self._orchestrator = RecommendationOrchestrator()
+        else:
+            self._orchestrator = None
 
     def generate_recommendation(
         self, payload: RecommendationGenerationRequest
     ) -> RecommendationResponse:
         if self._graph_runtime is not None:
-            graph_state = self._graph_runtime.run(payload)
-            return assemble_graph_recommendation_response(
-                graph_state,
-                include_aggressive_option=payload.includeAggressiveOption,
-            )
+            try:
+                graph_state = self._graph_runtime.run(payload)
+                return assemble_graph_recommendation_response(
+                    graph_state,
+                    include_aggressive_option=payload.includeAggressiveOption,
+                )
+            except Exception as exc:
+                if self._orchestrator is None:
+                    raise
+                recommendation = self._orchestrator.generate_rules_fallback(
+                    payload.riskAssessmentResult.finalProfile,
+                    warning_stage="graph_runtime",
+                    warning_code="graph_runtime_error",
+                    warning_message=f"Graph runtime failed: {exc}",
+                )
+                return assemble_domain_recommendation_response(
+                    recommendation,
+                    include_aggressive_option=payload.includeAggressiveOption,
+                )
         if self._orchestrator is None:
             raise ValueError("recommendation runtime is not configured")
         recommendation = self._orchestrator.generate(payload.riskAssessmentResult.finalProfile)

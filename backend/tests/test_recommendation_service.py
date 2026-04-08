@@ -1,7 +1,16 @@
 from financehub_market_api.models import RecommendationGenerationRequest, RecommendationResponse
+from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
+from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
+from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.services import RecommendationService as DomainRecommendationService
 from financehub_market_api.recommendations import RecommendationService
+
+
+class _FailingGraphRuntime:
+    def run(self, payload: RecommendationGenerationRequest) -> None:
+        del payload
+        raise RuntimeError("graph runtime crashed")
 
 
 def _build_generation_request(
@@ -178,3 +187,18 @@ def test_domain_service_returns_limited_response_for_high_risk_candidates() -> N
     assert response.complianceReview is not None
     assert response.complianceReview.verdict == "revise_conservative"
     assert response.sections.stocks.items == []
+
+
+def test_domain_service_falls_back_to_legacy_orchestrator_when_graph_runtime_raises() -> None:
+    service = DomainRecommendationService(
+        graph_runtime=_FailingGraphRuntime(),
+        orchestrator=RecommendationOrchestrator(
+            candidate_repository=StaticCandidateRepository(),
+            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
+        ),
+    )
+
+    response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert response.executionMode == "rules_fallback"
+    assert any(warning.code == "graph_runtime_error" for warning in response.warnings)

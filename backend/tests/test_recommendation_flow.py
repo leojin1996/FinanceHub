@@ -111,6 +111,23 @@ def test_orchestration_without_llm_config_keeps_safe_rule_fallback() -> None:
     assert recommendation.execution_trace.warnings[0].code == "llm_config_missing"
 
 
+def test_orchestration_emergency_fallback_marks_rules_mode_with_runtime_warning() -> None:
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
+    ).generate_rules_fallback(
+        "balanced",
+        warning_stage="graph_runtime",
+        warning_code="graph_runtime_error",
+        warning_message="graph runtime crashed",
+    )
+
+    assert recommendation.execution_trace.path == "rules_fallback"
+    assert recommendation.execution_trace.execution_mode == "rules_fallback"
+    assert recommendation.execution_trace.degraded is True
+    assert recommendation.execution_trace.warnings[0].code == "graph_runtime_error"
+
+
 class _SequenceProvider:
     def __init__(self, responses: list[object]) -> None:
         self._responses = responses

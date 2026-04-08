@@ -4,7 +4,7 @@ from financehub_market_api.models import RiskProfile
 from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.repositories import CandidateRepository, RealDataCandidateRepository
 from financehub_market_api.recommendation.rules import RuleBasedFallbackEngine, map_user_profile
-from financehub_market_api.recommendation.schemas import FinalRecommendation
+from financehub_market_api.recommendation.schemas import DegradedWarning, FinalRecommendation, RuleEvaluationState
 
 
 class RecommendationOrchestrator:
@@ -18,21 +18,14 @@ class RecommendationOrchestrator:
         self._fallback_engine = RuleBasedFallbackEngine(repository)
         self._multi_agent_runtime = multi_agent_runtime or AnthropicMultiAgentRuntime.from_env()
 
-    def generate(self, risk_profile: RiskProfile) -> FinalRecommendation:
+    def _build_final_recommendation(
+        self,
+        risk_profile: RiskProfile,
+        state: RuleEvaluationState,
+    ) -> FinalRecommendation:
         user_profile = map_user_profile(risk_profile)
-        state = self._fallback_engine.run(user_profile)
         if state.allocation is None or state.aggressive_allocation is None or state.market_context is None:
             raise ValueError("recommendation fallback state is incomplete")
-        runtime_result = self._multi_agent_runtime.apply(user_profile, state)
-        state.execution_trace.warnings.extend(runtime_result.warnings)
-        state.execution_trace.degraded = bool(runtime_result.warnings)
-        if runtime_result.assisted:
-            state.execution_trace.path = "agent_assisted"
-            state.execution_trace.execution_mode = "agent_assisted"
-        else:
-            state.execution_trace.path = "rules_fallback"
-            state.execution_trace.execution_mode = "rules_fallback"
-
         return FinalRecommendation(
             user_profile=user_profile,
             market_context=state.market_context,
@@ -46,3 +39,40 @@ class RecommendationOrchestrator:
             why_this_plan_en=state.why_this_plan_en,
             execution_trace=state.execution_trace,
         )
+
+    def generate(self, risk_profile: RiskProfile) -> FinalRecommendation:
+        user_profile = map_user_profile(risk_profile)
+        state = self._fallback_engine.run(user_profile)
+        runtime_result = self._multi_agent_runtime.apply(user_profile, state)
+        state.execution_trace.warnings.extend(runtime_result.warnings)
+        state.execution_trace.degraded = bool(runtime_result.warnings)
+        if runtime_result.assisted:
+            state.execution_trace.path = "agent_assisted"
+            state.execution_trace.execution_mode = "agent_assisted"
+        else:
+            state.execution_trace.path = "rules_fallback"
+            state.execution_trace.execution_mode = "rules_fallback"
+
+        return self._build_final_recommendation(risk_profile, state)
+
+    def generate_rules_fallback(
+        self,
+        risk_profile: RiskProfile,
+        *,
+        warning_stage: str,
+        warning_code: str,
+        warning_message: str,
+    ) -> FinalRecommendation:
+        user_profile = map_user_profile(risk_profile)
+        state = self._fallback_engine.run(user_profile)
+        state.execution_trace.path = "rules_fallback"
+        state.execution_trace.execution_mode = "rules_fallback"
+        state.execution_trace.degraded = True
+        state.execution_trace.warnings.append(
+            DegradedWarning(
+                stage=warning_stage,
+                code=warning_code,
+                message=warning_message,
+            )
+        )
+        return self._build_final_recommendation(risk_profile, state)
