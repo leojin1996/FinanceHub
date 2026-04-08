@@ -181,12 +181,14 @@ class _BaseStructuredOutputAgent:
         model_name: str,
         request_timeout_seconds: float,
         request_name: str,
-        trace_logs_enabled: bool,
+        trace_logs_enabled: bool | None = None,
     ) -> None:
         self._provider = provider
         self._model_name = model_name
         self._request_timeout_seconds = request_timeout_seconds
         self._request_name = request_name
+        if trace_logs_enabled is None:
+            trace_logs_enabled = _is_agent_trace_logging_enabled(_build_env_values())
         self._trace_logs_enabled = trace_logs_enabled
 
     def _execute(
