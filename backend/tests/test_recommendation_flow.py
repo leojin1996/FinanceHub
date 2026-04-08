@@ -146,6 +146,15 @@ class _SequenceProvider:
         raise TypeError("response must be dict or exception")
 
 
+class _MessageCaptureHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
 def test_provider_exception_downgrades_to_rule_fallback_with_warning() -> None:
     runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider([httpx.TimeoutException("request timed out")]),
@@ -392,6 +401,91 @@ def test_agent_trace_logging_records_start_and_finish_with_response_summary(
         "explanation",
     ]
     assert all("response_summary=" in message for message in finish_messages)
+
+
+def test_agent_trace_logs_reach_root_handler_when_root_logger_is_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    root_logger = logging.getLogger()
+    handler = _MessageCaptureHandler()
+    original_level = root_logger.level
+    root_logger.setLevel(logging.WARNING)
+    root_logger.addHandler(handler)
+
+    try:
+        recommendation = RecommendationOrchestrator(
+            candidate_repository=StaticCandidateRepository(),
+            multi_agent_runtime=AnthropicMultiAgentRuntime(
+                provider=provider,
+                model_name="claude-test",
+            ),
+        ).generate("balanced")
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(original_level)
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert any(
+        message.startswith("agent_request_start request_name=user_profile")
+        for message in handler.messages
+    )
+
+
+def test_agent_trace_logs_reach_uvicorn_logger_when_root_has_no_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            {"profile_focus_zh": "稳健", "profile_focus_en": "Stable"},
+            {"summary_zh": "市场震荡", "summary_en": "Market is choppy"},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+            {"ranked_ids": ["wm-001", "wm-002"]},
+            {"ranked_ids": ["stock-001", "stock-002"]},
+            {"why_this_plan_zh": ["理由一", "理由二"], "why_this_plan_en": ["Reason one", "Reason two"]},
+        ]
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    root_logger = logging.getLogger()
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    root_handlers = list(root_logger.handlers)
+    handler = _MessageCaptureHandler()
+    original_uvicorn_level = uvicorn_logger.level
+
+    for existing_handler in root_handlers:
+        root_logger.removeHandler(existing_handler)
+    uvicorn_logger.setLevel(logging.INFO)
+    uvicorn_logger.addHandler(handler)
+
+    try:
+        recommendation = RecommendationOrchestrator(
+            candidate_repository=StaticCandidateRepository(),
+            multi_agent_runtime=AnthropicMultiAgentRuntime(
+                provider=provider,
+                model_name="claude-test",
+            ),
+        ).generate("balanced")
+    finally:
+        uvicorn_logger.removeHandler(handler)
+        uvicorn_logger.setLevel(original_uvicorn_level)
+        for existing_handler in root_handlers:
+            root_logger.addHandler(existing_handler)
+
+    assert recommendation.execution_trace.path == "agent_assisted"
+    assert any(
+        message.startswith("agent_request_start request_name=user_profile")
+        for message in handler.messages
+    )
 
 
 def test_agent_trace_logging_env_is_loaded_once_per_runtime(

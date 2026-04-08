@@ -34,6 +34,15 @@ class _FakeResponse:
         return self._payload
 
 
+class _MessageCaptureHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
 class _FakeHttpClient:
     def __init__(
         self,
@@ -434,6 +443,127 @@ def test_anthropic_provider_logs_fallback_invalid(
         'provider_fallback_invalid request_name=market_intelligence '
         'model_name=claude-sonnet-4-6 '
         'error_message="provider response has no extractable structured content"'
+    )
+
+
+def test_provider_trace_logs_reach_root_handler_when_root_logger_is_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = _SequentialFakeHttpClient(
+        [
+            {"content": []},
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                    }
+                ]
+            },
+        ]
+    )
+    provider = AnthropicChatProvider(
+        ProviderConfig(
+            name=ANTHROPIC_PROVIDER_NAME,
+            kind="anthropic",
+            api_key="anthropic-test-key",
+            base_url="https://oneapi.hk/v1",
+        ),
+        http_client=http_client,
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    root_logger = logging.getLogger()
+    handler = _MessageCaptureHandler()
+    original_level = root_logger.level
+    root_logger.setLevel(logging.WARNING)
+    root_logger.addHandler(handler)
+
+    try:
+        payload = provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are MarketIntelligenceAgent. Return strict JSON only.",
+                },
+                {"role": "user", "content": "Return summary_zh and summary_en."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+            request_name="market_intelligence",
+        )
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(original_level)
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    assert any(
+        message.startswith("provider_structured_invalid request_name=market_intelligence")
+        for message in handler.messages
+    )
+
+
+def test_provider_trace_logs_reach_uvicorn_logger_when_root_has_no_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = _SequentialFakeHttpClient(
+        [
+            {"content": []},
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                    }
+                ]
+            },
+        ]
+    )
+    provider = AnthropicChatProvider(
+        ProviderConfig(
+            name=ANTHROPIC_PROVIDER_NAME,
+            kind="anthropic",
+            api_key="anthropic-test-key",
+            base_url="https://oneapi.hk/v1",
+        ),
+        http_client=http_client,
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    root_logger = logging.getLogger()
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    root_handlers = list(root_logger.handlers)
+    handler = _MessageCaptureHandler()
+    original_uvicorn_level = uvicorn_logger.level
+
+    for existing_handler in root_handlers:
+        root_logger.removeHandler(existing_handler)
+    uvicorn_logger.setLevel(logging.INFO)
+    uvicorn_logger.addHandler(handler)
+
+    try:
+        payload = provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are MarketIntelligenceAgent. Return strict JSON only.",
+                },
+                {"role": "user", "content": "Return summary_zh and summary_en."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+            request_name="market_intelligence",
+        )
+    finally:
+        uvicorn_logger.removeHandler(handler)
+        uvicorn_logger.setLevel(original_uvicorn_level)
+        for existing_handler in root_handlers:
+            root_logger.addHandler(existing_handler)
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    assert any(
+        message.startswith("provider_structured_invalid request_name=market_intelligence")
+        for message in handler.messages
     )
 
 

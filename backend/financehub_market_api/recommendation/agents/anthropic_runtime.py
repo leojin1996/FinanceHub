@@ -36,6 +36,8 @@ from financehub_market_api.recommendation.schemas import (
 )
 
 LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+UVICORN_ERROR_LOGGER = logging.getLogger("uvicorn.error")
 
 _EMPTY_PROVIDER_RESPONSE_MARKERS = (
     "provider response has no content blocks",
@@ -75,6 +77,12 @@ def _trim_trace_value(value: object) -> object:
 
 def _response_summary(payload: Mapping[str, object]) -> str:
     return json.dumps(_trim_trace_value(payload), ensure_ascii=False, sort_keys=True)
+
+
+def _emit_trace_log(message: str, *args: object) -> None:
+    LOGGER.info(message, *args)
+    if not logging.getLogger().handlers:
+        UVICORN_ERROR_LOGGER.info(message, *args)
 
 
 def _render_candidates(candidates: list[CandidateProduct]) -> str:
@@ -203,7 +211,7 @@ class _BaseStructuredOutputAgent:
             started_at=time.perf_counter(),
         )
         if trace_context.trace_enabled:
-            LOGGER.info(
+            _emit_trace_log(
                 "agent_request_start request_name=%s model_name=%s",
                 self._request_name,
                 self._model_name,
@@ -243,7 +251,7 @@ class _BaseStructuredOutputAgent:
         if not trace_context.trace_enabled:
             return
         duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
-        LOGGER.info(
+        _emit_trace_log(
             "agent_request_error request_name=%s model_name=%s duration_ms=%s "
             "error_type=%s error_message=%s",
             self._request_name,
@@ -273,7 +281,7 @@ class _BaseStructuredOutputAgent:
         if not trace_context.trace_enabled:
             return
         duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
-        LOGGER.info(
+        _emit_trace_log(
             "agent_request_finish request_name=%s model_name=%s duration_ms=%s response_summary=%s",
             self._request_name,
             self._model_name,

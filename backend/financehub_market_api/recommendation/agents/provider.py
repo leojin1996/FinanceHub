@@ -15,6 +15,8 @@ from uuid import uuid4
 import httpx
 
 LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+UVICORN_ERROR_LOGGER = logging.getLogger("uvicorn.error")
 
 ProviderKind = Literal["anthropic"]
 
@@ -147,6 +149,12 @@ def _resolve_capture_dir(environ: Mapping[str, str]) -> Path:
     if override_dir is None:
         return _default_capture_dir()
     return Path(override_dir).expanduser()
+
+
+def _emit_trace_log(message: str, *args: object) -> None:
+    LOGGER.info(message, *args)
+    if not logging.getLogger().handlers:
+        UVICORN_ERROR_LOGGER.info(message, *args)
 
 
 @dataclass(frozen=True)
@@ -469,7 +477,7 @@ class AnthropicChatProvider:
         message = f"{event} request_name={request_label} model_name={model_name}"
         if error_message is not None:
             message = f'{message} error_message="{error_message}"'
-        LOGGER.info(message)
+        _emit_trace_log(message)
 
     def _capture_raw_response(
         self,
