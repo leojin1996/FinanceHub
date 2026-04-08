@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -294,6 +295,84 @@ def test_anthropic_provider_capture_write_failure_raises_error(
             timeout_seconds=5.0,
             request_name="market_intelligence",
         )
+
+
+def test_is_agent_trace_logging_enabled_defaults_to_false() -> None:
+    assert provider_module._is_agent_trace_logging_enabled({}) is False
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+        ("   ", False),
+    ],
+)
+def test_is_agent_trace_logging_enabled_parses_truthy_and_falsey_values(
+    raw_value: str,
+    expected: bool,
+) -> None:
+    assert (
+        provider_module._is_agent_trace_logging_enabled(
+            {"FINANCEHUB_LLM_AGENT_TRACE_LOGS": raw_value}
+        )
+        is expected
+    )
+
+
+def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = _SequentialFakeHttpClient(
+        [
+            {"content": []},
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                    }
+                ]
+            },
+        ]
+    )
+    provider = AnthropicChatProvider(
+        ProviderConfig(
+            name=ANTHROPIC_PROVIDER_NAME,
+            kind="anthropic",
+            api_key="anthropic-test-key",
+            base_url="https://oneapi.hk/v1",
+        ),
+        http_client=http_client,
+    )
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=provider_module.__name__)
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+        request_name="market_intelligence",
+    )
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    event_messages = [record.message for record in caplog.records if "event=" in record.message]
+    assert len(event_messages) == 2
+    assert "event=provider_structured_invalid" in event_messages[0]
+    assert "event=provider_fallback_success" in event_messages[1]
 
 
 def test_product_ranking_output_rejects_empty_ranked_ids() -> None:

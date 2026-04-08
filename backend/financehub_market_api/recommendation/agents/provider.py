@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 import httpx
 
+LOGGER = logging.getLogger(__name__)
 
 ProviderKind = Literal["anthropic"]
 
@@ -24,6 +26,7 @@ ANTHROPIC_MAX_ATTEMPTS = 2
 ANTHROPIC_RETRY_BACKOFF_SECONDS = 1.0
 LLM_CAPTURE_RAW_RESPONSES_ENV = "FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES"
 LLM_CAPTURE_DIR_ENV = "FINANCEHUB_LLM_CAPTURE_DIR"
+LLM_AGENT_TRACE_LOGS_ENV = "FINANCEHUB_LLM_AGENT_TRACE_LOGS"
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 AGENT_MODEL_ROUTE_ENV_NAMES = {
     "user_profile": "USER_PROFILE",
@@ -128,6 +131,10 @@ def _is_truthy_env_value(value: str | None) -> bool:
 
 def _is_raw_capture_enabled(environ: Mapping[str, str]) -> bool:
     return _is_truthy_env_value(environ.get(LLM_CAPTURE_RAW_RESPONSES_ENV))
+
+
+def _is_agent_trace_logging_enabled(environ: Mapping[str, str]) -> bool:
+    return _is_truthy_env_value(environ.get(LLM_AGENT_TRACE_LOGS_ENV))
 
 
 def _default_capture_dir() -> Path:
@@ -412,6 +419,12 @@ class AnthropicChatProvider:
             )
             return self._parse_response_body(structured_body, response_schema=response_schema)
         except LLMInvalidResponseError as structured_exc:
+            self._trace_log(
+                event="provider_structured_invalid",
+                request_name=request_name,
+                model_name=model_name,
+                error_message=str(structured_exc),
+            )
             fallback_payload = dict(payload)
             try:
                 fallback_body = self._post_messages(fallback_payload, timeout_seconds=timeout_seconds)
@@ -421,9 +434,42 @@ class AnthropicChatProvider:
                     request_name=request_name,
                     phase="fallback",
                 )
-                return self._parse_response_body(fallback_body, response_schema=response_schema)
+                parsed_fallback_body = self._parse_response_body(
+                    fallback_body,
+                    response_schema=response_schema,
+                )
+                self._trace_log(
+                    event="provider_fallback_success",
+                    request_name=request_name,
+                    model_name=model_name,
+                )
+                return parsed_fallback_body
             except LLMInvalidResponseError as fallback_exc:
+                self._trace_log(
+                    event="provider_fallback_invalid",
+                    request_name=request_name,
+                    model_name=model_name,
+                    error_message=str(fallback_exc),
+                )
                 raise fallback_exc from structured_exc
+
+    def _trace_log(
+        self,
+        *,
+        event: str,
+        request_name: str | None,
+        model_name: str,
+        error_message: str | None = None,
+    ) -> None:
+        env_values = _build_env_values()
+        if not _is_agent_trace_logging_enabled(env_values):
+            return
+
+        request_label = request_name or "unknown"
+        message = f"event={event} request_name={request_label} model_name={model_name}"
+        if error_message is not None:
+            message = f"{message} error_message={error_message}"
+        LOGGER.info(message)
 
     def _capture_raw_response(
         self,
