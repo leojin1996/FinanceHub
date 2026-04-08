@@ -204,6 +204,10 @@ def test_domain_service_falls_back_to_legacy_orchestrator_when_graph_runtime_rai
 
     assert response.executionMode == "rules_fallback"
     assert any(warning.code == "graph_runtime_error" for warning in response.warnings)
+    assert any(
+        warning.message == "Recommendation graph runtime unavailable; using rules fallback."
+        for warning in response.warnings
+    )
 
 
 def test_domain_service_does_not_fallback_when_graph_response_assembly_raises(

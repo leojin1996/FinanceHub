@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from financehub_market_api.models import (
     RecommendationGenerationRequest,
     RecommendationResponse,
@@ -10,6 +12,11 @@ from financehub_market_api.recommendation.orchestration import RecommendationOrc
 from financehub_market_api.recommendation.services.assembler import (
     assemble_domain_recommendation_response,
     assemble_graph_recommendation_response,
+)
+
+LOGGER = logging.getLogger(__name__)
+_GRAPH_RUNTIME_FALLBACK_MESSAGE = (
+    "Recommendation graph runtime unavailable; using rules fallback."
 )
 
 
@@ -39,14 +46,17 @@ class RecommendationService:
         if self._graph_runtime is not None:
             try:
                 graph_state = self._graph_runtime.run(payload)
-            except Exception as exc:
+            except Exception:
                 if self._orchestrator is None:
                     raise
+                LOGGER.exception(
+                    "recommendation graph runtime failed; falling back to rules path"
+                )
                 recommendation = self._orchestrator.generate_rules_fallback(
                     payload.riskAssessmentResult.finalProfile,
                     warning_stage="graph_runtime",
                     warning_code="graph_runtime_error",
-                    warning_message=f"Graph runtime failed: {exc}",
+                    warning_message=_GRAPH_RUNTIME_FALLBACK_MESSAGE,
                 )
                 return assemble_domain_recommendation_response(
                     recommendation,

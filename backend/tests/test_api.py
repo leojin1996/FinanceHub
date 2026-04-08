@@ -518,3 +518,66 @@ def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -
 
     assert getattr(service, "_orchestrator", None) is not None
     assert getattr(service, "_graph_runtime", None) is not None
+
+
+def test_generate_recommendations_falls_back_to_rules_mode_when_graph_runtime_raises() -> None:
+    from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
+    from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
+    from financehub_market_api.recommendation.repositories import StaticCandidateRepository
+    from financehub_market_api.recommendations import RecommendationService
+
+    class _FailingGraphRuntime:
+        def run(self, payload: object) -> object:
+            del payload
+            raise RuntimeError("graph runtime crashed")
+
+    recommendation_service = RecommendationService(
+        graph_runtime=_FailingGraphRuntime(),
+        orchestrator=RecommendationOrchestrator(
+            candidate_repository=StaticCandidateRepository(),
+            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
+        ),
+    )
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    assert response.json()["executionMode"] == "rules_fallback"
+    assert response.json()["warnings"][0]["code"] == "graph_runtime_error"
+    assert (
+        response.json()["warnings"][0]["message"]
+        == "Recommendation graph runtime unavailable; using rules fallback."
+    )
