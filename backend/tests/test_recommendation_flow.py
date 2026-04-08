@@ -710,6 +710,45 @@ def test_ranked_ids_with_partial_unknown_entries_downgrades_to_rule_fallback_wit
     assert recommendation.execution_trace.warnings[0].code == "agent_ranking_unusable"
 
 
+def test_agent_trace_logging_records_error_without_finish_for_unknown_ranking_ids(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FINANCEHUB_LLM_AGENT_TRACE_LOGS", "true")
+    caplog.set_level(logging.INFO, logger=runtime_module.__name__)
+
+    recommendation = RecommendationOrchestrator(
+        candidate_repository=StaticCandidateRepository(),
+        multi_agent_runtime=AnthropicMultiAgentRuntime(
+            provider=_SequenceProvider(
+                [
+                    {"profile_focus_zh": "稳健", "profile_focus_en": "stable"},
+                    {"summary_zh": "市场维持震荡", "summary_en": "Market is range-bound"},
+                    {"ranked_ids": ["unknown-fund-id"]},
+                    {"ranked_ids": ["wm-001"]},
+                    {"ranked_ids": ["stock-001"]},
+                    {
+                        "why_this_plan_zh": ["智能解释1", "智能解释2"],
+                        "why_this_plan_en": ["Agent reason 1", "Agent reason 2"],
+                    },
+                ]
+            ),
+            model_name="claude-test",
+        ),
+    ).generate("balanced")
+
+    assert recommendation.execution_trace.path == "rules_fallback"
+    event_messages = [
+        record.message for record in caplog.records if record.message.startswith("agent_request_")
+    ]
+    error_messages = [message for message in event_messages if message.startswith("agent_request_error")]
+    assert any("request_name=fund_selection" in message for message in error_messages)
+    assert not any(
+        message.startswith("agent_request_finish") and "request_name=fund_selection" in message
+        for message in event_messages
+    )
+
+
 def test_agent_assisted_execution_is_tracked_separately_from_pure_rule_fallback() -> None:
     runtime = AnthropicMultiAgentRuntime(
         provider=_SequenceProvider(

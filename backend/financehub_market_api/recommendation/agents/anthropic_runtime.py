@@ -232,21 +232,8 @@ class _BaseStructuredOutputAgent:
         trace_context: _TraceRequestContext,
         validator: Callable[[dict[str, object]], _ValidatedOutputT],
     ) -> _ValidatedOutputT:
-        try:
-            validated_payload = validator(payload)
-        except ValidationError as exc:
-            self._log_trace_error(trace_context, exc)
-            raise
-
-        if trace_context.trace_enabled:
-            duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
-            LOGGER.info(
-                "agent_request_finish request_name=%s model_name=%s duration_ms=%s response_summary=%s",
-                self._request_name,
-                self._model_name,
-                duration_ms,
-                _response_summary(payload),
-            )
+        validated_payload = self._validate_without_finish(payload, trace_context, validator)
+        self._log_trace_finish(trace_context, payload)
         return validated_payload
 
     def _log_trace_error(self, trace_context: _TraceRequestContext, error: Exception) -> None:
@@ -261,6 +248,34 @@ class _BaseStructuredOutputAgent:
             duration_ms,
             type(error).__name__,
             json.dumps(str(error), ensure_ascii=False),
+        )
+
+    def _validate_without_finish(
+        self,
+        payload: dict[str, object],
+        trace_context: _TraceRequestContext,
+        validator: Callable[[dict[str, object]], _ValidatedOutputT],
+    ) -> _ValidatedOutputT:
+        try:
+            return validator(payload)
+        except ValidationError as exc:
+            self._log_trace_error(trace_context, exc)
+            raise
+
+    def _log_trace_finish(
+        self,
+        trace_context: _TraceRequestContext,
+        payload: Mapping[str, object],
+    ) -> None:
+        if not trace_context.trace_enabled:
+            return
+        duration_ms = int((time.perf_counter() - trace_context.started_at) * 1000)
+        LOGGER.info(
+            "agent_request_finish request_name=%s model_name=%s duration_ms=%s response_summary=%s",
+            self._request_name,
+            self._model_name,
+            duration_ms,
+            _response_summary(payload),
         )
 
 
@@ -305,6 +320,20 @@ class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
+        ranking, trace_context, payload = self._run_with_trace(
+            user_profile,
+            profile_focus,
+            candidates,
+        )
+        self._log_trace_finish(trace_context, payload)
+        return ranking
+
+    def _run_with_trace(
+        self,
+        user_profile: UserProfile,
+        profile_focus: UserProfileAgentOutput,
+        candidates: list[CandidateProduct],
+    ) -> tuple[ProductRankingAgentOutput, _TraceRequestContext, dict[str, object]]:
         payload, trace_context = self._execute(
             system_prompt="You are FundSelectionAgent. Return strict JSON only.",
             user_prompt=(
@@ -317,7 +346,12 @@ class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
+        ranking = self._validate_without_finish(
+            payload,
+            trace_context,
+            ProductRankingAgentOutput.model_validate,
+        )
+        return ranking, trace_context, payload
 
 
 class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -327,6 +361,20 @@ class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
+        ranking, trace_context, payload = self._run_with_trace(
+            user_profile,
+            profile_focus,
+            candidates,
+        )
+        self._log_trace_finish(trace_context, payload)
+        return ranking
+
+    def _run_with_trace(
+        self,
+        user_profile: UserProfile,
+        profile_focus: UserProfileAgentOutput,
+        candidates: list[CandidateProduct],
+    ) -> tuple[ProductRankingAgentOutput, _TraceRequestContext, dict[str, object]]:
         payload, trace_context = self._execute(
             system_prompt="You are WealthSelectionAgent. Return strict JSON only.",
             user_prompt=(
@@ -339,7 +387,12 @@ class WealthSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
+        ranking = self._validate_without_finish(
+            payload,
+            trace_context,
+            ProductRankingAgentOutput.model_validate,
+        )
+        return ranking, trace_context, payload
 
 
 class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -349,6 +402,20 @@ class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
         profile_focus: UserProfileAgentOutput,
         candidates: list[CandidateProduct],
     ) -> ProductRankingAgentOutput:
+        ranking, trace_context, payload = self._run_with_trace(
+            user_profile,
+            profile_focus,
+            candidates,
+        )
+        self._log_trace_finish(trace_context, payload)
+        return ranking
+
+    def _run_with_trace(
+        self,
+        user_profile: UserProfile,
+        profile_focus: UserProfileAgentOutput,
+        candidates: list[CandidateProduct],
+    ) -> tuple[ProductRankingAgentOutput, _TraceRequestContext, dict[str, object]]:
         payload, trace_context = self._execute(
             system_prompt="You are StockSelectionAgent. Return strict JSON only.",
             user_prompt=(
@@ -361,7 +428,12 @@ class StockSelectionRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=ProductRankingAgentOutput.model_json_schema(),
         )
-        return self._validate_and_log(payload, trace_context, ProductRankingAgentOutput.model_validate)
+        ranking = self._validate_without_finish(
+            payload,
+            trace_context,
+            ProductRankingAgentOutput.model_validate,
+        )
+        return ranking, trace_context, payload
 
 
 class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
@@ -561,8 +633,9 @@ class AnthropicMultiAgentRuntime:
         ranking_outputs: dict[str, list[str]] = {}
         for stage, agent_type, state_attr in ranking_steps:
             candidates = getattr(state, state_attr)
+            ranking_agent = self._build_agent(stage, agent_type)
             try:
-                ranking = self._build_agent(stage, agent_type).run(
+                ranking, trace_context, payload = ranking_agent._run_with_trace(
                     user_profile,
                     profile_focus,
                     candidates,
@@ -603,6 +676,10 @@ class AnthropicMultiAgentRuntime:
             ranked_ids = ranking.ranked_ids
             validation_issue = _ranking_validation_issue(candidates, ranked_ids)
             if validation_issue is not None:
+                ranking_agent._log_trace_error(
+                    trace_context,
+                    ValueError(f"{stage} ranking validation failed: {validation_issue}."),
+                )
                 if validation_issue == "ranked_ids is empty":
                     warnings.append(
                         DegradedWarning(
@@ -622,6 +699,7 @@ class AnthropicMultiAgentRuntime:
                         )
                     ],
                 )
+            ranking_agent._log_trace_finish(trace_context, payload)
             ranking_outputs[state_attr] = ranked_ids
             applied_agent_output = True
 
