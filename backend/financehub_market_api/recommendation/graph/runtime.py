@@ -4,6 +4,9 @@ from dataclasses import dataclass, field, replace
 
 from langgraph.graph import END, START, StateGraph
 
+from financehub_market_api.recommendation.agents.live_runtime import (
+    AnthropicRecommendationAgentRuntime,
+)
 from financehub_market_api.cache import build_snapshot_cache
 from financehub_market_api.models import RecommendationGenerationRequest
 from financehub_market_api.recommendation.compliance import ComplianceReviewService
@@ -15,12 +18,21 @@ from financehub_market_api.recommendation.graph.nodes import (
     user_profile_analyst_node,
 )
 from financehub_market_api.recommendation.graph.routing import route_compliance_verdict
-from financehub_market_api.recommendation.graph.state import RecommendationGraphState, build_initial_graph_state
+from financehub_market_api.recommendation.graph.state import (
+    RecommendationGraphState,
+    build_initial_graph_state,
+)
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
-from financehub_market_api.recommendation.intelligence.service import MarketDataSnapshotSource
-from financehub_market_api.recommendation.manager_synthesis import ManagerSynthesisService
+from financehub_market_api.recommendation.intelligence.service import (
+    MarketDataSnapshotSource,
+)
+from financehub_market_api.recommendation.manager_synthesis import (
+    ManagerSynthesisService,
+)
 from financehub_market_api.recommendation.memory import MemoryRecallService
-from financehub_market_api.recommendation.profile_intelligence import ProfileIntelligenceService
+from financehub_market_api.recommendation.profile_intelligence import (
+    ProfileIntelligenceService,
+)
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
 from financehub_market_api.recommendation.repositories import (
     CandidateRepository,
@@ -41,6 +53,7 @@ class GraphServices:
     product_retrieval: ProductRetrievalService
     compliance_review: ComplianceReviewService
     product_candidates: list[CandidateProduct]
+    agent_runtime: AnthropicRecommendationAgentRuntime | None = None
     candidate_repository: CandidateRepository | None = None
     profile_intelligence: ProfileIntelligenceService = field(
         default_factory=ProfileIntelligenceService
@@ -67,10 +80,15 @@ class _StaticVectorStore:
 
     def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
         del query_text
-        return [{"id": product_id, "score": 1.0 - index * 0.05} for index, product_id in enumerate(self._ids[:limit])]
+        return [
+            {"id": product_id, "score": 1.0 - index * 0.05}
+            for index, product_id in enumerate(self._ids[:limit])
+        ]
 
 
-def _build_product_candidates(repository: CandidateRepository) -> list[CandidateProduct]:
+def _build_product_candidates(
+    repository: CandidateRepository,
+) -> list[CandidateProduct]:
     profile = map_user_profile("balanced")
     return [
         *repository.list_funds(profile),
@@ -100,6 +118,7 @@ class RecommendationGraphRuntime:
             lambda state: user_profile_analyst_node(
                 state,
                 profile_intelligence_service=services.profile_intelligence,
+                agent_runtime=services.agent_runtime,
             ),
         )
         graph.add_node(
@@ -107,6 +126,7 @@ class RecommendationGraphRuntime:
             lambda state: market_intelligence_node(
                 state,
                 market_intelligence_service=services.market_intelligence,
+                agent_runtime=services.agent_runtime,
             ),
         )
         graph.add_node(
@@ -116,6 +136,7 @@ class RecommendationGraphRuntime:
                 product_retrieval_service=services.product_retrieval,
                 memory_recall_service=services.memory_recall,
                 product_candidates=services.product_candidates,
+                agent_runtime=services.agent_runtime,
             ),
         )
         graph.add_node(
@@ -131,6 +152,7 @@ class RecommendationGraphRuntime:
             lambda state: manager_coordinator_node(
                 state,
                 manager_synthesis_service=services.manager_synthesis,
+                agent_runtime=services.agent_runtime,
             ),
         )
 
@@ -167,7 +189,9 @@ class RecommendationGraphRuntime:
     def run(self, payload: RecommendationGenerationRequest) -> RecommendationGraphState:
         initial_state = build_initial_graph_state(payload)
         services = self._services_for_request()
-        graph = self._graph if services is self._services else self._build_graph(services)
+        graph = (
+            self._graph if services is self._services else self._build_graph(services)
+        )
         final_state = graph.invoke(initial_state)
         return final_state
 
@@ -177,17 +201,27 @@ class RecommendationGraphRuntime:
         *,
         repository: CandidateRepository | None = None,
         market_data_service: MarketDataSnapshotSource | None = None,
+        use_ai_agents: bool = False,
     ) -> RecommendationGraphRuntime:
-        candidate_repository = repository or PrefetchedCandidateRepository.with_default_cache()
+        candidate_repository = (
+            repository or PrefetchedCandidateRepository.with_default_cache()
+        )
+        agent_runtime = (
+            AnthropicRecommendationAgentRuntime.from_env() if use_ai_agents else None
+        )
         return cls(
             GraphServices(
                 market_intelligence=MarketIntelligenceService(
-                    market_data_service=market_data_service or _build_default_market_data_service()
+                    market_data_service=market_data_service
+                    or _build_default_market_data_service()
                 ),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
-                product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore([])),
+                product_retrieval=ProductRetrievalService(
+                    vector_store=_StaticVectorStore([])
+                ),
                 compliance_review=ComplianceReviewService(),
                 product_candidates=[],
+                agent_runtime=agent_runtime,
                 candidate_repository=candidate_repository,
             )
         )
@@ -199,7 +233,9 @@ class RecommendationGraphRuntime:
             GraphServices(
                 market_intelligence=MarketIntelligenceService(),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
-                product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore(candidates)),
+                product_retrieval=ProductRetrievalService(
+                    vector_store=_StaticVectorStore(candidates)
+                ),
                 compliance_review=ComplianceReviewService(),
                 product_candidates=candidates,
             )

@@ -189,4 +189,25 @@ describe("risk scoring", () => {
     expect(result.dimensionLevels.riskTolerance).toBe("medium");
     expect(result.dimensionLevels.returnObjective).toBe("medium");
   });
+
+  it("preserves raw questionnaire answers in the assessment result", () => {
+    const answerScores: AnswerScore[] = [
+      {
+        answerId: "3",
+        dimension: "riskTolerance",
+        questionId: "1",
+        score: 3,
+      },
+      {
+        answerId: "4",
+        dimension: "investmentHorizon",
+        questionId: "5",
+        score: 4,
+      },
+    ];
+
+    const result = buildAssessmentResult(answerScores);
+
+    expect(result.questionnaireAnswers).toEqual(answerScores);
+  });
 });

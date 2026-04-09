@@ -4,7 +4,10 @@ import { Link } from "react-router-dom";
 import { type Locale } from "../../app/state/app-state";
 import { InsightCard } from "../../components/InsightCard";
 import {
+  buildRecommendationGenerationPayload,
   fetchRecommendations,
+  type RecommendationAgentTraceEvent,
+  type RecommendationAgentTraceToolCall,
   type RecommendationProduct,
   type RecommendationResponse,
 } from "../../services/chinaMarketApi";
@@ -23,6 +26,12 @@ function getCopy(locale: Locale) {
       degradedBody:
         "The enhanced recommendation runtime is unavailable right now, so this plan is based on the fallback rules engine.",
       degradedTitle: "Recommendation currently uses the rules fallback path",
+      partialDegradedBody:
+        "Part of the AI analysis was unavailable, so the system automatically fell back to default ranking or summary logic for the affected steps.",
+      partialDegradedTitle: "Part of the AI analysis used fallback handling",
+      traceSummary: (stageCount: number, toolCount: number) =>
+        `${stageCount} stages logged, ${toolCount} tool calls recorded.`,
+      traceTitle: "AI analysis trace",
       loading: "Building your recommendation plan...",
       loadingBody:
         "We are combining your assessment profile with the current market stance to assemble a first-pass recommendation set.",
@@ -38,6 +47,11 @@ function getCopy(locale: Locale) {
     aggressive: "进取型备选",
     degradedBody: "由于智能增强暂不可用，当前结果基于规则引擎生成，建议结合自身情况谨慎参考。",
     degradedTitle: "当前推荐已回退到规则引擎结果",
+    partialDegradedBody: "部分 AI 分析阶段暂时不可用，系统已对受影响步骤自动回退到默认逻辑，当前推荐仍可正常参考。",
+    partialDegradedTitle: "部分 AI 分析已自动降级处理",
+    traceSummary: (stageCount: number, toolCount: number) =>
+      `已记录 ${stageCount} 个阶段，${toolCount} 次工具调用。`,
+    traceTitle: "AI 分析足迹",
     loading: "正在生成你的推荐方案...",
     loadingBody: "系统正在结合你的风险测评结果与当前市场判断，生成第一版资产配置与选品建议。",
     riskNotices: "风险提示",
@@ -49,6 +63,47 @@ function getCopy(locale: Locale) {
 
 function getLocalizedText(locale: Locale, zh: string, en: string) {
   return locale === "en-US" ? en : zh;
+}
+
+function getToolCalls(event: RecommendationAgentTraceEvent) {
+  return Array.isArray(event.toolCalls) ? event.toolCalls : [];
+}
+
+function getTraceStageLabel(
+  locale: Locale,
+  requestName: string | undefined,
+  nodeName: string,
+) {
+  const zhLabels: Record<string, string> = {
+    manager_coordinator: "方案统筹",
+    market_intelligence: "市场研判",
+    product_match_expert: "产品匹配",
+    user_profile_analyst: "画像分析",
+  };
+  const enLabels: Record<string, string> = {
+    manager_coordinator: "Plan coordination",
+    market_intelligence: "Market intelligence",
+    product_match_expert: "Product matching",
+    user_profile_analyst: "Profile analysis",
+  };
+  const stageName = requestName ?? nodeName;
+
+  if (locale === "en-US") {
+    return enLabels[stageName] ?? stageName;
+  }
+
+  return zhLabels[stageName] ?? stageName;
+}
+
+function getTraceData(agentTrace: RecommendationResponse["agentTrace"]) {
+  const traceEvents =
+    agentTrace?.filter((event) => event.status === "finish" && getToolCalls(event).length > 0) ?? [];
+  const toolCount = traceEvents.reduce((total, event) => total + getToolCalls(event).length, 0);
+
+  return {
+    toolCount,
+    traceEvents,
+  };
 }
 
 function AllocationBar({ label, value }: { label: string; value: number }) {
@@ -82,8 +137,8 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
         </div>
       </header>
       <div className="recommendation-product-card__tags">
-        {(locale === "en-US" ? product.tagsEn : product.tagsZh).map((tag) => (
-          <span className="tag-badge" key={tag}>
+        {(locale === "en-US" ? product.tagsEn : product.tagsZh).map((tag, index) => (
+          <span className="tag-badge" key={`${product.id}-${tag}-${index}`}>
             {tag}
           </span>
         ))}
@@ -105,6 +160,9 @@ export function RecommendationDeck({
   riskAssessmentResult,
 }: RecommendationDeckProps) {
   const copy = getCopy(locale);
+  const recommendationRequestKey = JSON.stringify(
+    buildRecommendationGenerationPayload(locale, riskAssessmentResult),
+  );
   const [data, setData] = useState<RecommendationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,7 +173,7 @@ export function RecommendationDeck({
     setLoading(true);
     setError(null);
 
-    fetchRecommendations(riskAssessmentResult)
+    fetchRecommendations(locale, riskAssessmentResult)
       .then((response) => {
         if (cancelled) {
           return;
@@ -138,7 +196,7 @@ export function RecommendationDeck({
     return () => {
       cancelled = true;
     };
-  }, [riskAssessmentResult]);
+  }, [recommendationRequestKey]);
 
   const sectionList = useMemo(() => {
     if (!data) {
@@ -147,6 +205,7 @@ export function RecommendationDeck({
 
     return [data.sections.funds, data.sections.wealthManagement, data.sections.stocks];
   }, [data]);
+  const traceData = useMemo(() => getTraceData(data?.agentTrace), [data?.agentTrace]);
 
   if (loading) {
     return (
@@ -166,6 +225,14 @@ export function RecommendationDeck({
 
   const showDegradedBanner =
     data.executionMode === "rules_fallback" || data.warnings.length > 0;
+  const degradedTitle =
+    data.executionMode === "rules_fallback"
+      ? copy.degradedTitle
+      : copy.partialDegradedTitle;
+  const degradedBody =
+    data.executionMode === "rules_fallback"
+      ? copy.degradedBody
+      : copy.partialDegradedBody;
 
   return (
     <section className="recommendation-page-layout">
@@ -188,9 +255,9 @@ export function RecommendationDeck({
       {showDegradedBanner ? (
         <article className="panel recommendation-degraded">
           <header className="panel__header">
-            <h2>{copy.degradedTitle}</h2>
+            <h2>{degradedTitle}</h2>
           </header>
-          <p>{copy.degradedBody}</p>
+          <p>{degradedBody}</p>
           {data.warnings.length > 0 ? (
             <ul>
               {data.warnings.map((warning) => (
@@ -198,6 +265,35 @@ export function RecommendationDeck({
               ))}
             </ul>
           ) : null}
+        </article>
+      ) : null}
+
+      {traceData.toolCount > 0 ? (
+        <article className="panel recommendation-trace">
+          <header className="panel__header">
+            <h2>{copy.traceTitle}</h2>
+          </header>
+          <p>{copy.traceSummary(traceData.traceEvents.length, traceData.toolCount)}</p>
+          <div className="recommendation-grid recommendation-grid--stacked">
+            {traceData.traceEvents.map((event, eventIndex) => (
+              <article
+                className="recommendation-product-card"
+                key={`${event.requestName}-${event.nodeName}-${eventIndex}`}
+              >
+                <strong>{getTraceStageLabel(locale, event.requestName, event.nodeName)}</strong>
+                <div className="recommendation-product-card__tags">
+                  {getToolCalls(event).map((toolCall: RecommendationAgentTraceToolCall, toolIndex: number) => (
+                    <span
+                      className="tag-badge"
+                      key={`${event.nodeName}-${toolCall.toolName}-${toolIndex}`}
+                    >
+                      {toolCall.toolName}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
         </article>
       ) : null}
 
@@ -235,8 +331,11 @@ export function RecommendationDeck({
       </section>
 
       <section className="recommendation-sections">
-        {sectionList.map((section) => (
-          <article className="recommendation-section" key={section.titleZh}>
+        {sectionList.map((section, index) => (
+          <article
+            className="recommendation-section"
+            key={`${section.titleZh}-${section.titleEn}-${index}`}
+          >
             <header className="panel__header recommendation-section__header">
               <h2>{getLocalizedText(locale, section.titleZh, section.titleEn)}</h2>
             </header>

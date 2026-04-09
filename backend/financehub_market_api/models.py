@@ -247,6 +247,12 @@ class MarketEvidenceItem(BaseModel):
     summary: LocalizedText
 
 
+class AgentTraceToolCall(BaseModel):
+    toolName: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+    result: dict[str, object] = Field(default_factory=dict)
+
+
 class AgentTraceEvent(BaseModel):
     nodeName: str
     requestName: str
@@ -256,6 +262,7 @@ class AgentTraceEvent(BaseModel):
     durationMs: int | None = None
     requestSummary: str | None = None
     responseSummary: str | None = None
+    toolCalls: list[AgentTraceToolCall] = Field(default_factory=list)
 
 
 class RecommendationResponse(BaseModel):

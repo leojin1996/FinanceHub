@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from math import isfinite
@@ -599,6 +600,7 @@ class PremiumStockDetailAdapter:
         max_universe_size: int = 150,
         max_items: int = 12,
         price_snapshot_batch_size: int = 8,
+        price_snapshot_max_workers: int = 4,
     ) -> None:
         self._constituent_fetchers = list(
             constituent_fetchers
@@ -619,6 +621,7 @@ class PremiumStockDetailAdapter:
         self._max_universe_size = max_universe_size
         self._max_items = max_items
         self._price_snapshot_batch_size = price_snapshot_batch_size
+        self._price_snapshot_max_workers = max(1, price_snapshot_max_workers)
 
     def list_product_details(self) -> list[ProductDetailSnapshot]:
         universe = self._build_universe()
@@ -707,10 +710,14 @@ class PremiumStockDetailAdapter:
         if len(symbols) <= self._price_snapshot_batch_size:
             return self._price_snapshot_fetcher(symbols)
 
-        snapshots = [
-            self._price_snapshot_fetcher(batch)
-            for batch in _chunk_symbols(symbols, self._price_snapshot_batch_size)
-        ]
+        batches = list(_chunk_symbols(symbols, self._price_snapshot_batch_size))
+        if len(batches) == 1 or self._price_snapshot_max_workers == 1:
+            snapshots = [self._price_snapshot_fetcher(batch) for batch in batches]
+            return _merge_stock_price_snapshots(snapshots)
+
+        max_workers = min(self._price_snapshot_max_workers, len(batches))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            snapshots = list(executor.map(self._price_snapshot_fetcher, batches))
         return _merge_stock_price_snapshots(snapshots)
 
     def _build_universe(self) -> list["_PremiumUniverseEntry"]:

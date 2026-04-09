@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import replace
 
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
@@ -267,6 +269,40 @@ def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
     assert len(details) == 5
     assert requested_batch_sizes == [8] * 15
     assert details[0].source == "premium_stock_refresh"
+
+
+def test_premium_stock_detail_adapter_fetches_batches_concurrently() -> None:
+    rows = [
+        {"代码": f"{600000 + index}", "名称": f"股票{index:03d}"}
+        for index in range(24)
+    ]
+    lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+
+    def fake_price_snapshot_fetcher(symbols: list[str]) -> StockPriceSnapshot:
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        try:
+            time.sleep(0.05)
+            return _build_stock_snapshot(symbols)
+        finally:
+            with lock:
+                in_flight -= 1
+
+    adapter = PremiumStockDetailAdapter(
+        constituent_fetchers=(("CSI300", lambda: FakeFrame(rows)),),
+        price_snapshot_fetcher=fake_price_snapshot_fetcher,
+        max_universe_size=24,
+        max_items=5,
+    )
+
+    details = adapter.list_product_details()
+
+    assert len(details) == 5
+    assert max_in_flight >= 2
 
 
 def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None:

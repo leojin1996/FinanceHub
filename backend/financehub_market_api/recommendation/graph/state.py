@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from collections.abc import Mapping, Sequence
+from typing import Literal, Protocol, TypedDict
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from financehub_market_api.models import (
     AgentTraceEvent,
+    AgentTraceToolCall,
     MarketEvidenceItem,
     RecommendationGenerationRequest,
     RecommendationWarning,
@@ -20,6 +22,12 @@ class RequestContext(BaseModel):
     payload: RecommendationGenerationRequest
 
 
+class _TraceToolCall(Protocol):
+    tool_name: str
+    arguments: Mapping[str, object]
+    result: Mapping[str, object]
+
+
 class UserIntelligence(BaseModel):
     risk_tier: str
     liquidity_preference: str
@@ -28,6 +36,16 @@ class UserIntelligence(BaseModel):
     drawdown_sensitivity: str
     profile_summary_zh: str
     profile_summary_en: str
+
+
+class AgentProfileFocusState(BaseModel):
+    profile_focus_zh: str
+    profile_focus_en: str
+
+
+class AgentMarketSummaryState(BaseModel):
+    summary_zh: str
+    summary_en: str
 
 
 class MarketIntelligenceState(BaseModel):
@@ -103,6 +121,8 @@ class ManagerBrief(BaseModel):
 class RecommendationGraphState(TypedDict):
     request_context: RequestContext
     user_intelligence: UserIntelligence | None
+    agent_profile_focus: AgentProfileFocusState | None
+    agent_market_summary: AgentMarketSummaryState | None
     market_intelligence: MarketIntelligenceState | None
     retrieval_context: RetrievalContext | None
     compliance_review: ComplianceReviewState | None
@@ -114,13 +134,17 @@ class RecommendationGraphState(TypedDict):
     agent_trace: list[AgentTraceEvent]
 
 
-def build_initial_graph_state(payload: RecommendationGenerationRequest) -> RecommendationGraphState:
+def build_initial_graph_state(
+    payload: RecommendationGenerationRequest,
+) -> RecommendationGraphState:
     return {
         "request_context": RequestContext(
             user_intent_text=payload.userIntentText,
             payload=payload.model_copy(deep=True),
         ),
         "user_intelligence": None,
+        "agent_profile_focus": None,
+        "agent_market_summary": None,
         "market_intelligence": None,
         "retrieval_context": None,
         "compliance_review": None,
@@ -160,6 +184,7 @@ def append_agent_trace_event(
     duration_ms: int | None = None,
     request_summary: str | None = None,
     response_summary: str | None = None,
+    tool_calls: Sequence[_TraceToolCall] = (),
 ) -> RecommendationGraphState:
     return {
         **state,
@@ -174,6 +199,28 @@ def append_agent_trace_event(
                 durationMs=duration_ms,
                 requestSummary=request_summary,
                 responseSummary=response_summary,
+                toolCalls=[
+                    AgentTraceToolCall(
+                        toolName=tool_call.tool_name,
+                        arguments=_normalize_trace_mapping(tool_call.arguments),
+                        result=_normalize_trace_mapping(tool_call.result),
+                    )
+                    for tool_call in tool_calls
+                ],
             ),
         ],
     }
+
+
+def _normalize_trace_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    return {key: _normalize_trace_value(item) for key, item in value.items()}
+
+
+def _normalize_trace_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _normalize_trace_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [_normalize_trace_value(item) for item in value]
+    return value

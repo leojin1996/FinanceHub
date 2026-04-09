@@ -1,3 +1,4 @@
+import type { Locale } from "../app/state/app-state";
 import type { RiskAssessmentResult } from "../features/risk-assessment/risk-scoring";
 
 export interface MetricCardData {
@@ -115,6 +116,40 @@ export interface RecommendationWarning {
   stage: string;
 }
 
+export interface RecommendationAgentTraceToolCall {
+  arguments: Record<string, unknown>;
+  result: Record<string, unknown>;
+  toolName: string;
+}
+
+export interface RecommendationAgentTraceEvent {
+  nodeName: string;
+  providerName?: string | null;
+  requestName: string;
+  status: "start" | "finish" | "error" | "transition";
+  toolCalls?: RecommendationAgentTraceToolCall[] | null;
+}
+
+interface RecommendationRiskAssessmentPayload {
+  baseProfile: RiskAssessmentResult["baseProfile"];
+  dimensionLevels: RiskAssessmentResult["dimensionLevels"];
+  dimensionScores: RiskAssessmentResult["dimensionScores"];
+  finalProfile: RiskAssessmentResult["finalProfile"];
+  totalScore: RiskAssessmentResult["totalScore"];
+}
+
+export interface RecommendationGenerationPayload {
+  clientContext: {
+    channel: "web";
+    locale: Locale;
+  };
+  historicalHoldings: [];
+  historicalTransactions: [];
+  includeAggressiveOption: boolean;
+  questionnaireAnswers: RiskAssessmentResult["questionnaireAnswers"];
+  riskAssessmentResult: RecommendationRiskAssessmentPayload;
+}
+
 export interface RecommendationResponse {
   aggressiveOption: {
     allocation: AllocationDisplay;
@@ -129,6 +164,7 @@ export interface RecommendationResponse {
   profileSummary: LocalizedText;
   reviewStatus: "pass" | "partial_pass";
   riskNotice: LocalizedTextList;
+  agentTrace?: RecommendationAgentTraceEvent[];
   sections: {
     funds: RecommendationSection;
     wealthManagement: RecommendationSection;
@@ -191,17 +227,35 @@ export function fetchStocks(query?: string): Promise<StocksResponse> {
   return fetch(url).then(readJson<StocksResponse>);
 }
 
+export function buildRecommendationGenerationPayload(
+  locale: Locale,
+  riskAssessmentResult: RiskAssessmentResult,
+): RecommendationGenerationPayload {
+  return {
+    clientContext: {
+      channel: "web",
+      locale,
+    },
+    historicalHoldings: [],
+    historicalTransactions: [],
+    includeAggressiveOption: true,
+    questionnaireAnswers: riskAssessmentResult.questionnaireAnswers,
+    riskAssessmentResult: {
+      baseProfile: riskAssessmentResult.baseProfile,
+      dimensionLevels: riskAssessmentResult.dimensionLevels,
+      dimensionScores: riskAssessmentResult.dimensionScores,
+      finalProfile: riskAssessmentResult.finalProfile,
+      totalScore: riskAssessmentResult.totalScore,
+    },
+  };
+}
+
 export function fetchRecommendations(
+  locale: Locale,
   riskAssessmentResult: RiskAssessmentResult,
 ): Promise<RecommendationResponse> {
   return fetch("/api/recommendations/generate", {
-    body: JSON.stringify({
-      historicalHoldings: [],
-      historicalTransactions: [],
-      includeAggressiveOption: true,
-      questionnaireAnswers: [],
-      riskAssessmentResult,
-    }),
+    body: JSON.stringify(buildRecommendationGenerationPayload(locale, riskAssessmentResult)),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   }).then(readJson<RecommendationResponse>);

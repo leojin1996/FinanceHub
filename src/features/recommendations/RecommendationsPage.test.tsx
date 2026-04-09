@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../app/App";
+import { questionnaire } from "../../mock/questionnaire";
 
 const dimensionAwareAnswerPattern = [
   2, 2, 2, 2,
@@ -50,7 +51,10 @@ async function completeQuestionnaire(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("RecommendationsPage", () => {
+  let recommendationRequests: unknown[];
+
   beforeEach(() => {
+    recommendationRequests = [];
     const localStorageMock = createStorageMock();
     vi.stubGlobal("localStorage", localStorageMock);
     Object.defineProperty(window, "localStorage", {
@@ -60,10 +64,11 @@ describe("RecommendationsPage", () => {
     window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
     vi.stubGlobal(
       "fetch",
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
 
         if (url.endsWith("/api/recommendations/generate")) {
+          recommendationRequests.push(JSON.parse(String(init?.body ?? "{}")));
           return jsonResponse({
             aggressiveOption: {
               allocation: { fund: 40, stock: 35, wealthManagement: 25 },
@@ -319,6 +324,267 @@ describe("RecommendationsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("sends questionnaire answers and web locale context to recommendation generation", async () => {
+    window.history.pushState({}, "", "/risk-assessment");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.selectOptions(screen.getAllByRole("combobox")[0], "en-US");
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "Recommendations" }));
+    await screen.findByRole("heading", { name: "A Balanced plan that fits you", level: 2 });
+
+    expect(recommendationRequests).toHaveLength(1);
+    expect(recommendationRequests[0]).toMatchObject({
+      clientContext: {
+        channel: "web",
+        locale: "en-US",
+      },
+      historicalHoldings: [],
+      historicalTransactions: [],
+      questionnaireAnswers: questionnaire.map((question, index) => ({
+        answerId: String(dimensionAwareAnswerPattern[index] + 1),
+        dimension: question.dimension,
+        questionId: String(question.id),
+        score: dimensionAwareAnswerPattern[index] + 1,
+      })),
+    });
+  });
+
+  it("shows a partial degradation banner when only some AI stages fall back", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/recommendations/generate")) {
+        return jsonResponse({
+          aggressiveOption: null,
+          allocationDisplay: { fund: 45, stock: 20, wealthManagement: 35 },
+          executionMode: "agent_assisted",
+          marketSummary: {
+            en: "Market summary",
+            zh: "市场摘要",
+          },
+          profileSummary: {
+            en: "Profile summary",
+            zh: "画像摘要",
+          },
+          reviewStatus: "pass",
+          riskNotice: { en: [], zh: [] },
+          sections: {
+            funds: { items: [], titleEn: "Fund ideas", titleZh: "基金推荐" },
+            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            wealthManagement: {
+              items: [],
+              titleEn: "Wealth management ideas",
+              titleZh: "银行理财推荐",
+            },
+          },
+          summary: {
+            subtitleEn: "Subtitle",
+            subtitleZh: "副标题",
+            titleEn: "Title",
+            titleZh: "标题",
+          },
+          warnings: [
+            {
+              code: "agent_fund_selection_failed",
+              message: "基金智能排序暂时不可用，已自动回退到默认候选顺序。",
+              stage: "product_match_expert",
+            },
+          ],
+          whyThisPlan: { en: [], zh: [] },
+        });
+      }
+
+      throw new Error(`Unhandled fetch for ${url}`);
+    });
+
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+
+    expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("部分 AI 分析已自动降级处理")).toBeInTheDocument();
+    expect(
+      screen.getByText("部分 AI 分析阶段暂时不可用，系统已对受影响步骤自动回退到默认逻辑，当前推荐仍可正常参考。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("基金智能排序暂时不可用，已自动回退到默认候选顺序。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("当前推荐已回退到规则引擎结果")).not.toBeInTheDocument();
+  });
+
+  it("renders a compact AI trace when tool calls are returned", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/recommendations/generate")) {
+        return jsonResponse({
+          aggressiveOption: null,
+          agentTrace: [
+            {
+              nodeName: "profile_analysis",
+              providerName: "anthropic",
+              requestName: "user_profile_analyst",
+              status: "finish",
+              toolCalls: [
+                {
+                  arguments: { profile: "balanced" },
+                  result: { score: 0.71 },
+                  toolName: "profile_intelligence_score",
+                },
+              ],
+            },
+            {
+              nodeName: "market_analysis",
+              providerName: "anthropic",
+              requestName: "market_intelligence",
+              status: "finish",
+              toolCalls: [
+                {
+                  arguments: { market: "cn" },
+                  result: { summary: "steady" },
+                  toolName: "market_snapshot",
+                },
+                {
+                  arguments: { limit: 3 },
+                  result: { count: 3 },
+                  toolName: "candidate_ranker",
+                },
+              ],
+            },
+          ],
+          allocationDisplay: { fund: 45, stock: 20, wealthManagement: 35 },
+          executionMode: "agent_assisted",
+          marketSummary: {
+            en: "Market summary",
+            zh: "市场摘要",
+          },
+          profileSummary: {
+            en: "Profile summary",
+            zh: "画像摘要",
+          },
+          reviewStatus: "pass",
+          riskNotice: { en: [], zh: [] },
+          sections: {
+            funds: { items: [], titleEn: "Fund ideas", titleZh: "基金推荐" },
+            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            wealthManagement: {
+              items: [],
+              titleEn: "Wealth management ideas",
+              titleZh: "银行理财推荐",
+            },
+          },
+          summary: {
+            subtitleEn: "Subtitle",
+            subtitleZh: "副标题",
+            titleEn: "Title",
+            titleZh: "标题",
+          },
+          warnings: [],
+          whyThisPlan: { en: [], zh: [] },
+        });
+      }
+
+      throw new Error(`Unhandled fetch for ${url}`);
+    });
+
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+
+    expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("AI 分析足迹")).toBeInTheDocument();
+    expect(screen.getByText("已记录 2 个阶段，3 次工具调用。")).toBeInTheDocument();
+    expect(screen.getByText("画像分析")).toBeInTheDocument();
+    expect(screen.getByText("市场研判")).toBeInTheDocument();
+    expect(screen.getByText("profile_intelligence_score")).toBeInTheDocument();
+    expect(screen.getByText("market_snapshot")).toBeInTheDocument();
+    expect(screen.getByText("candidate_ranker")).toBeInTheDocument();
+  });
+
+  it("ignores incomplete agent trace events without crashing the page", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/recommendations/generate")) {
+        return jsonResponse({
+          aggressiveOption: null,
+          agentTrace: [
+            {
+              nodeName: "profile_analysis",
+              requestName: "user_profile_analyst",
+              status: "finish",
+            },
+            {
+              nodeName: "market_analysis",
+              requestName: "market_intelligence",
+              status: "finish",
+              toolCalls: null,
+            },
+          ],
+          allocationDisplay: { fund: 45, stock: 20, wealthManagement: 35 },
+          executionMode: "agent_assisted",
+          marketSummary: {
+            en: "Market summary",
+            zh: "市场摘要",
+          },
+          profileSummary: {
+            en: "Profile summary",
+            zh: "画像摘要",
+          },
+          reviewStatus: "pass",
+          riskNotice: { en: [], zh: [] },
+          sections: {
+            funds: { items: [], titleEn: "Fund ideas", titleZh: "基金推荐" },
+            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            wealthManagement: {
+              items: [],
+              titleEn: "Wealth management ideas",
+              titleZh: "银行理财推荐",
+            },
+          },
+          summary: {
+            subtitleEn: "Subtitle",
+            subtitleZh: "副标题",
+            titleEn: "Title",
+            titleZh: "标题",
+          },
+          warnings: [],
+          whyThisPlan: { en: [], zh: [] },
+        });
+      }
+
+      throw new Error(`Unhandled fetch for ${url}`);
+    });
+
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+
+    expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByText("AI 分析足迹")).not.toBeInTheDocument();
+  });
+
   it("opens an in-app product detail page from the recommendation card", async () => {
     window.history.pushState({}, "", "/recommendations");
     const user = userEvent.setup();
@@ -478,10 +744,19 @@ describe("RecommendationsPage", () => {
     expect(recommendationCall).toBeDefined();
     const requestInit = recommendationCall?.[1];
     const body = JSON.parse(String(requestInit?.body)) as {
+      clientContext: {
+        channel: string;
+        locale: string;
+      };
       historicalHoldings: unknown[];
       historicalTransactions: unknown[];
       includeAggressiveOption: boolean;
-      questionnaireAnswers: unknown[];
+      questionnaireAnswers: Array<{
+        answerId: string;
+        dimension: string;
+        questionId: string;
+        score: number;
+      }>;
       riskAssessmentResult: {
         baseProfile: string;
         dimensionLevels: Record<string, string>;
@@ -490,8 +765,19 @@ describe("RecommendationsPage", () => {
         totalScore: number;
       };
     };
+    expect(body.clientContext).toEqual({
+      channel: "web",
+      locale: "zh-CN",
+    });
     expect(body.includeAggressiveOption).toBe(true);
-    expect(body.questionnaireAnswers).toEqual([]);
+    expect(body.questionnaireAnswers).toEqual(
+      questionnaire.map((question, index) => ({
+        answerId: String(dimensionAwareAnswerPattern[index] + 1),
+        dimension: question.dimension,
+        questionId: String(question.id),
+        score: dimensionAwareAnswerPattern[index] + 1,
+      })),
+    );
     expect(body.historicalHoldings).toEqual([]);
     expect(body.historicalTransactions).toEqual([]);
     expect(body.riskAssessmentResult).toEqual({

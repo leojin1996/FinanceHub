@@ -15,4 +15,6 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
+export PYTHONPATH="$BACKEND_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 exec "${PYTHON_BIN:-python3}" "$BACKEND_DIR/scripts/refresh_recommendation_candidate_pool.py" "$@"

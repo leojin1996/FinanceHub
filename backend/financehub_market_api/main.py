@@ -37,7 +37,9 @@ def get_market_data_service() -> MarketDataService:
 @lru_cache(maxsize=1)
 def get_recommendation_service() -> RecommendationService:
     return RecommendationService(
-        graph_runtime=RecommendationGraphRuntime.with_default_services()
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            use_ai_agents=True
+        )
     )
 
 
@@ -141,7 +143,9 @@ def get_recommendation_product_detail(
 ) -> RecommendationProductDetailResponse:
     detail = service.get_product_detail(product_id)
     if detail is None:
-        raise HTTPException(status_code=404, detail=f"recommendation product {product_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"recommendation product {product_id} not found"
+        )
     if detail.stale:
         background_tasks.add_task(service.refresh_product_detail, product_id)
     return detail
