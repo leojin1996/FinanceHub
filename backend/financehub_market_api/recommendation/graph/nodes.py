@@ -6,6 +6,7 @@ from financehub_market_api.recommendation.graph.state import (
     ComplianceReviewState,
     FinalResponseState,
     MarketIntelligenceState,
+    ProductStrategy,
     RecommendationGraphState,
     RetrievalContext,
     RetrievedCandidate,
@@ -15,53 +16,29 @@ from financehub_market_api.recommendation.graph.state import (
     append_warning,
 )
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
+from financehub_market_api.recommendation.manager_synthesis import ManagerSynthesisService
 from financehub_market_api.recommendation.memory import MemoryRecallService
+from financehub_market_api.recommendation.profile_intelligence import ProfileIntelligenceService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
-_RISK_PROFILE_TO_TIER = {
-    "conservative": "R2",
-    "stable": "R2",
-    "balanced": "R3",
-    "growth": "R4",
-    "aggressive": "R5",
-}
 _RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
 
-_PROFILE_LABELS_ZH = {
-    "conservative": "保守型",
-    "stable": "稳健型",
-    "balanced": "平衡型",
-    "growth": "成长型",
-    "aggressive": "进取型",
-}
 
-_PROFILE_LABELS_EN = {
-    "conservative": "Conservative",
-    "stable": "Stable",
-    "balanced": "Balanced",
-    "growth": "Growth",
-    "aggressive": "Aggressive",
-}
-
-
-def user_profile_analyst_node(state: RecommendationGraphState) -> RecommendationGraphState:
+def user_profile_analyst_node(
+    state: RecommendationGraphState,
+    *,
+    profile_intelligence_service: ProfileIntelligenceService,
+) -> RecommendationGraphState:
     payload = state["request_context"].payload
     risk_profile = payload.riskAssessmentResult.finalProfile
-    dimension_levels = payload.riskAssessmentResult.dimensionLevels
 
-    user_intelligence = UserIntelligence(
-        risk_tier=_RISK_PROFILE_TO_TIER.get(risk_profile, "R2"),
-        liquidity_preference="high" if risk_profile in {"conservative", "stable"} else "medium",
-        investment_horizon=dimension_levels.investmentHorizon,
-        return_objective=dimension_levels.returnObjective,
-        drawdown_sensitivity=dimension_levels.riskTolerance,
-        profile_summary_zh=(
-            f"您的测评结果更接近{_PROFILE_LABELS_ZH[risk_profile]}，适合先控制回撤，再追求稳步增值。"
-        ),
-        profile_summary_en=(
-            f"Your assessment aligns with a {_PROFILE_LABELS_EN[risk_profile]} profile, which calls for drawdown control before chasing extra upside."
-        ),
+    user_intelligence = profile_intelligence_service.build_user_intelligence(
+        risk_profile=risk_profile,
+        questionnaire_answers=list(payload.questionnaireAnswers),
+        historical_holdings=list(payload.historicalHoldings),
+        historical_transactions=list(payload.historicalTransactions),
+        user_intent_text=state["request_context"].user_intent_text,
     )
 
     next_state = {
@@ -87,21 +64,15 @@ def market_intelligence_node(
     if user_intelligence is None:
         raise ValueError("user_intelligence must be present before market_intelligence_node")
 
-    snapshot = market_intelligence_service.build_snapshot(
-        market_overview_summary="A股宽基震荡，红利与固收风格相对占优。",
-        macro_summary="宏观修复温和，政策基调保持稳增长。",
-        rate_summary="一年期利率中枢下移，稳健资产仍具吸引力。",
-        news_summaries=[
-            "公募资金净申购延续，低波动产品关注度提升",
-            "龙头权益估值分化，建议保持行业分散",
-        ],
-    )
+    snapshot = market_intelligence_service.build_recommendation_snapshot()
 
     next_state = {
         **state,
         "market_intelligence": MarketIntelligenceState(
             sentiment=snapshot.sentiment,
             stance=snapshot.stance,
+            preferred_categories=list(snapshot.preferred_categories),
+            avoided_categories=list(snapshot.avoided_categories),
             summary_zh=snapshot.summary_zh,
             summary_en=snapshot.summary_en,
             evidence=snapshot.evidence,
@@ -125,16 +96,48 @@ def product_match_expert_node(
     product_candidates: list[CandidateProduct],
 ) -> RecommendationGraphState:
     user_intelligence = state["user_intelligence"]
-    if user_intelligence is None:
-        raise ValueError("user_intelligence must be present before product_match_expert_node")
+    market_intelligence = state["market_intelligence"]
+    if user_intelligence is None or market_intelligence is None:
+        raise ValueError(
+            "user_intelligence and market_intelligence must be present before product_match_expert_node"
+        )
 
     query_text = state["request_context"].user_intent_text or user_intelligence.profile_summary_zh
     recalled_memories = memory_recall_service.recall(query_text, limit=3)
-    retrieved = product_retrieval_service.retrieve(
+    allowed_risk_levels = _allowed_risk_levels_for_tier(user_intelligence.risk_tier)
+    preferred_categories = _preferred_categories_for_strategy(
+        user_intelligence=user_intelligence,
+        market_intelligence=market_intelligence,
+    )
+    blocked_categories = _blocked_categories_for_strategy(
+        user_intelligence=user_intelligence,
+        market_intelligence=market_intelligence,
+    )
+    retrieval_plan = product_retrieval_service.plan_retrieval(
         query_text=query_text,
         candidates=product_candidates,
-        allowed_risk_levels={"R1", "R2", "R3", "R4", "R5"},
+        allowed_risk_levels=allowed_risk_levels,
+        preferred_categories=set(preferred_categories),
+        blocked_categories=blocked_categories,
+        liquidity_preference=user_intelligence.liquidity_preference,
         limit=6,
+    )
+    recommended_categories = [
+        category for category in preferred_categories if category not in blocked_categories
+    ]
+    product_strategy = ProductStrategy(
+        recommended_categories=recommended_categories,
+        ranking_rationale_zh=(
+            f"结合用户风险等级 {user_intelligence.risk_tier}、"
+            f"流动性偏好 {user_intelligence.liquidity_preference} 和"
+            f"市场立场 {market_intelligence.stance}，优先筛选 "
+            f"{'、'.join(recommended_categories) or '合规候选'}。"
+        ),
+        ranking_rationale_en=(
+            f"Ranking prioritizes categories aligned with risk tier {user_intelligence.risk_tier}, "
+            f"{user_intelligence.liquidity_preference} liquidity needs, and a "
+            f"{market_intelligence.stance} market stance."
+        ),
     )
 
     retrieval_context = RetrievalContext(
@@ -159,13 +162,14 @@ def product_match_expert_node(
                     tags_en=list(candidate.tags_en),
                 ),
             )
-            for index, candidate in enumerate(retrieved)
+            for index, candidate in enumerate(retrieval_plan.candidates)
         ],
-        filtered_out_reasons=[],
+        filtered_out_reasons=list(retrieval_plan.filtered_out_reasons),
     )
 
     next_state = {
         **state,
+        "product_strategy": product_strategy,
         "retrieval_context": retrieval_context,
     }
     return append_agent_trace_event(
@@ -219,6 +223,7 @@ def compliance_risk_officer_node(
 
     review_result = compliance_review_service.review(
         risk_tier=user_intelligence.risk_tier,
+        liquidity_preference=user_intelligence.liquidity_preference,
         candidates=selected_candidates,
     )
 
@@ -230,6 +235,8 @@ def compliance_risk_officer_node(
             reason_en=review_result.reason_en,
             disclosures_zh=review_result.disclosures_zh,
             disclosures_en=review_result.disclosures_en,
+            suitability_notes_zh=review_result.suitability_notes_zh,
+            suitability_notes_en=review_result.suitability_notes_en,
         ),
     }
 
@@ -270,35 +277,39 @@ def compliance_risk_officer_node(
     )
 
 
-def manager_coordinator_node(state: RecommendationGraphState) -> RecommendationGraphState:
+def manager_coordinator_node(
+    state: RecommendationGraphState,
+    *,
+    manager_synthesis_service: ManagerSynthesisService,
+) -> RecommendationGraphState:
     route = route_compliance_verdict(state)
-    status_by_route = {
-        "approved": "ready",
-        "limited": "limited",
-        "blocked": "blocked",
-    }
-    summary_by_route = {
-        "approved": (
-            "推荐结果已通过合规审阅，可直接查看主方案。",
-            "Recommendation is compliance-approved and ready to present.",
-        ),
-        "limited": (
-            "推荐结果需采用更稳健限制版本，请先查看合规提示。",
-            "Recommendation is limited and revised conservatively; review compliance notes first.",
-        ),
-        "blocked": (
-            "推荐结果暂不可下发，请联系投顾人工复核。",
-            "Recommendation is blocked and requires manual advisor review.",
-        ),
-    }
-    summary_zh, summary_en = summary_by_route[route]
+    user_intelligence = state["user_intelligence"]
+    market_intelligence = state["market_intelligence"]
+    if user_intelligence is None or market_intelligence is None:
+        raise ValueError(
+            "user_intelligence and market_intelligence are required for manager_coordinator_node"
+        )
+    manager_brief = manager_synthesis_service.build_manager_brief(
+        route=route,
+        user_intelligence=user_intelligence,
+        market_intelligence=market_intelligence,
+        product_strategy=state["product_strategy"],
+        compliance_review=state["compliance_review"],
+    )
 
     next_state = {
         **state,
+        "manager_brief": manager_brief,
+        "recommendation_draft": {
+            "summary_zh": manager_brief.summary_zh,
+            "summary_en": manager_brief.summary_en,
+            "why_this_plan_zh": list(manager_brief.why_this_plan_zh),
+            "why_this_plan_en": list(manager_brief.why_this_plan_en),
+        },
         "final_response": FinalResponseState(
-            recommendation_status=status_by_route[route],
-            summary_zh=summary_zh,
-            summary_en=summary_en,
+            recommendation_status=manager_brief.recommendation_status,
+            summary_zh=manager_brief.summary_zh,
+            summary_en=manager_brief.summary_en,
         ),
     }
     return append_agent_trace_event(
@@ -307,5 +318,41 @@ def manager_coordinator_node(state: RecommendationGraphState) -> RecommendationG
         request_name="manager_coordinator",
         status="finish",
         request_summary=f"route={route}",
-        response_summary=f"status={status_by_route[route]}",
+        response_summary=f"status={manager_brief.recommendation_status}",
     )
+
+
+def _allowed_risk_levels_for_tier(risk_tier: str) -> set[str]:
+    allowed_risk_level = _RISK_ORDER.get(risk_tier)
+    if allowed_risk_level is None:
+        return {"R1", "R2"}
+    return {
+        risk_level
+        for risk_level, order in _RISK_ORDER.items()
+        if order <= allowed_risk_level
+    }
+
+
+def _blocked_categories_for_strategy(
+    *,
+    user_intelligence: UserIntelligence,
+    market_intelligence: MarketIntelligenceState,
+) -> set[str]:
+    blocked_categories = set(market_intelligence.avoided_categories)
+    if user_intelligence.risk_tier in {"R1", "R2"}:
+        blocked_categories.add("stock")
+    if user_intelligence.drawdown_sensitivity == "high":
+        blocked_categories.add("stock")
+    return blocked_categories
+
+
+def _preferred_categories_for_strategy(
+    *,
+    user_intelligence: UserIntelligence,
+    market_intelligence: MarketIntelligenceState,
+) -> list[str]:
+    if user_intelligence.risk_tier in {"R1", "R2"}:
+        return ["wealth_management", "fund"]
+    if user_intelligence.drawdown_sensitivity == "high":
+        return ["wealth_management", "fund"]
+    return list(market_intelligence.preferred_categories)

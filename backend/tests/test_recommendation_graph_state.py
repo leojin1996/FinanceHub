@@ -57,6 +57,9 @@ def test_build_initial_graph_state_seeds_request_context_and_trace_defaults() ->
     assert state["warnings"] == []
     assert state["agent_trace"] == []
     assert state["final_response"] is None
+    assert state["product_strategy"] is None
+    assert state["manager_brief"] is None
+    assert state["recommendation_draft"] is None
 
     payload.userIntentText = "变更后的意图"
     payload.conversationMessages[0].content = "修改后的对话内容"
@@ -65,6 +68,21 @@ def test_build_initial_graph_state_seeds_request_context_and_trace_defaults() ->
         state["request_context"].payload.conversationMessages[0].content
         == "我有 10 万闲钱，想存一年，不想亏本"
     )
+
+
+def test_build_initial_graph_state_includes_funnel_state_placeholders() -> None:
+    payload = _build_payload()
+
+    state = build_initial_graph_state(payload)
+
+    assert state["user_intelligence"] is None
+    assert state["market_intelligence"] is None
+    assert state["retrieval_context"] is None
+    assert state["compliance_review"] is None
+    assert state["final_response"] is None
+    assert state["product_strategy"] is None
+    assert state["manager_brief"] is None
+    assert state["recommendation_draft"] is None
 
 
 def test_append_helpers_preserve_existing_state() -> None:

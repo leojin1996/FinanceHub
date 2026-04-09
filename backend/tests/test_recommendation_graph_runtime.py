@@ -12,10 +12,11 @@ def _build_generation_request(
     risk_profile: str,
     *,
     include_aggressive_option: bool = True,
+    user_intent_text: str | None = "我希望获得稳健配置建议",
 ) -> RecommendationGenerationRequest:
     return RecommendationGenerationRequest.model_validate(
         {
-            "userIntentText": "我希望获得稳健配置建议",
+            "userIntentText": user_intent_text,
             "historicalHoldings": [],
             "historicalTransactions": [],
             "includeAggressiveOption": include_aggressive_option,
@@ -56,17 +57,30 @@ def test_graph_runtime_produces_ready_response_with_trace_and_evidence() -> None
     assert response.agentTrace
 
 
-def test_graph_runtime_returns_limited_response_when_compliance_revises() -> None:
+def test_graph_runtime_executes_funnel_nodes_in_order() -> None:
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    assert [event.requestName for event in final_state["agent_trace"]] == [
+        "user_profile_analyst",
+        "market_intelligence",
+        "product_match_expert",
+        "compliance_risk_officer",
+        "manager_coordinator",
+    ]
+
+
+def test_graph_runtime_filters_high_risk_candidates_before_compliance_for_conservative_users() -> None:
     service = RecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_high_risk_candidate()
     )
 
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
-    assert response.recommendationStatus == "limited"
-    assert response.reviewStatus == "partial_pass"
-    assert response.complianceReview is not None
-    assert response.complianceReview.verdict == "revise_conservative"
+    assert response.recommendationStatus == "ready"
+    assert response.reviewStatus == "pass"
+    assert response.complianceReview is None
     assert response.sections.stocks.items == []
     assert all(
         item.riskLevel in {"R1", "R2"}
@@ -79,6 +93,29 @@ def test_graph_runtime_returns_limited_response_when_compliance_revises() -> Non
     )
 
 
+def test_graph_runtime_builds_defensive_product_strategy_for_capital_preservation_intent() -> None:
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+
+    final_state = runtime.run(
+        _build_generation_request(
+            "stable",
+            user_intent_text="我有10万闲钱，想存一年，不想亏本",
+        )
+    )
+
+    product_strategy = final_state["product_strategy"]
+    manager_brief = final_state["manager_brief"]
+    retrieval_context = final_state["retrieval_context"]
+
+    assert product_strategy is not None
+    assert product_strategy.recommended_categories == ["wealth_management", "fund"]
+    assert manager_brief is not None
+    assert any("银行理财、基金" in line for line in manager_brief.why_this_plan_zh)
+    assert retrieval_context is not None
+    assert all(item.category != "stock" for item in retrieval_context.candidates)
+    assert any("stock" in reason for reason in retrieval_context.filtered_out_reasons)
+
+
 class _SingleMemoryStore:
     def search(self, query: str, *, limit: int) -> list[str]:
         del query
@@ -89,6 +126,12 @@ class _SingleVectorStore:
     def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
         del query_text
         return [{"id": "fund-001", "score": 0.99}][:limit]
+
+
+class _IlliquidVectorStore:
+    def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+        del query_text
+        return [{"id": "wm-illiquid", "score": 0.99}][:limit]
 
 
 class _FakeFrame:
@@ -177,6 +220,41 @@ def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> 
     assert response.sections.funds.items[0].id == "fund-001"
     assert response.sections.funds.items[0].nameZh == "运行时自定义基金A"
     assert response.sections.funds.items[0].nameZh != "中欧稳利债券A"
+
+
+def test_graph_runtime_marks_low_risk_illiquid_candidates_as_limited() -> None:
+    runtime = RecommendationGraphRuntime(
+        GraphServices(
+            market_intelligence=MarketIntelligenceService(),
+            memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
+            product_retrieval=ProductRetrievalService(vector_store=_IlliquidVectorStore()),
+            compliance_review=ComplianceReviewService(),
+            product_candidates=[
+                CandidateProduct(
+                    id="wm-illiquid",
+                    category="wealth_management",
+                    code="WM9999",
+                    liquidity="180天",
+                    name_zh="封闭增强理财",
+                    name_en="Closed-End Enhanced WM",
+                    rationale_zh="测试长封闭期候选。",
+                    rationale_en="Test illiquid candidate.",
+                    risk_level="R2",
+                    tags_zh=["封闭期较长"],
+                    tags_en=["long lock-up"],
+                )
+            ],
+        )
+    )
+    service = RecommendationService(graph_runtime=runtime)
+
+    response = service.generate_recommendation(_build_generation_request("stable"))
+
+    assert response.recommendationStatus == "limited"
+    assert response.reviewStatus == "partial_pass"
+    assert response.complianceReview is not None
+    assert "流动性" in response.complianceReview.reasonSummary.zh
+    assert any("封闭期" in note for note in response.complianceReview.suitabilityNotes.zh)
 
 
 def test_app_default_graph_runtime_uses_real_repository_candidates(monkeypatch) -> None:

@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable, TypedDict, TypeVar, cast
 
+from pydantic import BaseModel
+
 from financehub_market_api.models import RiskProfile
 from financehub_market_api.recommendation.agents.anthropic_runtime import (
     ExplanationRuntimeAgent,
@@ -25,6 +27,7 @@ from financehub_market_api.recommendation.agents.provider import (
 )
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.rules import RuleBasedFallbackEngine, map_user_profile
+from financehub_market_api.recommendation.schemas import RuleEvaluationState, UserProfile
 
 _UNSTABLE_CAPTURE_KEYS = frozenset({"id", "created_at", "request_id"})
 
@@ -34,6 +37,12 @@ class CaptureSummary(TypedDict):
     phase: str | None
     fixture_path: str | None
     error: str | None
+
+
+class LiveSmokeSummary(TypedDict):
+    request_name: str
+    model_name: str
+    output_summary: str
 
 
 class CaptureRunError(RuntimeError):
@@ -158,6 +167,127 @@ def _write_fixture_payload(
     return fixture_path
 
 
+def _build_runtime_inputs(risk_profile: RiskProfile) -> tuple[UserProfile, RuleEvaluationState]:
+    user_profile = map_user_profile(risk_profile)
+    state = RuleBasedFallbackEngine(StaticCandidateRepository()).run(user_profile)
+    if state.market_context is None or state.allocation is None or state.aggressive_allocation is None:
+        raise RuntimeError("Fallback state is incomplete; cannot run capture workflow.")
+    return user_profile, state
+
+
+def _build_output_summary(output: BaseModel) -> str:
+    return json.dumps(
+        output.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def run_live_agent_smoke(
+    *,
+    risk_profile: RiskProfile = "balanced",
+) -> list[LiveSmokeSummary]:
+    provider, runtime_config = _build_anthropic_provider_from_env()
+    user_profile, state = _build_runtime_inputs(risk_profile)
+
+    timeout_seconds = runtime_config.request_timeout_seconds
+    routes = runtime_config.agent_routes
+    summary: list[LiveSmokeSummary] = []
+
+    user_profile_route = _agent_route_or_raise(routes, "user_profile")
+    profile_focus = UserProfileRuntimeAgent(
+        provider,
+        user_profile_route.model_name,
+        timeout_seconds,
+        "user_profile",
+    ).run(user_profile)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="user_profile",
+            model_name=user_profile_route.model_name,
+            output_summary=_build_output_summary(profile_focus),
+        )
+    )
+
+    market_intelligence_route = _agent_route_or_raise(routes, "market_intelligence")
+    market_context = MarketIntelligenceRuntimeAgent(
+        provider,
+        market_intelligence_route.model_name,
+        timeout_seconds,
+        "market_intelligence",
+    ).run(user_profile, profile_focus, state.market_context)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="market_intelligence",
+            model_name=market_intelligence_route.model_name,
+            output_summary=_build_output_summary(market_context),
+        )
+    )
+
+    fund_selection_route = _agent_route_or_raise(routes, "fund_selection")
+    fund_ranking = FundSelectionRuntimeAgent(
+        provider,
+        fund_selection_route.model_name,
+        timeout_seconds,
+        "fund_selection",
+    ).run(user_profile, profile_focus, state.fund_items)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="fund_selection",
+            model_name=fund_selection_route.model_name,
+            output_summary=_build_output_summary(fund_ranking),
+        )
+    )
+
+    wealth_selection_route = _agent_route_or_raise(routes, "wealth_selection")
+    wealth_ranking = WealthSelectionRuntimeAgent(
+        provider,
+        wealth_selection_route.model_name,
+        timeout_seconds,
+        "wealth_selection",
+    ).run(user_profile, profile_focus, state.wealth_management_items)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="wealth_selection",
+            model_name=wealth_selection_route.model_name,
+            output_summary=_build_output_summary(wealth_ranking),
+        )
+    )
+
+    stock_selection_route = _agent_route_or_raise(routes, "stock_selection")
+    stock_ranking = StockSelectionRuntimeAgent(
+        provider,
+        stock_selection_route.model_name,
+        timeout_seconds,
+        "stock_selection",
+    ).run(user_profile, profile_focus, state.stock_items)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="stock_selection",
+            model_name=stock_selection_route.model_name,
+            output_summary=_build_output_summary(stock_ranking),
+        )
+    )
+
+    explanation_route = _agent_route_or_raise(routes, "explanation")
+    explanation = ExplanationRuntimeAgent(
+        provider,
+        explanation_route.model_name,
+        timeout_seconds,
+        "explanation",
+    ).run(user_profile, profile_focus, market_context)
+    summary.append(
+        LiveSmokeSummary(
+            request_name="explanation",
+            model_name=explanation_route.model_name,
+            output_summary=_build_output_summary(explanation),
+        )
+    )
+
+    return summary
+
+
 def capture_all_agents(
     *,
     risk_profile: RiskProfile = "balanced",
@@ -170,10 +300,7 @@ def capture_all_agents(
             f"{LLM_CAPTURE_RAW_RESPONSES_ENV} must be set to a truthy value to capture raw responses."
         )
 
-    user_profile = map_user_profile(risk_profile)
-    state = RuleBasedFallbackEngine(StaticCandidateRepository()).run(user_profile)
-    if state.market_context is None or state.allocation is None or state.aggressive_allocation is None:
-        raise RuntimeError("Fallback state is incomplete; cannot run capture workflow.")
+    user_profile, state = _build_runtime_inputs(risk_profile)
 
     timeout_seconds = runtime_config.request_timeout_seconds
     routes = runtime_config.agent_routes

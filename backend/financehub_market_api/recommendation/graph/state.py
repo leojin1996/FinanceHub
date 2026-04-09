@@ -33,9 +33,17 @@ class UserIntelligence(BaseModel):
 class MarketIntelligenceState(BaseModel):
     sentiment: str
     stance: str
+    preferred_categories: list[str] = Field(default_factory=list)
+    avoided_categories: list[str] = Field(default_factory=list)
     summary_zh: str
     summary_en: str
     evidence: list[MarketEvidenceItem] = Field(default_factory=list)
+
+
+class ProductStrategy(BaseModel):
+    recommended_categories: list[str] = Field(default_factory=list)
+    ranking_rationale_zh: str = ""
+    ranking_rationale_en: str = ""
 
 
 class RuntimeCandidateSnapshot(BaseModel):
@@ -72,12 +80,22 @@ class ComplianceReviewState(BaseModel):
     reason_en: str
     disclosures_zh: list[str] = Field(default_factory=list)
     disclosures_en: list[str] = Field(default_factory=list)
+    suitability_notes_zh: list[str] = Field(default_factory=list)
+    suitability_notes_en: list[str] = Field(default_factory=list)
 
 
 class FinalResponseState(BaseModel):
     recommendation_status: Literal["ready", "limited", "blocked"]
     summary_zh: str
     summary_en: str
+
+
+class ManagerBrief(BaseModel):
+    recommendation_status: Literal["ready", "limited", "blocked"]
+    summary_zh: str
+    summary_en: str
+    why_this_plan_zh: list[str] = Field(default_factory=list)
+    why_this_plan_en: list[str] = Field(default_factory=list)
 
 
 class RecommendationGraphState(TypedDict):
@@ -87,6 +105,9 @@ class RecommendationGraphState(TypedDict):
     retrieval_context: RetrievalContext | None
     compliance_review: ComplianceReviewState | None
     final_response: FinalResponseState | None
+    product_strategy: ProductStrategy | None
+    manager_brief: ManagerBrief | None
+    recommendation_draft: dict[str, object] | None
     warnings: list[RecommendationWarning]
     agent_trace: list[AgentTraceEvent]
 
@@ -102,6 +123,9 @@ def build_initial_graph_state(payload: RecommendationGenerationRequest) -> Recom
         "retrieval_context": None,
         "compliance_review": None,
         "final_response": None,
+        "product_strategy": None,
+        "manager_brief": None,
+        "recommendation_draft": None,
         "warnings": [],
         "agent_trace": [],
     }

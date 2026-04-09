@@ -22,6 +22,7 @@ from financehub_market_api.recommendation.agents.sample_capture import (
     capture_all_agents,
     capture_request_names,
     fixture_filename_for_request_name,
+    run_live_agent_smoke,
     sanitize_captured_body,
 )
 from financehub_market_api.recommendation.schemas import RuleEvaluationState
@@ -401,6 +402,75 @@ def test_capture_all_agents_executes_all_runtime_agents_in_order(
 
     assert [item["request_name"] for item in summary] == list(request_names)
     assert run_order == list(request_names)
+
+
+def test_run_live_agent_smoke_executes_all_runtime_agents_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_names = capture_request_names()
+    runtime_config = AgentRuntimeConfig(
+        providers={},
+        agent_routes={
+            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
+            for request_name in request_names
+        },
+        request_timeout_seconds=7.5,
+    )
+    monkeypatch.setattr(
+        sample_capture_module,
+        "_build_anthropic_provider_from_env",
+        lambda: (object(), runtime_config),
+    )
+
+    run_order: list[str] = []
+
+    monkeypatch.setattr(
+        sample_capture_module.UserProfileRuntimeAgent,
+        "run",
+        lambda self, user_profile: run_order.append("user_profile")
+        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.MarketIntelligenceRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, fallback_context: run_order.append(
+            "market_intelligence"
+        )
+        or MarketIntelligenceAgentOutput(summary_zh="市场平稳", summary_en="Market is steady"),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.FundSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.WealthSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.StockSelectionRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
+        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
+    )
+    monkeypatch.setattr(
+        sample_capture_module.ExplanationRuntimeAgent,
+        "run",
+        lambda self, user_profile, profile_focus, market_context: run_order.append("explanation")
+        or ExplanationAgentOutput(why_this_plan_zh=["理由一"], why_this_plan_en=["Reason one"]),
+    )
+
+    summary = run_live_agent_smoke()
+
+    assert [item["request_name"] for item in summary] == list(request_names)
+    assert [item["model_name"] for item in summary] == ["claude-test"] * len(request_names)
+    assert run_order == list(request_names)
+    assert summary[0]["output_summary"] == (
+        '{"profile_focus_en":"steady","profile_focus_zh":"稳健"}'
+    )
 
 
 def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(

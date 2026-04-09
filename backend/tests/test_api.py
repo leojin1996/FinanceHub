@@ -219,15 +219,14 @@ def _build_stocks() -> StocksResponse:
 
 def _build_recommendation_response() -> RecommendationResponse:
     from financehub_market_api.recommendations import RecommendationService
-    from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
-    from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
+    from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
     from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 
-    orchestrator = RecommendationOrchestrator(
-        candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={})
-    )
-    return RecommendationService(orchestrator=orchestrator).get_recommendation("balanced")
+    return RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=StaticCandidateRepository()
+        )
+    ).get_recommendation("balanced")
 
 
 def _install_override(
@@ -371,9 +370,9 @@ def test_post_recommendations_passes_risk_profile_and_returns_payload() -> None:
         "stock": 20,
     }
     assert response.json()["sections"]["funds"]["titleZh"] == "基金推荐"
-    assert response.json()["profileSummary"]["zh"].startswith("您的测评结果")
+    assert response.json()["profileSummary"]["zh"].startswith("用户风险等级")
     assert response.json()["marketSummary"]["en"]
-    assert response.json()["executionMode"] in {"agent_assisted", "rules_fallback"}
+    assert response.json()["executionMode"] == "agent_assisted"
     assert isinstance(response.json()["warnings"], list)
 
 
@@ -516,14 +515,11 @@ def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -
     get_recommendation_service.cache_clear()
     service = get_recommendation_service()
 
-    assert getattr(service, "_orchestrator", None) is not None
+    assert getattr(service, "_orchestrator", None) is None
     assert getattr(service, "_graph_runtime", None) is not None
 
 
-def test_generate_recommendations_falls_back_to_rules_mode_when_graph_runtime_raises() -> None:
-    from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
-    from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
-    from financehub_market_api.recommendation.repositories import StaticCandidateRepository
+def test_generate_recommendations_raises_when_graph_runtime_fails() -> None:
     from financehub_market_api.recommendations import RecommendationService
 
     class _FailingGraphRuntime:
@@ -531,53 +527,40 @@ def test_generate_recommendations_falls_back_to_rules_mode_when_graph_runtime_ra
             del payload
             raise RuntimeError("graph runtime crashed")
 
-    recommendation_service = RecommendationService(
-        graph_runtime=_FailingGraphRuntime(),
-        orchestrator=RecommendationOrchestrator(
-            candidate_repository=StaticCandidateRepository(),
-            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
-        ),
-    )
+    recommendation_service = RecommendationService(graph_runtime=_FailingGraphRuntime())
     client, clear = _install_override(
         FakeMarketDataService(overview=_build_overview()),
         recommendation_service,
     )
     try:
-        response = client.post(
-            "/api/recommendations/generate",
-            json={
-                "historicalHoldings": [],
-                "historicalTransactions": [],
-                "includeAggressiveOption": True,
-                "questionnaireAnswers": [],
-                "riskAssessmentResult": {
-                    "baseProfile": "stable",
-                    "dimensionLevels": {
-                        "capitalStability": "medium",
-                        "investmentExperience": "medium",
-                        "investmentHorizon": "mediumHigh",
-                        "returnObjective": "medium",
-                        "riskTolerance": "medium",
+        with pytest.raises(RuntimeError, match="graph runtime crashed"):
+            client.post(
+                "/api/recommendations/generate",
+                json={
+                    "historicalHoldings": [],
+                    "historicalTransactions": [],
+                    "includeAggressiveOption": True,
+                    "questionnaireAnswers": [],
+                    "riskAssessmentResult": {
+                        "baseProfile": "stable",
+                        "dimensionLevels": {
+                            "capitalStability": "medium",
+                            "investmentExperience": "medium",
+                            "investmentHorizon": "mediumHigh",
+                            "returnObjective": "medium",
+                            "riskTolerance": "medium",
+                        },
+                        "dimensionScores": {
+                            "capitalStability": 12,
+                            "investmentExperience": 11,
+                            "investmentHorizon": 14,
+                            "returnObjective": 13,
+                            "riskTolerance": 12,
+                        },
+                        "finalProfile": "balanced",
+                        "totalScore": 62,
                     },
-                    "dimensionScores": {
-                        "capitalStability": 12,
-                        "investmentExperience": 11,
-                        "investmentHorizon": 14,
-                        "returnObjective": 13,
-                        "riskTolerance": 12,
-                    },
-                    "finalProfile": "balanced",
-                    "totalScore": 62,
                 },
-            },
-        )
+            )
     finally:
         clear()
-
-    assert response.status_code == 200
-    assert response.json()["executionMode"] == "rules_fallback"
-    assert response.json()["warnings"][0]["code"] == "graph_runtime_error"
-    assert (
-        response.json()["warnings"][0]["message"]
-        == "Recommendation graph runtime unavailable; using rules fallback."
-    )

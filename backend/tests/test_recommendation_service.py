@@ -1,9 +1,16 @@
 import pytest
 
-from financehub_market_api.models import RecommendationGenerationRequest, RecommendationResponse
-from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
+from financehub_market_api.models import (
+    IndexCard,
+    IndicesResponse,
+    MarketOverviewResponse,
+    MetricCard,
+    OverviewStockSummary,
+    RecommendationGenerationRequest,
+    RecommendationResponse,
+    TrendPoint,
+)
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
-from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.services import RecommendationService as DomainRecommendationService
 from financehub_market_api.recommendations import RecommendationService
@@ -15,13 +22,125 @@ class _FailingGraphRuntime:
         raise RuntimeError("graph runtime crashed")
 
 
+class _FakeMarketDataService:
+    def get_market_overview(self) -> MarketOverviewResponse:
+        return MarketOverviewResponse(
+            asOfDate="2026-04-02",
+            stale=False,
+            metrics=[
+                MetricCard(
+                    label="上证指数",
+                    value="3,210.12",
+                    delta="+0.8%",
+                    changeValue=25.1,
+                    changePercent=0.8,
+                    tone="positive",
+                ),
+                MetricCard(
+                    label="深证成指",
+                    value="10,120.45",
+                    delta="+0.3%",
+                    changeValue=30.2,
+                    changePercent=0.3,
+                    tone="positive",
+                ),
+            ],
+            chartLabel="上证指数",
+            trendSeries=[
+                TrendPoint(date="2026-03-27", value=3180.0),
+                TrendPoint(date="2026-03-30", value=3192.0),
+                TrendPoint(date="2026-03-31", value=3201.0),
+                TrendPoint(date="2026-04-01", value=3205.0),
+                TrendPoint(date="2026-04-02", value=3210.12),
+            ],
+            topGainers=[
+                OverviewStockSummary(
+                    code="300750",
+                    name="宁德时代",
+                    price="210.00",
+                    priceValue=210.0,
+                    change="+5.00",
+                    changePercent=2.4,
+                )
+            ],
+            topLosers=[
+                OverviewStockSummary(
+                    code="600519",
+                    name="贵州茅台",
+                    price="1500.00",
+                    priceValue=1500.0,
+                    change="-12.00",
+                    changePercent=-0.8,
+                )
+            ],
+        )
+
+    def get_indices(self) -> IndicesResponse:
+        return IndicesResponse(
+            asOfDate="2026-04-02",
+            stale=False,
+            cards=[
+                IndexCard(
+                    name="上证指数",
+                    code="000001",
+                    market="SH",
+                    description="上海证券交易所综合指数",
+                    value="3,210.12",
+                    valueNumber=3210.12,
+                    changeValue=25.1,
+                    changePercent=0.8,
+                    tone="positive",
+                    trendSeries=[
+                        TrendPoint(date="2026-03-31", value=3201.0),
+                        TrendPoint(date="2026-04-01", value=3205.0),
+                        TrendPoint(date="2026-04-02", value=3210.12),
+                    ],
+                ),
+                IndexCard(
+                    name="深证成指",
+                    code="399001",
+                    market="SZ",
+                    description="深圳证券交易所成份指数",
+                    value="10,120.45",
+                    valueNumber=10120.45,
+                    changeValue=30.2,
+                    changePercent=0.3,
+                    tone="positive",
+                    trendSeries=[
+                        TrendPoint(date="2026-03-31", value=10050.0),
+                        TrendPoint(date="2026-04-01", value=10090.0),
+                        TrendPoint(date="2026-04-02", value=10120.45),
+                    ],
+                ),
+                IndexCard(
+                    name="创业板指",
+                    code="399006",
+                    market="SZ",
+                    description="创业板指数",
+                    value="2,150.00",
+                    valueNumber=2150.0,
+                    changeValue=-5.0,
+                    changePercent=-0.2,
+                    tone="negative",
+                    trendSeries=[
+                        TrendPoint(date="2026-03-31", value=2160.0),
+                        TrendPoint(date="2026-04-01", value=2155.0),
+                        TrendPoint(date="2026-04-02", value=2150.0),
+                    ],
+                ),
+            ],
+        )
+
+
 def _build_generation_request(
     risk_profile: str,
     *,
     include_aggressive_option: bool = True,
+    user_intent_text: str | None = None,
 ) -> RecommendationGenerationRequest:
     return RecommendationGenerationRequest.model_validate(
         {
+            "userIntentText": user_intent_text,
             "historicalHoldings": [],
             "historicalTransactions": [],
             "includeAggressiveOption": include_aggressive_option,
@@ -61,16 +180,18 @@ def _build_api_service() -> RecommendationService:
     )
 
 
-def test_conservative_profile_keeps_stock_exposure_small_and_review_partial() -> None:
+def test_conservative_profile_zeroes_stock_allocation_when_no_stock_candidates_survive() -> None:
     service = _build_api_service()
 
     response = service.get_recommendation("conservative")
 
     assert isinstance(response, RecommendationResponse)
-    assert response.allocationDisplay.stock == 5
-    assert response.reviewStatus == "partial_pass"
-    assert response.recommendationStatus == "limited"
-    assert response.complianceReview is not None
+    assert response.allocationDisplay.fund == 25
+    assert response.allocationDisplay.wealthManagement == 75
+    assert response.allocationDisplay.stock == 0
+    assert response.reviewStatus == "pass"
+    assert response.recommendationStatus == "ready"
+    assert response.complianceReview is None
     assert response.sections.stocks.items == []
 
 
@@ -107,6 +228,29 @@ def test_domain_service_entrypoint_keeps_api_compatible_payload() -> None:
     assert response.riskNotice.zh
     assert response.whyThisPlan.zh
     assert response.executionMode == "agent_assisted"
+
+
+def test_recommendation_service_prefers_graph_runtime_output_by_default() -> None:
+    service = DomainRecommendationService()
+
+    response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert response.executionMode == "agent_assisted"
+    assert response.agentTrace[-1].requestName == "manager_coordinator"
+
+
+def test_domain_service_uses_manager_brief_for_grounded_plan_explanation() -> None:
+    service = _build_domain_service()
+
+    response = service.generate_recommendation(
+        _build_generation_request(
+            "stable",
+            user_intent_text="我有10万闲钱，想存一年，不想亏本",
+        )
+    )
+
+    assert any("银行理财、基金" in line for line in response.whyThisPlan.zh)
+    assert any("R2" in line for line in response.whyThisPlan.zh)
 
 
 def test_domain_service_can_hide_aggressive_option_from_new_contract() -> None:
@@ -176,7 +320,24 @@ def test_recommendation_response_exposes_graph_fields() -> None:
     assert response.agentTrace
 
 
-def test_domain_service_returns_limited_response_for_high_risk_candidates() -> None:
+def test_default_graph_runtime_uses_market_data_service_for_market_intelligence() -> None:
+    service = DomainRecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=StaticCandidateRepository(),
+            market_data_service=_FakeMarketDataService(),
+        )
+    )
+
+    response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert response.marketSummary.zh.startswith("市场概览（截至 2026-04-02）")
+    assert "宁德时代" in response.marketSummary.zh
+    assert response.marketSummary.en.startswith("Market overview as of 2026-04-02")
+    assert response.marketEvidence[0].source == "market_overview"
+    assert response.marketEvidence[0].asOf == "2026-04-02"
+
+
+def test_domain_service_filters_high_risk_candidates_before_compliance_for_conservative_users() -> None:
     service = DomainRecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_high_risk_candidate()
     )
@@ -184,30 +345,22 @@ def test_domain_service_returns_limited_response_for_high_risk_candidates() -> N
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
     assert response.executionMode == "agent_assisted"
-    assert response.recommendationStatus == "limited"
-    assert response.reviewStatus == "partial_pass"
-    assert response.complianceReview is not None
-    assert response.complianceReview.verdict == "revise_conservative"
+    assert response.recommendationStatus == "ready"
+    assert response.reviewStatus == "pass"
+    assert response.complianceReview is None
     assert response.sections.stocks.items == []
 
 
-def test_domain_service_falls_back_to_legacy_orchestrator_when_graph_runtime_raises() -> None:
-    service = DomainRecommendationService(
-        graph_runtime=_FailingGraphRuntime(),
-        orchestrator=RecommendationOrchestrator(
-            candidate_repository=StaticCandidateRepository(),
-            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
-        ),
-    )
+def test_domain_service_raises_when_graph_runtime_fails() -> None:
+    service = DomainRecommendationService(graph_runtime=_FailingGraphRuntime())
 
-    response = service.generate_recommendation(_build_generation_request("balanced"))
+    with pytest.raises(RuntimeError, match="graph runtime crashed"):
+        service.generate_recommendation(_build_generation_request("balanced"))
 
-    assert response.executionMode == "rules_fallback"
-    assert any(warning.code == "graph_runtime_error" for warning in response.warnings)
-    assert any(
-        warning.message == "Recommendation graph runtime unavailable; using rules fallback."
-        for warning in response.warnings
-    )
+
+def test_domain_service_rejects_legacy_orchestrator_injection() -> None:
+    with pytest.raises(ValueError, match="orchestrator"):
+        DomainRecommendationService(orchestrator=object())  # type: ignore[arg-type]
 
 
 def test_domain_service_does_not_fallback_when_graph_response_assembly_raises(
@@ -215,10 +368,6 @@ def test_domain_service_does_not_fallback_when_graph_response_assembly_raises(
 ) -> None:
     service = DomainRecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_deterministic_services(),
-        orchestrator=RecommendationOrchestrator(
-            candidate_repository=StaticCandidateRepository(),
-            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={}),
-        ),
     )
 
     def _raise_assembly_error(*args, **kwargs):

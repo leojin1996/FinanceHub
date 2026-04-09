@@ -5,8 +5,7 @@ from financehub_market_api.recommendation.repositories.real_data_adapters import
     MoneyFundWealthProxyAdapter,
 )
 from financehub_market_api.recommendation.repositories.real_data_repository import RealDataCandidateRepository
-from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
-from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
+from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.services import RecommendationService
@@ -161,9 +160,7 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_re
     )
 
     response = RecommendationService(
-        orchestrator=RecommendationOrchestrator(
-            multi_agent_runtime=AnthropicMultiAgentRuntime(providers={})
-        )
+        graph_runtime=RecommendationGraphRuntime.with_default_services()
     ).get_recommendation("balanced")
 
     assert response.allocationDisplay.model_dump() == {
@@ -173,6 +170,6 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_re
     }
     assert response.sections.funds.titleZh == "基金推荐"
     assert response.sections.wealthManagement.titleZh == "银行理财推荐"
-    assert response.executionMode == "rules_fallback"
+    assert response.executionMode == "agent_assisted"
     assert response.sections.funds.items[0].nameZh == "稳健债券A"
     assert response.sections.wealthManagement.items[0].nameZh == "华宝添益"

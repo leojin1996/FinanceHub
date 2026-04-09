@@ -8,7 +8,6 @@ from financehub_market_api.recommendation.agents.interfaces import (
     UserProfileAgent,
     WealthSelectionAgent,
 )
-from financehub_market_api.recommendation.agents.anthropic_runtime import AnthropicMultiAgentRuntime
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
     ANTHROPIC_DEFAULT_MODEL,
@@ -26,7 +25,6 @@ __all__ = [
     "AGENT_MODEL_ROUTE_ENV_NAMES",
     "ANTHROPIC_DEFAULT_MODEL",
     "ANTHROPIC_PROVIDER_NAME",
-    "AnthropicMultiAgentRuntime",
     "AnthropicProvider",
     "AgentModelRoute",
     "AgentRuntimeConfig",

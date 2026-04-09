@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from langgraph.graph import END, START, StateGraph
 
+from financehub_market_api.cache import build_snapshot_cache
 from financehub_market_api.models import RecommendationGenerationRequest
 from financehub_market_api.recommendation.compliance import ComplianceReviewService
 from financehub_market_api.recommendation.graph.nodes import (
@@ -16,7 +17,10 @@ from financehub_market_api.recommendation.graph.nodes import (
 from financehub_market_api.recommendation.graph.routing import route_compliance_verdict
 from financehub_market_api.recommendation.graph.state import RecommendationGraphState, build_initial_graph_state
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
+from financehub_market_api.recommendation.intelligence.service import MarketDataSnapshotSource
+from financehub_market_api.recommendation.manager_synthesis import ManagerSynthesisService
 from financehub_market_api.recommendation.memory import MemoryRecallService
+from financehub_market_api.recommendation.profile_intelligence import ProfileIntelligenceService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
 from financehub_market_api.recommendation.repositories import (
     CandidateRepository,
@@ -25,6 +29,9 @@ from financehub_market_api.recommendation.repositories import (
 )
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.schemas import CandidateProduct
+from financehub_market_api.service import MarketDataService
+from financehub_market_api.upstreams.dolthub import DoltHubClient
+from financehub_market_api.upstreams.index_data import IndexDataClient
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,12 @@ class GraphServices:
     compliance_review: ComplianceReviewService
     product_candidates: list[CandidateProduct]
     candidate_repository: CandidateRepository | None = None
+    profile_intelligence: ProfileIntelligenceService = field(
+        default_factory=ProfileIntelligenceService
+    )
+    manager_synthesis: ManagerSynthesisService = field(
+        default_factory=ManagerSynthesisService
+    )
 
 
 class _StaticMemoryStore:
@@ -66,6 +79,14 @@ def _build_product_candidates(repository: CandidateRepository) -> list[Candidate
     ]
 
 
+def _build_default_market_data_service() -> MarketDataService:
+    return MarketDataService(
+        stock_client=DoltHubClient(),
+        index_client=IndexDataClient(),
+        cache=build_snapshot_cache(),
+    )
+
+
 class RecommendationGraphRuntime:
     def __init__(self, services: GraphServices) -> None:
         self._services = services
@@ -74,7 +95,13 @@ class RecommendationGraphRuntime:
     def _build_graph(self, services: GraphServices):
         graph = StateGraph(RecommendationGraphState)
 
-        graph.add_node("user_profile_analyst", user_profile_analyst_node)
+        graph.add_node(
+            "user_profile_analyst",
+            lambda state: user_profile_analyst_node(
+                state,
+                profile_intelligence_service=services.profile_intelligence,
+            ),
+        )
         graph.add_node(
             "market_intelligence",
             lambda state: market_intelligence_node(
@@ -99,7 +126,13 @@ class RecommendationGraphRuntime:
                 product_candidates=services.product_candidates,
             ),
         )
-        graph.add_node("manager_coordinator", manager_coordinator_node)
+        graph.add_node(
+            "manager_coordinator",
+            lambda state: manager_coordinator_node(
+                state,
+                manager_synthesis_service=services.manager_synthesis,
+            ),
+        )
 
         graph.add_edge(START, "user_profile_analyst")
         graph.add_edge("user_profile_analyst", "market_intelligence")
@@ -143,11 +176,14 @@ class RecommendationGraphRuntime:
         cls,
         *,
         repository: CandidateRepository | None = None,
+        market_data_service: MarketDataSnapshotSource | None = None,
     ) -> RecommendationGraphRuntime:
         candidate_repository = repository or RealDataCandidateRepository()
         return cls(
             GraphServices(
-                market_intelligence=MarketIntelligenceService(),
+                market_intelligence=MarketIntelligenceService(
+                    market_data_service=market_data_service or _build_default_market_data_service()
+                ),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
                 product_retrieval=ProductRetrievalService(vector_store=_StaticVectorStore([])),
                 compliance_review=ComplianceReviewService(),

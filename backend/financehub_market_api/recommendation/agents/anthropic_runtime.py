@@ -17,21 +17,14 @@ from financehub_market_api.recommendation.agents.contracts import (
 )
 from financehub_market_api.recommendation.agents.interfaces import StructuredOutputProvider
 from financehub_market_api.recommendation.agents.provider import (
-    ANTHROPIC_PROVIDER_NAME,
-    AgentModelRoute,
-    AgentRuntimeConfig,
-    DEFAULT_AGENT_MODEL_ROUTES,
     LLMInvalidResponseError,
     LLMProviderError,
     _build_env_values,
     _is_agent_trace_logging_enabled,
-    build_provider,
 )
 from financehub_market_api.recommendation.schemas import (
     CandidateProduct,
-    DegradedWarning,
     MarketContext,
-    RuleEvaluationState,
     UserProfile,
 )
 
@@ -39,10 +32,6 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 UVICORN_ERROR_LOGGER = logging.getLogger("uvicorn.error")
 
-_EMPTY_PROVIDER_RESPONSE_MARKERS = (
-    "provider response has no content blocks",
-    "provider response has no text content block",
-)
 _MAX_TRACE_STRING_LENGTH = 240
 _MAX_TRACE_LIST_ITEMS = 8
 _MAX_TRACE_OBJECT_KEYS = 16
@@ -109,79 +98,6 @@ def _render_candidates(candidates: list[CandidateProduct]) -> str:
     return "\n".join(lines)
 
 
-def _stable_reorder(candidates: list[CandidateProduct], ranked_ids: list[str]) -> list[CandidateProduct]:
-    by_id = {candidate.id: candidate for candidate in candidates}
-    ordered: list[CandidateProduct] = []
-    seen: set[str] = set()
-    for product_id in ranked_ids:
-        candidate = by_id.get(product_id)
-        if candidate is None or product_id in seen:
-            continue
-        ordered.append(candidate)
-        seen.add(product_id)
-    if not ordered:
-        return list(candidates)
-    ordered.extend(candidate for candidate in candidates if candidate.id not in seen)
-    return ordered
-
-
-def _ranking_validation_issue(candidates: list[CandidateProduct], ranked_ids: list[str]) -> str | None:
-    if not ranked_ids:
-        return "ranked_ids is empty"
-    candidate_ids = {candidate.id for candidate in candidates}
-    unknown_ids = sorted({ranked_id for ranked_id in ranked_ids if ranked_id not in candidate_ids})
-    if unknown_ids:
-        return f"ranked_ids contains unknown IDs: {', '.join(unknown_ids)}"
-    return None
-
-
-def _build_invalid_output_warning(exc: LLMInvalidResponseError | ValidationError) -> DegradedWarning:
-    message = str(exc)
-    if isinstance(exc, LLMInvalidResponseError) and message in _EMPTY_PROVIDER_RESPONSE_MARKERS:
-        return DegradedWarning(
-            stage="provider",
-            code="provider_empty_response",
-            message=(
-                "The configured Anthropic provider returned an empty structured response, "
-                "so the recommendation fell back to the rules engine."
-            ),
-        )
-    return DegradedWarning(
-        stage="agent",
-        code="invalid_agent_output",
-        message=message,
-    )
-
-
-def _is_empty_ranked_ids_validation_error(exc: ValidationError) -> bool:
-    return any(
-        error.get("loc") == ("ranked_ids",) and error.get("type") == "too_short"
-        for error in exc.errors()
-    )
-
-
-def _override_warning_stage(warning: DegradedWarning, stage: str) -> DegradedWarning:
-    return DegradedWarning(stage=stage, code=warning.code, message=warning.message)
-
-
-def _build_provider_warning(stage: str, exc: LLMProviderError) -> DegradedWarning:
-    return DegradedWarning(
-        stage=stage,
-        code="provider_error",
-        message=str(exc),
-    )
-
-
-def _fallback_profile_focus(user_profile: UserProfile) -> UserProfileAgentOutput:
-    return UserProfileAgentOutput(
-        profile_focus_zh=f"围绕{user_profile.label_zh}目标，优先控制波动并兼顾稳步增值。",
-        profile_focus_en=(
-            f"Keep the allocation aligned with the {user_profile.label_en} profile by "
-            "controlling volatility first and pursuing steady appreciation."
-        ),
-    )
-
-
 class _BaseStructuredOutputAgent:
     def __init__(
         self,
@@ -227,8 +143,7 @@ class _BaseStructuredOutputAgent:
                 timeout_seconds=self._request_timeout_seconds,
                 request_name=self._request_name,
             )
-        except LLMInvalidResponseError as exc:
-            self._log_trace_error(trace_context, exc)
+        except LLMInvalidResponseError:
             raise
         except Exception as exc:  # noqa: BLE001
             wrapped_error = LLMProviderError(f"structured-output provider request failed: {exc}")
@@ -247,6 +162,18 @@ class _BaseStructuredOutputAgent:
         self._log_trace_finish(trace_context, payload)
         return validated_payload
 
+    def _validate_without_finish(
+        self,
+        payload: dict[str, object],
+        trace_context: _TraceRequestContext,
+        validator: Callable[[dict[str, object]], _ValidatedOutputT],
+    ) -> _ValidatedOutputT:
+        try:
+            return validator(payload)
+        except ValidationError as exc:
+            self._log_trace_error(trace_context, exc)
+            raise
+
     def _log_trace_error(self, trace_context: _TraceRequestContext, error: Exception) -> None:
         if not trace_context.trace_enabled:
             return
@@ -260,18 +187,6 @@ class _BaseStructuredOutputAgent:
             type(error).__name__,
             json.dumps(str(error), ensure_ascii=False),
         )
-
-    def _validate_without_finish(
-        self,
-        payload: dict[str, object],
-        trace_context: _TraceRequestContext,
-        validator: Callable[[dict[str, object]], _ValidatedOutputT],
-    ) -> _ValidatedOutputT:
-        try:
-            return validator(payload)
-        except ValidationError as exc:
-            self._log_trace_error(trace_context, exc)
-            raise
 
     def _log_trace_finish(
         self,
@@ -321,7 +236,11 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             response_schema=MarketIntelligenceAgentOutput.model_json_schema(),
         )
-        return self._validate_and_log(payload, trace_context, MarketIntelligenceAgentOutput.model_validate)
+        return self._validate_and_log(
+            payload,
+            trace_context,
+            MarketIntelligenceAgentOutput.model_validate,
+        )
 
 
 class FundSelectionRuntimeAgent(_BaseStructuredOutputAgent):
@@ -467,299 +386,11 @@ class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
         return self._validate_and_log(payload, trace_context, ExplanationAgentOutput.model_validate)
 
 
-@dataclass(frozen=True)
-class MultiAgentRuntimeResult:
-    assisted: bool
-    warnings: list[DegradedWarning]
-
-
-class AnthropicMultiAgentRuntime:
-    def __init__(
-        self,
-        *,
-        provider: StructuredOutputProvider | None = None,
-        model_name: str | None = None,
-        providers: Mapping[str, StructuredOutputProvider] | None = None,
-        agent_routes: Mapping[str, AgentModelRoute] | None = None,
-        request_timeout_seconds: float = 12.0,
-        trace_logs_enabled: bool | None = None,
-    ) -> None:
-        if provider is not None and providers is not None:
-            raise ValueError("pass either provider/model_name or providers/agent_routes, not both")
-        self._request_timeout_seconds = request_timeout_seconds
-        if trace_logs_enabled is None:
-            trace_logs_enabled = _is_agent_trace_logging_enabled(_build_env_values())
-        self._trace_logs_enabled = trace_logs_enabled
-
-        if providers is None:
-            legacy_model_name = model_name or "unconfigured"
-            self._providers = {ANTHROPIC_PROVIDER_NAME: provider} if provider is not None else {}
-            self._agent_routes = {
-                agent_name: AgentModelRoute(
-                    provider_name=ANTHROPIC_PROVIDER_NAME,
-                    model_name=legacy_model_name,
-                )
-                for agent_name in DEFAULT_AGENT_MODEL_ROUTES
-            }
-            return
-
-        self._providers = dict(providers)
-        self._agent_routes = {
-            agent_name: AgentModelRoute(
-                provider_name=route.provider_name,
-                model_name=route.model_name,
-            )
-            for agent_name, route in DEFAULT_AGENT_MODEL_ROUTES.items()
-        }
-        for agent_name, route in (agent_routes or {}).items():
-            self._agent_routes[agent_name] = AgentModelRoute(
-                provider_name=route.provider_name,
-                model_name=route.model_name,
-            )
-
-    @classmethod
-    def from_env(cls) -> AnthropicMultiAgentRuntime:
-        env_values = _build_env_values()
-        runtime_config = AgentRuntimeConfig.from_env(
-            environ=env_values,
-            env_files=[],
-        )
-        trace_logs_enabled = _is_agent_trace_logging_enabled(env_values)
-        providers: dict[str, StructuredOutputProvider] = {}
-        for provider_name, provider_config in runtime_config.providers.items():
-            try:
-                providers[provider_name] = build_provider(provider_config)
-            except ValueError:
-                continue
-        return cls(
-            providers=providers,
-            agent_routes=runtime_config.agent_routes,
-            request_timeout_seconds=runtime_config.request_timeout_seconds,
-            trace_logs_enabled=trace_logs_enabled,
-        )
-
-    def _missing_provider_warning(self) -> DegradedWarning | None:
-        if ANTHROPIC_PROVIDER_NAME not in self._providers:
-            return DegradedWarning(
-                stage="runtime",
-                code="llm_config_missing",
-                message=(
-                    "Anthropic agents are disabled because no Anthropic provider credentials were found. "
-                    "Configure FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY/BASE_URL "
-                    "(ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL also supported)."
-                ),
-            )
-
-        for agent_name in DEFAULT_AGENT_MODEL_ROUTES:
-            route = self._agent_routes.get(agent_name)
-            if route is None or not route.model_name.strip():
-                return DegradedWarning(
-                    stage=agent_name,
-                    code="agent_model_route_invalid",
-                    message=f"{agent_name} route must include a model_name.",
-                )
-            if route.provider_name != ANTHROPIC_PROVIDER_NAME:
-                return DegradedWarning(
-                    stage=agent_name,
-                    code="agent_provider_invalid",
-                    message=f"{agent_name} must use provider '{ANTHROPIC_PROVIDER_NAME}'.",
-                )
-        return None
-
-    def _build_agent(
-        self,
-        agent_name: str,
-        agent_type: type[_BaseStructuredOutputAgent],
-    ) -> _BaseStructuredOutputAgent:
-        route = self._agent_routes[agent_name]
-        provider = self._providers[ANTHROPIC_PROVIDER_NAME]
-        return agent_type(
-            provider,
-            route.model_name,
-            self._request_timeout_seconds,
-            agent_name,
-            self._trace_logs_enabled,
-        )
-
-    def apply(self, user_profile: UserProfile, state: RuleEvaluationState) -> MultiAgentRuntimeResult:
-        validation_warning = self._missing_provider_warning()
-        if validation_warning is not None:
-            return MultiAgentRuntimeResult(assisted=False, warnings=[validation_warning])
-
-        if state.market_context is None:
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[
-                    DegradedWarning(
-                        stage="runtime",
-                        code="fallback_state_incomplete",
-                        message="rule-based state is missing market context; agent assistance skipped.",
-                    )
-                ],
-            )
-
-        warnings: list[DegradedWarning] = []
-        applied_agent_output = False
-
-        try:
-            profile_focus = self._build_agent("user_profile", UserProfileRuntimeAgent).run(user_profile)
-        except (LLMInvalidResponseError, ValidationError) as exc:
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[_build_invalid_output_warning(exc)],
-            )
-        except LLMProviderError as exc:
-            warnings.append(_build_provider_warning("user_profile", exc))
-            profile_focus = _fallback_profile_focus(user_profile)
-        except Exception as exc:  # noqa: BLE001
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[
-                    DegradedWarning(
-                        stage="runtime",
-                        code="agent_runtime_error",
-                        message=str(exc),
-                    )
-                ],
-            )
-
-        try:
-            market_context = self._build_agent("market_intelligence", MarketIntelligenceRuntimeAgent).run(
-                user_profile,
-                profile_focus,
-                state.market_context,
-            )
-        except (LLMInvalidResponseError, ValidationError) as exc:
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[_build_invalid_output_warning(exc)],
-            )
-        except LLMProviderError as exc:
-            warnings.append(_build_provider_warning("market_intelligence", exc))
-            market_context = MarketIntelligenceAgentOutput(
-                summary_zh=state.market_context.summary_zh,
-                summary_en=state.market_context.summary_en,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[
-                    DegradedWarning(
-                        stage="runtime",
-                        code="agent_runtime_error",
-                        message=str(exc),
-                    )
-                ],
-            )
-
-        ranking_steps = (
-            ("fund_selection", FundSelectionRuntimeAgent, "fund_items"),
-            ("wealth_selection", WealthSelectionRuntimeAgent, "wealth_management_items"),
-            ("stock_selection", StockSelectionRuntimeAgent, "stock_items"),
-        )
-        ranking_outputs: dict[str, list[str]] = {}
-        for stage, agent_type, state_attr in ranking_steps:
-            candidates = getattr(state, state_attr)
-            ranking_agent = self._build_agent(stage, agent_type)
-            try:
-                ranking, trace_context, payload = ranking_agent._run_with_trace(
-                    user_profile,
-                    profile_focus,
-                    candidates,
-                )
-            except LLMInvalidResponseError as exc:
-                warning = _build_invalid_output_warning(exc)
-                if warning.code == "provider_empty_response":
-                    warnings.append(_override_warning_stage(warning, stage))
-                    continue
-                return MultiAgentRuntimeResult(
-                    assisted=False,
-                    warnings=[warning],
-                )
-            except LLMProviderError as exc:
-                warnings.append(
-                    DegradedWarning(
-                        stage=stage,
-                        code="provider_error",
-                        message=str(exc),
-                    )
-                )
-                continue
-            except ValidationError as exc:
-                if _is_empty_ranked_ids_validation_error(exc):
-                    warnings.append(
-                        DegradedWarning(
-                            stage=stage,
-                            code="agent_ranking_unusable",
-                            message=f"{stage} ranking validation failed: ranked_ids is empty.",
-                        )
-                    )
-                    continue
-                return MultiAgentRuntimeResult(
-                    assisted=False,
-                    warnings=[_build_invalid_output_warning(exc)],
-                )
-
-            ranked_ids = ranking.ranked_ids
-            validation_issue = _ranking_validation_issue(candidates, ranked_ids)
-            if validation_issue is not None:
-                ranking_agent._log_trace_error(
-                    trace_context,
-                    ValueError(f"{stage} ranking validation failed: {validation_issue}."),
-                )
-                if validation_issue == "ranked_ids is empty":
-                    warnings.append(
-                        DegradedWarning(
-                            stage=stage,
-                            code="agent_ranking_unusable",
-                            message=f"{stage} ranking validation failed: {validation_issue}.",
-                        )
-                    )
-                    continue
-                return MultiAgentRuntimeResult(
-                    assisted=False,
-                    warnings=[
-                        DegradedWarning(
-                            stage=stage,
-                            code="agent_ranking_unusable",
-                            message=f"{stage} ranking validation failed: {validation_issue}.",
-                        )
-                    ],
-                )
-            ranking_agent._log_trace_finish(trace_context, payload)
-            ranking_outputs[state_attr] = ranked_ids
-            applied_agent_output = True
-
-        try:
-            explanation = self._build_agent("explanation", ExplanationRuntimeAgent).run(
-                user_profile,
-                profile_focus,
-                market_context,
-            )
-        except (LLMInvalidResponseError, ValidationError) as exc:
-            return MultiAgentRuntimeResult(
-                assisted=False,
-                warnings=[_build_invalid_output_warning(exc)],
-            )
-        except LLMProviderError as exc:
-            warnings.append(_build_provider_warning("explanation", exc))
-            explanation = ExplanationAgentOutput(
-                why_this_plan_zh=list(state.why_this_plan_zh),
-                why_this_plan_en=list(state.why_this_plan_en),
-            )
-
-        if not any(warning.stage == "market_intelligence" for warning in warnings):
-            state.market_context = MarketContext(
-                summary_zh=market_context.summary_zh,
-                summary_en=market_context.summary_en,
-            )
-            applied_agent_output = True
-        for state_attr, ranked_ids in ranking_outputs.items():
-            setattr(state, state_attr, _stable_reorder(getattr(state, state_attr), ranked_ids))
-        if not any(warning.stage == "explanation" for warning in warnings):
-            state.why_this_plan_zh = explanation.why_this_plan_zh
-            state.why_this_plan_en = explanation.why_this_plan_en
-            applied_agent_output = True
-        if applied_agent_output:
-            state.mark_applied("agent_runtime", "agent-assisted outputs applied")
-        return MultiAgentRuntimeResult(assisted=applied_agent_output, warnings=warnings)
+__all__ = [
+    "ExplanationRuntimeAgent",
+    "FundSelectionRuntimeAgent",
+    "MarketIntelligenceRuntimeAgent",
+    "StockSelectionRuntimeAgent",
+    "UserProfileRuntimeAgent",
+    "WealthSelectionRuntimeAgent",
+]
