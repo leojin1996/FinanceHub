@@ -51,6 +51,8 @@ class RuntimeCandidateSnapshot(BaseModel):
     category: str
     code: str | None = None
     liquidity: str | None = None
+    as_of_date: str | None = None
+    detail_route: str | None = None
     name_zh: str
     name_en: str
     rationale_zh: str

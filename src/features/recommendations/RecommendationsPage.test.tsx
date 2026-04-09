@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -100,7 +100,9 @@ describe("RecommendationsPage", () => {
               funds: {
                 items: [
                   {
+                    asOfDate: "2026-04-09",
                     category: "fund",
+                    detailRoute: "/recommendations/products/fund-001",
                     id: "fund-001",
                     liquidity: "T+1",
                     nameEn: "Zhongou Steady Bond A",
@@ -118,8 +120,10 @@ describe("RecommendationsPage", () => {
               stocks: {
                 items: [
                   {
+                    asOfDate: "2026-04-09",
                     category: "stock",
                     code: "600036",
+                    detailRoute: "/recommendations/products/stock-001",
                     id: "stock-001",
                     nameEn: "China Merchants Bank",
                     nameZh: "招商银行",
@@ -136,7 +140,9 @@ describe("RecommendationsPage", () => {
               wealthManagement: {
                 items: [
                   {
+                    asOfDate: "2026-04-09",
                     category: "wealth_management",
+                    detailRoute: "/recommendations/products/wm-001",
                     id: "wm-001",
                     liquidity: "90天",
                     nameEn: "CMB Wealth Stable 90D",
@@ -174,6 +180,56 @@ describe("RecommendationsPage", () => {
                 "您的风险画像为平衡型，主方案优先控制整体波动。",
                 "当前市场更适合稳健资产打底，再用权益类做小比例增强。",
               ],
+            },
+          });
+        }
+
+        if (url.endsWith("/api/recommendations/products/fund-001")) {
+          return jsonResponse({
+            asOfDate: "2026-04-09",
+            category: "fund",
+            chart: [
+              { date: "2026-04-03", value: 1.014 },
+              { date: "2026-04-04", value: 1.016 },
+              { date: "2026-04-07", value: 1.017 },
+              { date: "2026-04-08", value: 1.019 },
+              { date: "2026-04-09", value: 1.02 },
+            ],
+            chartLabel: {
+              en: "Recent NAV",
+              zh: "近期净值",
+            },
+            code: "A00001",
+            drawdownOrVolatility: {
+              maxDrawdown: "-0.80%",
+            },
+            fees: {
+              managementFee: "0.30%",
+            },
+            fitForProfile: {
+              en: "Fits users who want a steadier bond-fund core.",
+              zh: "适合希望先用债券基金打底的稳健型用户。",
+            },
+            id: "fund-001",
+            liquidity: "T+1",
+            nameEn: "Zhongou Steady Bond A",
+            nameZh: "中欧稳利债券A",
+            providerName: "Public bond fund universe",
+            recommendationRationale: {
+              en: "Selected as a steady bond core with controlled drawdown.",
+              zh: "作为稳健债券底仓候选，重点控制回撤。",
+            },
+            riskLevel: "R2",
+            source: "public_bond_fund_refresh",
+            stale: false,
+            summary: {
+              en: "A public bond fund candidate focused on stability and liquidity.",
+              zh: "公开债券基金底仓候选，强调稳健与流动性。",
+            },
+            tagsEn: ["Low drawdown", "Bond core"],
+            tagsZh: ["低回撤", "债券底仓"],
+            yieldMetrics: {
+              annualizedReturn: "3.42%",
             },
           });
         }
@@ -261,6 +317,147 @@ describe("RecommendationsPage", () => {
         "The enhanced recommendation runtime is unavailable right now, so this plan is based on the fallback rules engine.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("opens an in-app product detail page from the recommendation card", async () => {
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 });
+
+    await user.click(screen.getAllByRole("link", { name: "查看详情" })[0]);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "中欧稳利债券A" })).toBeInTheDocument();
+    expect(screen.getByText("公开债券基金底仓候选，强调稳健与流动性。")).toBeInTheDocument();
+    expect(screen.getByText("年化回报")).toBeInTheDocument();
+  });
+
+  it("revalidates stale product detail once after the initial cached response", async () => {
+    let detailCallCount = 0;
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/recommendations/generate")) {
+        return jsonResponse({
+          aggressiveOption: null,
+          allocationDisplay: { fund: 45, stock: 20, wealthManagement: 35 },
+          executionMode: "agent_assisted",
+          marketSummary: {
+            en: "Market summary",
+            zh: "市场摘要",
+          },
+          profileSummary: {
+            en: "Profile summary",
+            zh: "画像摘要",
+          },
+          reviewStatus: "pass",
+          riskNotice: { en: [], zh: [] },
+          sections: {
+            funds: {
+              items: [
+                {
+                  asOfDate: "2026-04-09",
+                  category: "fund",
+                  detailRoute: "/recommendations/products/fund-001",
+                  id: "fund-001",
+                  liquidity: "T+1",
+                  nameEn: "Zhongou Steady Bond A",
+                  nameZh: "中欧稳利债券A",
+                  rationaleEn: "Reason",
+                  rationaleZh: "理由",
+                  riskLevel: "R2",
+                  tagsEn: ["Low drawdown"],
+                  tagsZh: ["低回撤"],
+                },
+              ],
+              titleEn: "Fund ideas",
+              titleZh: "基金推荐",
+            },
+            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            wealthManagement: { items: [], titleEn: "Wealth management ideas", titleZh: "银行理财推荐" },
+          },
+          summary: {
+            subtitleEn: "Subtitle",
+            subtitleZh: "副标题",
+            titleEn: "Title",
+            titleZh: "标题",
+          },
+          warnings: [],
+          whyThisPlan: { en: [], zh: [] },
+        });
+      }
+
+      if (url.endsWith("/api/recommendations/products/fund-001")) {
+        detailCallCount += 1;
+        return jsonResponse({
+          asOfDate: "2026-04-09",
+          category: "fund",
+          chart: [{ date: "2026-04-09", value: 1.02 }],
+          chartLabel: { en: "Recent NAV", zh: "近期净值" },
+          code: "000001",
+          drawdownOrVolatility: {},
+          fees: {},
+          fitForProfile: {
+            en: "Fits stable users.",
+            zh: "适合稳健型用户。",
+          },
+          id: "fund-001",
+          liquidity: "T+1",
+          nameEn: "Zhongou Steady Bond A",
+          nameZh: "中欧稳利债券A",
+          providerName: "Test provider",
+          recommendationRationale: {
+            en: "Reason",
+            zh: "理由",
+          },
+          riskLevel: "R2",
+          source: "test_detail_source",
+          stale: detailCallCount === 1,
+          summary:
+            detailCallCount === 1
+              ? {
+                  en: "Cached detail summary.",
+                  zh: "缓存详情摘要。",
+                }
+              : {
+                  en: "Fresh detail summary.",
+                  zh: "刷新后的详情摘要。",
+                },
+          tagsEn: ["Low drawdown"],
+          tagsZh: ["低回撤"],
+          yieldMetrics: {},
+        });
+      }
+
+      throw new Error(`Unhandled fetch for ${url}`);
+    });
+
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "标题", level: 2 });
+
+    await user.click(screen.getAllByRole("link", { name: "查看详情" })[0]);
+
+    expect(await screen.findByText("刷新后的详情摘要。")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/recommendations/products/fund-001"),
+        ),
+      ).toHaveLength(2);
+    });
   });
 
   it("posts the full risk assessment payload to the generate endpoint", async () => {

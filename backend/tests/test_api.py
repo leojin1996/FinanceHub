@@ -9,10 +9,12 @@ from fastapi.testclient import TestClient
 from financehub_market_api.models import (
     IndexCard,
     IndicesResponse,
+    LocalizedText,
     MarketOverviewResponse,
     MetricCard,
     OverviewStockSummary,
     RecommendationGenerationRequest,
+    RecommendationProductDetailResponse,
     RecommendationResponse,
     StockRow,
     StocksResponse,
@@ -74,6 +76,20 @@ class FakeRecommendationService:
     def get_recommendation(self, risk_profile: str) -> RecommendationResponse:
         self.last_risk_profile = risk_profile
         return self._response
+
+
+class FakeProductDetailService:
+    def __init__(self, response: RecommendationProductDetailResponse | None) -> None:
+        self._response = response
+        self.last_product_id: str | None = None
+        self.refreshed_product_ids: list[str] = []
+
+    def get_product_detail(self, product_id: str) -> RecommendationProductDetailResponse | None:
+        self.last_product_id = product_id
+        return self._response
+
+    def refresh_product_detail(self, product_id: str) -> None:
+        self.refreshed_product_ids.append(product_id)
 
 
 def _build_overview() -> MarketOverviewResponse:
@@ -229,19 +245,61 @@ def _build_recommendation_response() -> RecommendationResponse:
     ).get_recommendation("balanced")
 
 
+def _build_product_detail_response(*, stale: bool) -> RecommendationProductDetailResponse:
+    return RecommendationProductDetailResponse(
+        id="fund-001",
+        category="fund",
+        code="000001",
+        providerName="Test provider",
+        nameZh="稳健债券A",
+        nameEn="Stable Bond A",
+        asOfDate="2026-04-09",
+        stale=stale,
+        source="test_detail_source",
+        riskLevel="R2",
+        liquidity="T+1",
+        tagsZh=["低回撤"],
+        tagsEn=["Low drawdown"],
+        summary=LocalizedText(
+            zh="测试详情摘要。",
+            en="Test detail summary.",
+        ),
+        recommendationRationale=LocalizedText(
+            zh="测试推荐理由。",
+            en="Test recommendation rationale.",
+        ),
+        chartLabel=LocalizedText(
+            zh="近期净值",
+            en="Recent NAV",
+        ),
+        chart=[TrendPoint(date="2026-04-09", value=1.02)],
+        yieldMetrics={"annualizedReturn": "3.42%"},
+        fees={"managementFee": "0.30%"},
+        drawdownOrVolatility={"maxDrawdown": "-0.80%"},
+        fitForProfile=LocalizedText(
+            zh="适合稳健型用户。",
+            en="Fits stable users.",
+        ),
+    )
+
+
 def _install_override(
     service: FakeMarketDataService,
     recommendation_service: FakeRecommendationService | None = None,
+    product_detail_service: FakeProductDetailService | None = None,
 ) -> tuple[TestClient, Callable[[], None]]:
     from financehub_market_api.main import (
         app,
         get_market_data_service,
+        get_product_detail_service,
         get_recommendation_service,
     )
 
     app.dependency_overrides[get_market_data_service] = lambda: service
     if recommendation_service is not None:
         app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
+    if product_detail_service is not None:
+        app.dependency_overrides[get_product_detail_service] = lambda: product_detail_service
     client = TestClient(app)
 
     def _clear() -> None:
@@ -490,6 +548,39 @@ def test_post_recommendations_alias_accepts_new_payload() -> None:
     assert recommendation_service.last_generation_request is not None
     assert recommendation_service.last_generation_request.includeAggressiveOption is False
     assert recommendation_service.last_generation_request.riskAssessmentResult.finalProfile == "balanced"
+
+
+def test_get_recommendation_product_detail_returns_standard_detail_payload() -> None:
+    from financehub_market_api.main import app
+
+    client = TestClient(app)
+
+    response = client.get("/api/recommendations/products/fund-001")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "fund-001"
+    assert payload["category"] == "fund"
+    assert payload["summary"]["zh"]
+    assert payload["recommendationRationale"]["zh"]
+    assert isinstance(payload["chart"], list)
+    assert payload["fitForProfile"]["zh"]
+
+
+def test_get_recommendation_product_detail_schedules_background_refresh_for_stale_detail() -> None:
+    product_detail_service = FakeProductDetailService(_build_product_detail_response(stale=True))
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        product_detail_service=product_detail_service,
+    )
+    try:
+        response = client.get("/api/recommendations/products/fund-001")
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    assert product_detail_service.last_product_id == "fund-001"
+    assert product_detail_service.refreshed_product_ids == ["fund-001"]
 
 
 @pytest.mark.parametrize(

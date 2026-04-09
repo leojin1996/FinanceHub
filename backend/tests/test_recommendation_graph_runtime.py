@@ -4,6 +4,9 @@ from financehub_market_api.recommendation.graph.runtime import GraphServices, Re
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.memory import MemoryRecallService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
+from financehub_market_api.recommendation.repositories.real_data_repository import (
+    RealDataCandidateRepository,
+)
 from financehub_market_api.recommendation.schemas import CandidateProduct
 from financehub_market_api.recommendation.services import RecommendationService
 
@@ -257,7 +260,7 @@ def test_graph_runtime_marks_low_risk_illiquid_candidates_as_limited() -> None:
     assert any("封闭期" in note for note in response.complianceReview.suitabilityNotes.zh)
 
 
-def test_app_default_graph_runtime_uses_real_repository_candidates(monkeypatch) -> None:
+def test_graph_runtime_uses_explicit_real_repository_candidates(monkeypatch) -> None:
     from financehub_market_api.recommendation.repositories import real_data_adapters
 
     monkeypatch.setattr(
@@ -292,7 +295,9 @@ def test_app_default_graph_runtime_uses_real_repository_candidates(monkeypatch) 
     )
 
     service = RecommendationService(
-        graph_runtime=RecommendationGraphRuntime.with_default_services()
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=RealDataCandidateRepository()
+        )
     )
 
     response = service.generate_recommendation(_build_generation_request("balanced"))

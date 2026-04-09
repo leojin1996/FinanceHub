@@ -180,6 +180,8 @@ class RecommendationProduct(BaseModel):
     category: RecommendationCategory
     code: str | None = None
     liquidity: str | None = None
+    asOfDate: str | None = None
+    detailRoute: str | None = None
     nameEn: str
     nameZh: str
     rationaleEn: str
@@ -272,3 +274,27 @@ class RecommendationResponse(BaseModel):
     complianceReview: ComplianceReviewPayload | None = None
     marketEvidence: list[MarketEvidenceItem] = Field(default_factory=list)
     agentTrace: list[AgentTraceEvent] = Field(default_factory=list)
+
+
+class RecommendationProductDetailResponse(BaseModel):
+    id: str
+    category: RecommendationCategory
+    code: str | None = None
+    providerName: str | None = None
+    nameZh: str
+    nameEn: str
+    asOfDate: str
+    stale: bool
+    source: str
+    riskLevel: str
+    liquidity: str | None = None
+    tagsZh: list[str] = Field(default_factory=list)
+    tagsEn: list[str] = Field(default_factory=list)
+    summary: LocalizedText
+    recommendationRationale: LocalizedText
+    chartLabel: LocalizedText
+    chart: list[TrendPoint] = Field(default_factory=list)
+    yieldMetrics: dict[str, str] = Field(default_factory=dict)
+    fees: dict[str, str] = Field(default_factory=dict)
+    drawdownOrVolatility: dict[str, str] = Field(default_factory=dict)
+    fitForProfile: LocalizedText

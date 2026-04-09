@@ -82,6 +82,8 @@ export interface RecommendationProduct {
   category: "fund" | "wealth_management" | "stock";
   code?: string | null;
   liquidity?: string | null;
+  asOfDate?: string | null;
+  detailRoute?: string | null;
   nameEn: string;
   nameZh: string;
   rationaleEn: string;
@@ -142,6 +144,30 @@ export interface RecommendationResponse {
   whyThisPlan: LocalizedTextList;
 }
 
+export interface RecommendationProductDetailResponse {
+  id: string;
+  category: "fund" | "wealth_management" | "stock";
+  code?: string | null;
+  providerName?: string | null;
+  nameZh: string;
+  nameEn: string;
+  asOfDate: string;
+  stale: boolean;
+  source: string;
+  riskLevel: string;
+  liquidity?: string | null;
+  tagsZh: string[];
+  tagsEn: string[];
+  summary: LocalizedText;
+  recommendationRationale: LocalizedText;
+  chartLabel: LocalizedText;
+  chart: TrendPoint[];
+  yieldMetrics: Record<string, string>;
+  fees: Record<string, string>;
+  drawdownOrVolatility: Record<string, string>;
+  fitForProfile: LocalizedText;
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
@@ -179,4 +205,12 @@ export function fetchRecommendations(
     headers: { "Content-Type": "application/json" },
     method: "POST",
   }).then(readJson<RecommendationResponse>);
+}
+
+export function fetchRecommendationProductDetail(
+  productId: string,
+): Promise<RecommendationProductDetailResponse> {
+  return fetch(`/api/recommendations/products/${encodeURIComponent(productId)}`).then(
+    readJson<RecommendationProductDetailResponse>,
+  );
 }

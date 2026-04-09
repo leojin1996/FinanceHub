@@ -1,0 +1,14 @@
+SHELL=/bin/bash
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+
+# Replace /path/to/FinanceHub with your real repository path.
+FINANCEHUB_BACKEND=/path/to/FinanceHub/backend
+
+# Refresh premium stock candidates every 10 minutes.
+*/10 * * * * cd "$FINANCEHUB_BACKEND" && ./scripts/run_recommendation_candidate_refresh.sh --category stock >> tmp/run-logs/recommendation-refresh-stock.log 2>&1
+
+# Refresh fund candidates every hour.
+5 * * * * cd "$FINANCEHUB_BACKEND" && ./scripts/run_recommendation_candidate_refresh.sh --category fund >> tmp/run-logs/recommendation-refresh-fund.log 2>&1
+
+# Refresh wealth-management candidates every hour.
+10 * * * * cd "$FINANCEHUB_BACKEND" && ./scripts/run_recommendation_candidate_refresh.sh --category wealth_management >> tmp/run-logs/recommendation-refresh-wealth.log 2>&1

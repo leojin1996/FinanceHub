@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
     BondFundCandidateAdapter,
     MoneyFundWealthProxyAdapter,
@@ -18,6 +20,10 @@ class FakeFrame:
     def iterrows(self):
         for index, row in enumerate(self._rows):
             yield index, row
+
+
+def _strip_detail_metadata(products):
+    return [replace(product, as_of_date=None, detail_route=None) for product in products]
 
 
 def test_bond_fund_adapter_maps_public_rows_into_candidate_products() -> None:
@@ -84,7 +90,9 @@ def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None
     user_profile = map_user_profile("balanced")
     candidates = repository.list_funds(user_profile)
 
-    assert candidates == FUNDS
+    assert _strip_detail_metadata(candidates) == FUNDS
+    assert all(candidate.as_of_date for candidate in candidates)
+    assert all(candidate.detail_route for candidate in candidates)
 
 
 def test_real_repository_falls_back_to_static_wealth_on_adapter_failure() -> None:
@@ -97,7 +105,9 @@ def test_real_repository_falls_back_to_static_wealth_on_adapter_failure() -> Non
     user_profile = map_user_profile("balanced")
     candidates = repository.list_wealth_management(user_profile)
 
-    assert candidates == WEALTH_MANAGEMENT
+    assert _strip_detail_metadata(candidates) == WEALTH_MANAGEMENT
+    assert all(candidate.as_of_date for candidate in candidates)
+    assert all(candidate.detail_route for candidate in candidates)
 
 
 def test_real_repository_keeps_stock_candidate_selection_unchanged() -> None:
@@ -106,10 +116,12 @@ def test_real_repository_keeps_stock_candidate_selection_unchanged() -> None:
     user_profile = map_user_profile("balanced")
     candidates = repository.list_stocks(user_profile)
 
-    assert candidates == STOCKS
+    assert _strip_detail_metadata(candidates) == STOCKS
+    assert all(candidate.as_of_date for candidate in candidates)
+    assert all(candidate.detail_route for candidate in candidates)
 
 
-def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_repository_default(
+def test_domain_recommendation_service_keeps_api_compatible_payload_with_explicit_real_repository(
     monkeypatch,
 ) -> None:
     from financehub_market_api.recommendation.repositories import real_data_adapters
@@ -160,7 +172,9 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_real_re
     )
 
     response = RecommendationService(
-        graph_runtime=RecommendationGraphRuntime.with_default_services()
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=RealDataCandidateRepository()
+        )
     ).get_recommendation("balanced")
 
     assert response.allocationDisplay.model_dump() == {

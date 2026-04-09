@@ -24,7 +24,7 @@ from financehub_market_api.recommendation.profile_intelligence import ProfileInt
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
 from financehub_market_api.recommendation.repositories import (
     CandidateRepository,
-    RealDataCandidateRepository,
+    PrefetchedCandidateRepository,
     StaticCandidateRepository,
 )
 from financehub_market_api.recommendation.rules import map_user_profile
@@ -178,7 +178,7 @@ class RecommendationGraphRuntime:
         repository: CandidateRepository | None = None,
         market_data_service: MarketDataSnapshotSource | None = None,
     ) -> RecommendationGraphRuntime:
-        candidate_repository = repository or RealDataCandidateRepository()
+        candidate_repository = repository or PrefetchedCandidateRepository.with_default_cache()
         return cls(
             GraphServices(
                 market_intelligence=MarketIntelligenceService(

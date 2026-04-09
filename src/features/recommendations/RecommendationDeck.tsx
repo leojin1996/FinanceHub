@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { type Locale } from "../../app/state/app-state";
 import { InsightCard } from "../../components/InsightCard";
@@ -27,6 +28,7 @@ function getCopy(locale: Locale) {
         "We are combining your assessment profile with the current market stance to assemble a first-pass recommendation set.",
       riskNotices: "Risk notices",
       source: "Built from your questionnaire result",
+      viewDetails: "View details",
       whyThisPlan: "Why this plan fits",
     };
   }
@@ -40,6 +42,7 @@ function getCopy(locale: Locale) {
     loadingBody: "系统正在结合你的风险测评结果与当前市场判断，生成第一版资产配置与选品建议。",
     riskNotices: "风险提示",
     source: "基于你的风险测评结果生成",
+    viewDetails: "查看详情",
     whyThisPlan: "为什么这样配",
   };
 }
@@ -63,6 +66,8 @@ function AllocationBar({ label, value }: { label: string; value: number }) {
 }
 
 function ProductCard({ locale, product }: { locale: Locale; product: RecommendationProduct }) {
+  const detailRoute = product.detailRoute ?? `/recommendations/products/${product.id}`;
+
   return (
     <article className="panel recommendation-product-card">
       <header className="recommendation-product-card__header">
@@ -72,6 +77,7 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
             {product.code ? `${product.code} · ` : ""}
             {product.riskLevel}
             {product.liquidity ? ` · ${product.liquidity}` : ""}
+            {product.asOfDate ? ` · ${product.asOfDate}` : ""}
           </p>
         </div>
       </header>
@@ -85,6 +91,11 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
       <p className="recommendation-product-card__body">
         {getLocalizedText(locale, product.rationaleZh, product.rationaleEn)}
       </p>
+      <div className="recommendation-product-card__actions">
+        <Link className="recommendation-product-card__link" to={detailRoute}>
+          {locale === "en-US" ? "View details" : "查看详情"}
+        </Link>
+      </div>
     </article>
   );
 }

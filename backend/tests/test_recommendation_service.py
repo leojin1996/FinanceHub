@@ -320,6 +320,17 @@ def test_recommendation_response_exposes_graph_fields() -> None:
     assert response.agentTrace
 
 
+def test_recommendation_response_exposes_detail_routes_and_as_of_dates() -> None:
+    service = _build_api_service()
+
+    response = service.get_recommendation("balanced")
+
+    first_fund = response.sections.funds.items[0]
+    assert first_fund.detailRoute is not None
+    assert first_fund.detailRoute.startswith("/recommendations/products/")
+    assert first_fund.asOfDate is not None
+
+
 def test_default_graph_runtime_uses_market_data_service_for_market_intelligence() -> None:
     service = DomainRecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_default_services(

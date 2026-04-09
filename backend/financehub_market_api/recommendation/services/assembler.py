@@ -113,6 +113,8 @@ def _fallback_graph_product(product_id: str, category: str, rationale: str) -> R
         category=category,
         code=None,
         liquidity=None,
+        asOfDate=None,
+        detailRoute=f"/recommendations/products/{product_id}",
         nameZh=f"推荐产品 {product_id}",
         nameEn=f"Recommended product {product_id}",
         rationaleZh=rationale,
@@ -138,6 +140,12 @@ def _assemble_graph_sections(graph_state: RecommendationGraphState) -> Recommend
                     category=snapshot.category,
                     code=snapshot.code,
                     liquidity=snapshot.liquidity,
+                    asOfDate=snapshot.as_of_date,
+                    detailRoute=(
+                        snapshot.detail_route
+                        if snapshot.detail_route is not None
+                        else f"/recommendations/products/{snapshot.id}"
+                    ),
                     nameZh=snapshot.name_zh,
                     nameEn=snapshot.name_en,
                     rationaleZh=snapshot.rationale_zh,
