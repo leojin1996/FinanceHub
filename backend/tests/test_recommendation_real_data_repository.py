@@ -5,12 +5,14 @@ from dataclasses import replace
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
     BondFundCandidateAdapter,
     MoneyFundWealthProxyAdapter,
+    PremiumStockDetailAdapter,
 )
 from financehub_market_api.recommendation.repositories.real_data_repository import RealDataCandidateRepository
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.services import RecommendationService
+from financehub_market_api.upstreams.dolthub import StockPriceSnapshot
 
 
 class FakeFrame:
@@ -24,6 +26,27 @@ class FakeFrame:
 
 def _strip_detail_metadata(products):
     return [replace(product, as_of_date=None, detail_route=None) for product in products]
+
+
+def _build_stock_snapshot(symbols: list[str]) -> StockPriceSnapshot:
+    latest_prices = {symbol: 10.0 + index for index, symbol in enumerate(symbols)}
+    previous_prices = {symbol: 9.5 + index for index, symbol in enumerate(symbols)}
+    latest_amounts = {symbol: 100_000_000.0 + index for index, symbol in enumerate(symbols)}
+    recent_closes = {
+        symbol: [
+            (f"2026-04-0{day}", 9.0 + index + day * 0.1)
+            for day in range(1, 8)
+        ]
+        for index, symbol in enumerate(symbols)
+    }
+    return StockPriceSnapshot(
+        as_of_date="2026-04-09",
+        latest_prices=latest_prices,
+        previous_prices=previous_prices,
+        latest_volumes={symbol: 1_000_000.0 + index for index, symbol in enumerate(symbols)},
+        latest_amounts=latest_amounts,
+        recent_closes=recent_closes,
+    )
 
 
 def test_bond_fund_adapter_maps_public_rows_into_candidate_products() -> None:
@@ -80,6 +103,33 @@ def test_money_fund_proxy_adapter_maps_public_rows_into_candidate_products() -> 
     assert candidate.name_zh == "华宝添益"
     assert candidate.name_en == "华宝添益"
     assert candidate.risk_level == "R1"
+
+
+def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
+    rows = [
+        {"代码": f"{600000 + index}", "名称": f"股票{index:03d}"}
+        for index in range(120)
+    ]
+    requested_batch_sizes: list[int] = []
+
+    def fake_price_snapshot_fetcher(symbols: list[str]) -> StockPriceSnapshot:
+        requested_batch_sizes.append(len(symbols))
+        if len(symbols) > 8:
+            raise TimeoutError("oversized stock snapshot batch")
+        return _build_stock_snapshot(symbols)
+
+    adapter = PremiumStockDetailAdapter(
+        constituent_fetchers=(("CSI300", lambda: FakeFrame(rows)),),
+        price_snapshot_fetcher=fake_price_snapshot_fetcher,
+        max_universe_size=120,
+        max_items=5,
+    )
+
+    details = adapter.list_product_details()
+
+    assert len(details) == 5
+    assert requested_batch_sizes == [8] * 15
+    assert details[0].source == "premium_stock_refresh"
 
 
 def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None:

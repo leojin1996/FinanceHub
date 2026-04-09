@@ -103,6 +103,37 @@ def _estimate_liquidity_from_term(term: object) -> str | None:
     return text
 
 
+def _chunk_symbols(symbols: list[str], batch_size: int) -> Iterable[list[str]]:
+    for start in range(0, len(symbols), batch_size):
+        yield symbols[start : start + batch_size]
+
+
+def _merge_stock_price_snapshots(snapshots: Sequence[StockPriceSnapshot]) -> StockPriceSnapshot:
+    if not snapshots:
+        raise ValueError("at least one stock snapshot is required to merge")
+
+    latest_prices: dict[str, float] = {}
+    previous_prices: dict[str, float] = {}
+    latest_volumes: dict[str, float] = {}
+    latest_amounts: dict[str, float] = {}
+    recent_closes: dict[str, list[tuple[str, float]]] = {}
+    for snapshot in snapshots:
+        latest_prices.update(snapshot.latest_prices)
+        previous_prices.update(snapshot.previous_prices)
+        latest_volumes.update(snapshot.latest_volumes)
+        latest_amounts.update(snapshot.latest_amounts)
+        recent_closes.update(snapshot.recent_closes)
+
+    return StockPriceSnapshot(
+        as_of_date=max(snapshot.as_of_date for snapshot in snapshots),
+        latest_prices=latest_prices,
+        previous_prices=previous_prices,
+        latest_volumes=latest_volumes,
+        latest_amounts=latest_amounts,
+        recent_closes=recent_closes,
+    )
+
+
 def _candidate_to_detail_snapshot(
     candidate: CandidateProduct,
     *,
@@ -396,6 +427,7 @@ class PremiumStockDetailAdapter:
         price_snapshot_fetcher: Callable[[list[str]], StockPriceSnapshot] | None = None,
         max_universe_size: int = 150,
         max_items: int = 12,
+        price_snapshot_batch_size: int = 8,
     ) -> None:
         self._constituent_fetchers = list(
             constituent_fetchers
@@ -413,6 +445,7 @@ class PremiumStockDetailAdapter:
         self._price_snapshot_fetcher = price_snapshot_fetcher or self._fetch_default_price_snapshot
         self._max_universe_size = max_universe_size
         self._max_items = max_items
+        self._price_snapshot_batch_size = price_snapshot_batch_size
 
     def list_product_details(self) -> list[ProductDetailSnapshot]:
         universe = self._build_universe()
@@ -420,7 +453,7 @@ class PremiumStockDetailAdapter:
             return []
 
         symbols = [_to_stock_symbol(entry.code) for entry in universe]
-        snapshot = self._price_snapshot_fetcher(symbols)
+        snapshot = self._fetch_price_snapshot(symbols)
         ranked: list[tuple[tuple[float, float, float], ProductDetailSnapshot]] = []
         for entry in universe:
             symbol = _to_stock_symbol(entry.code)
@@ -487,11 +520,21 @@ class PremiumStockDetailAdapter:
             score = (latest_amount, -abs(change_percent), -weekly_range_percent)
             ranked.append((score, detail))
 
-        ranked.sort(reverse=True)
+        ranked.sort(key=lambda item: item[0], reverse=True)
         return [detail for _, detail in ranked[: self._max_items]]
 
     def _fetch_default_price_snapshot(self, symbols: list[str]) -> StockPriceSnapshot:
         return DoltHubClient().fetch_watchlist_prices(symbols)
+
+    def _fetch_price_snapshot(self, symbols: list[str]) -> StockPriceSnapshot:
+        if len(symbols) <= self._price_snapshot_batch_size:
+            return self._price_snapshot_fetcher(symbols)
+
+        snapshots = [
+            self._price_snapshot_fetcher(batch)
+            for batch in _chunk_symbols(symbols, self._price_snapshot_batch_size)
+        ]
+        return _merge_stock_price_snapshots(snapshots)
 
     def _build_universe(self) -> list["_PremiumUniverseEntry"]:
         by_code: dict[str, _PremiumUniverseEntry] = {}
