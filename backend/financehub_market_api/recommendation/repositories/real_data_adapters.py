@@ -12,10 +12,11 @@ from financehub_market_api.recommendation.candidate_pool.schemas import (
 )
 from financehub_market_api.recommendation.schemas import CandidateProduct, UserProfile
 from financehub_market_api.upstreams.dolthub import DoltHubClient, StockPriceSnapshot
-from financehub_market_api.watchlist import WATCHLIST, WatchlistEntry
+from financehub_market_api.watchlist import WATCHLIST
 
 DataRow = Mapping[str, object]
 DataFetcher = Callable[[], object]
+SymbolDataFetcher = Callable[[str], object]
 
 
 def _iter_data_rows(frame: object) -> Iterable[DataRow]:
@@ -51,6 +52,11 @@ def _parse_percent(value: object) -> float | None:
         return float(normalized)
     except ValueError:
         return None
+
+
+def _format_percent(value: float) -> str:
+    normalized = 0.0 if abs(value) < 0.005 else value
+    return f"{normalized:.2f}%"
 
 
 def _parse_positive_float(value: object) -> float | None:
@@ -89,6 +95,22 @@ def _normalize_risk_level(value: object, *, default: str = "R2") -> str:
     return default
 
 
+def _extract_money_fund_annualized_7d(row: Mapping[str, object]) -> float | None:
+    parsed = _parse_percent(
+        _first_present(row, "年化收益率7日", "7日年化收益率", "年化收益率-7日")
+    )
+    if parsed is not None:
+        return parsed
+
+    for key, value in row.items():
+        if "7日年化" not in str(key):
+            continue
+        parsed = _parse_percent(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _to_stock_symbol(code: str) -> str:
     normalized = code.strip()
     if normalized.startswith(("600", "601", "603", "605", "688", "689")):
@@ -103,12 +125,43 @@ def _estimate_liquidity_from_term(term: object) -> str | None:
     return text
 
 
+def _build_chart_points(
+    frame: object,
+    *,
+    date_keys: Sequence[str],
+    value_keys: Sequence[str],
+    max_points: int,
+) -> list[ProductChartPoint]:
+    points: list[ProductChartPoint] = []
+    for row in _iter_data_rows(frame):
+        date_value = _first_present(row, *date_keys)
+        metric_value = _first_present(row, *value_keys)
+        if date_value is None or metric_value is None:
+            continue
+        numeric_value = _parse_percent(metric_value)
+        if numeric_value is None or not isfinite(numeric_value):
+            continue
+        points.append(
+            ProductChartPoint(
+                date=_extract_date(date_value),
+                value=numeric_value,
+            )
+        )
+
+    points.sort(key=lambda point: point.date)
+    if len(points) > max_points:
+        return points[-max_points:]
+    return points
+
+
 def _chunk_symbols(symbols: list[str], batch_size: int) -> Iterable[list[str]]:
     for start in range(0, len(symbols), batch_size):
         yield symbols[start : start + batch_size]
 
 
-def _merge_stock_price_snapshots(snapshots: Sequence[StockPriceSnapshot]) -> StockPriceSnapshot:
+def _merge_stock_price_snapshots(
+    snapshots: Sequence[StockPriceSnapshot],
+) -> StockPriceSnapshot:
     if not snapshots:
         raise ValueError("at least one stock snapshot is required to merge")
 
@@ -186,7 +239,9 @@ def _candidate_to_detail_snapshot(
 class BondFundCandidateAdapter:
     """Fetches low-risk bond fund candidates from public AkShare data."""
 
-    def __init__(self, fetcher: DataFetcher | None = None, *, max_items: int = 2) -> None:
+    def __init__(
+        self, fetcher: DataFetcher | None = None, *, max_items: int = 2
+    ) -> None:
         self._fetcher = fetcher or (lambda: ak.fund_open_fund_rank_em(symbol="债券型"))
         self._max_items = max_items
 
@@ -235,8 +290,10 @@ class BondFundCandidateAdapter:
 class MoneyFundWealthProxyAdapter:
     """Fetches cash-management proxy candidates from public money-fund data."""
 
-    def __init__(self, fetcher: DataFetcher | None = None, *, max_items: int = 2) -> None:
-        self._fetcher = fetcher or ak.fund_money_rank_em
+    def __init__(
+        self, fetcher: DataFetcher | None = None, *, max_items: int = 2
+    ) -> None:
+        self._fetcher = fetcher or self._fetch_default_frame
         self._max_items = max_items
 
     def list_candidates(self, user_profile: UserProfile) -> list[CandidateProduct]:
@@ -253,7 +310,7 @@ class MoneyFundWealthProxyAdapter:
             if not code or not name:
                 continue
 
-            annualized_7d = _parse_percent(row.get("年化收益率7日"))
+            annualized_7d = _extract_money_fund_annualized_7d(row)
             if annualized_7d is None or annualized_7d <= 0:
                 continue
 
@@ -261,7 +318,9 @@ class MoneyFundWealthProxyAdapter:
             if fee_percent is not None and fee_percent > 0.5:
                 continue
 
-            as_of_date = _extract_date(row.get("日期"))
+            as_of_date = _extract_date(
+                _first_present(row, "日期", "净值日期", "更新日期")
+            )
             candidates.append(
                 CandidateProduct(
                     id=f"wm-{len(candidates) + 1:03d}",
@@ -280,10 +339,22 @@ class MoneyFundWealthProxyAdapter:
 
         return candidates
 
+    def _fetch_default_frame(self) -> object:
+        try:
+            return ak.fund_money_rank_em()
+        except Exception:  # noqa: BLE001
+            return ak.fund_money_fund_daily_em()
+
 
 class BondFundDetailAdapter:
-    def __init__(self, adapter: BondFundCandidateAdapter | None = None) -> None:
+    def __init__(
+        self,
+        adapter: BondFundCandidateAdapter | None = None,
+        *,
+        trend_fetcher: SymbolDataFetcher | None = None,
+    ) -> None:
         self._adapter = adapter or BondFundCandidateAdapter()
+        self._trend_fetcher = trend_fetcher or self._fetch_default_trend
 
     def list_product_details(self) -> list[ProductDetailSnapshot]:
         default_profile = UserProfile(
@@ -293,6 +364,16 @@ class BondFundDetailAdapter:
         )
         details: list[ProductDetailSnapshot] = []
         for candidate in self._adapter.list_candidates(default_profile):
+            chart: list[ProductChartPoint] = []
+            yield_metrics: dict[str, str] = {}
+            if candidate.code:
+                chart, monthly_change_percent = self._fetch_trend_snapshot(
+                    candidate.code
+                )
+                if monthly_change_percent is not None:
+                    yield_metrics["changePercent"] = _format_percent(
+                        monthly_change_percent
+                    )
             details.append(
                 _candidate_to_detail_snapshot(
                     candidate,
@@ -301,17 +382,66 @@ class BondFundDetailAdapter:
                     provider_name="Public bond fund universe",
                     summary_zh="公开债券基金底仓候选，强调稳健与流动性。",
                     summary_en="Public bond-fund candidate focused on stability and liquidity.",
-                    chart_label_zh="近期净值",
-                    chart_label_en="Recent NAV",
+                    chart_label_zh="近1月累计收益率",
+                    chart_label_en="1M cumulative return",
+                    chart=chart,
+                    yield_metrics=yield_metrics,
                 )
             )
         return details
+
+    def _fetch_default_trend(self, code: str) -> object:
+        return ak.fund_open_fund_info_em(
+            symbol=code,
+            indicator="单位净值走势",
+            period="1月",
+        )
+
+    def _fetch_trend_snapshot(
+        self, code: str
+    ) -> tuple[list[ProductChartPoint], float | None]:
+        try:
+            frame = self._trend_fetcher(code)
+        except Exception:  # noqa: BLE001
+            return [], None
+
+        cumulative_points = _build_chart_points(
+            frame,
+            date_keys=("净值日期", "日期"),
+            value_keys=("累计收益率",),
+            max_points=30,
+        )
+        if cumulative_points:
+            return cumulative_points, cumulative_points[-1].value
+
+        nav_points = _build_chart_points(
+            frame,
+            date_keys=("净值日期", "日期"),
+            value_keys=("单位净值",),
+            max_points=30,
+        )
+        if len(nav_points) < 2:
+            return [], None
+        baseline = nav_points[0].value
+        if baseline <= 0:
+            return [], None
+
+        cumulative_from_nav = [
+            ProductChartPoint(
+                date=point.date,
+                value=((point.value / baseline) - 1.0) * 100.0,
+            )
+            for point in nav_points
+        ]
+        return cumulative_from_nav, cumulative_from_nav[-1].value
 
 
 class PublicWealthManagementDetailAdapter:
     """Attempts to parse public bank or wealth-subsidiary products into detail snapshots."""
 
-    def __init__(self, fetcher: DataFetcher | None = None, *, max_items: int = 3) -> None:
+    def __init__(
+        self, fetcher: DataFetcher | None = None, *, max_items: int = 3
+    ) -> None:
         self._fetcher = fetcher
         self._max_items = max_items
 
@@ -327,7 +457,9 @@ class PublicWealthManagementDetailAdapter:
 
             code = _to_str(_first_present(row, "产品代码", "登记编码", "编码"))
             name = _to_str(_first_present(row, "产品名称", "名称"))
-            provider_name = _to_str(_first_present(row, "机构名称", "发行机构", "理财公司"))
+            provider_name = _to_str(
+                _first_present(row, "机构名称", "发行机构", "理财公司")
+            )
             if not name:
                 continue
 
@@ -338,7 +470,9 @@ class PublicWealthManagementDetailAdapter:
             if risk_level not in {"R1", "R2"}:
                 continue
 
-            as_of_date = _extract_date(_first_present(row, "日期", "净值日期", "更新日期"))
+            as_of_date = _extract_date(
+                _first_present(row, "日期", "净值日期", "更新日期")
+            )
             liquidity = _estimate_liquidity_from_term(
                 _first_present(row, "期限", "开放频率", "开放周期")
             )
@@ -363,7 +497,11 @@ class PublicWealthManagementDetailAdapter:
                     risk_level=risk_level,
                     liquidity=liquidity,
                     tags_zh=["银行理财", "公开披露", "稳健候选"],
-                    tags_en=["Bank wealth management", "Public disclosure", "Steady candidate"],
+                    tags_en=[
+                        "Bank wealth management",
+                        "Public disclosure",
+                        "Steady candidate",
+                    ],
                     summary_zh="公开理财产品候选，优先满足稳健和期限可解释性。",
                     summary_en="Public wealth-management candidate prioritizing steady use cases and explainable tenor.",
                     recommendation_rationale_zh="来自公开理财产品池，兼顾稳健收益诉求与期限适配。",
@@ -391,8 +529,14 @@ class PublicWealthManagementDetailAdapter:
 
 
 class MoneyFundWealthProxyDetailAdapter:
-    def __init__(self, adapter: MoneyFundWealthProxyAdapter | None = None) -> None:
+    def __init__(
+        self,
+        adapter: MoneyFundWealthProxyAdapter | None = None,
+        *,
+        history_fetcher: SymbolDataFetcher | None = None,
+    ) -> None:
         self._adapter = adapter or MoneyFundWealthProxyAdapter()
+        self._history_fetcher = history_fetcher or self._fetch_default_history
 
     def list_product_details(self) -> list[ProductDetailSnapshot]:
         default_profile = UserProfile(
@@ -402,6 +546,12 @@ class MoneyFundWealthProxyDetailAdapter:
         )
         details: list[ProductDetailSnapshot] = []
         for candidate in self._adapter.list_candidates(default_profile):
+            chart: list[ProductChartPoint] = []
+            yield_metrics: dict[str, str] = {}
+            if candidate.code:
+                chart = self._fetch_annualized_chart(candidate.code)
+                if chart:
+                    yield_metrics["annualizedReturn"] = _format_percent(chart[-1].value)
             details.append(
                 _candidate_to_detail_snapshot(
                     candidate,
@@ -412,11 +562,32 @@ class MoneyFundWealthProxyDetailAdapter:
                     summary_en="Public cash-management proxy candidate used as a steady fallback.",
                     chart_label_zh="近期收益",
                     chart_label_en="Recent yield",
+                    chart=chart,
+                    yield_metrics=yield_metrics,
                     fit_for_profile_zh="适合强调高流动性和稳健性的用户。",
                     fit_for_profile_en="Fits users who prioritize high liquidity and steadiness.",
                 )
             )
         return details
+
+    def _fetch_default_history(self, code: str) -> object:
+        return ak.fund_open_fund_info_em(
+            symbol=code,
+            indicator="7日年化收益率",
+            period="1月",
+        )
+
+    def _fetch_annualized_chart(self, code: str) -> list[ProductChartPoint]:
+        try:
+            frame = self._history_fetcher(code)
+        except Exception:  # noqa: BLE001
+            return []
+        return _build_chart_points(
+            frame,
+            date_keys=("净值日期", "日期"),
+            value_keys=("7日年化收益率", "年化收益率7日"),
+            max_points=30,
+        )
 
 
 class PremiumStockDetailAdapter:
@@ -442,7 +613,9 @@ class PremiumStockDetailAdapter:
                 ),
             )
         )
-        self._price_snapshot_fetcher = price_snapshot_fetcher or self._fetch_default_price_snapshot
+        self._price_snapshot_fetcher = (
+            price_snapshot_fetcher or self._fetch_default_price_snapshot
+        )
         self._max_universe_size = max_universe_size
         self._max_items = max_items
         self._price_snapshot_batch_size = price_snapshot_batch_size
@@ -476,7 +649,9 @@ class PremiumStockDetailAdapter:
             weekly_range_percent = (
                 ((max_close - min_close) / min_close) * 100 if min_close > 0 else 0.0
             )
-            if not all(isfinite(value) for value in (change_percent, weekly_range_percent)):
+            if not all(
+                isfinite(value) for value in (change_percent, weekly_range_percent)
+            ):
                 continue
 
             trend_points = [
@@ -513,7 +688,9 @@ class PremiumStockDetailAdapter:
                     "changePercent": f"{change_percent:+.2f}%",
                 },
                 fees={},
-                drawdown_or_volatility={"weeklyRangePercent": f"{weekly_range_percent:.2f}%"},
+                drawdown_or_volatility={
+                    "weeklyRangePercent": f"{weekly_range_percent:.2f}%"
+                },
                 fit_for_profile_zh="适合作为权益增强部分的精品股票候选。",
                 fit_for_profile_en="Fits the equity-enhancement sleeve as a premium stock candidate.",
             )

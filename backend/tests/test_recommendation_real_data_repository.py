@@ -3,14 +3,24 @@ from __future__ import annotations
 from dataclasses import replace
 
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
+    BondFundDetailAdapter,
     BondFundCandidateAdapter,
+    MoneyFundWealthProxyDetailAdapter,
     MoneyFundWealthProxyAdapter,
     PremiumStockDetailAdapter,
 )
-from financehub_market_api.recommendation.repositories.real_data_repository import RealDataCandidateRepository
-from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
+from financehub_market_api.recommendation.repositories.real_data_repository import (
+    RealDataCandidateRepository,
+)
+from financehub_market_api.recommendation.graph.runtime import (
+    RecommendationGraphRuntime,
+)
 from financehub_market_api.recommendation.rules import map_user_profile
-from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
+from financehub_market_api.recommendation.rules.product_catalog import (
+    FUNDS,
+    STOCKS,
+    WEALTH_MANAGEMENT,
+)
 from financehub_market_api.recommendation.services import RecommendationService
 from financehub_market_api.upstreams.dolthub import StockPriceSnapshot
 
@@ -25,25 +35,28 @@ class FakeFrame:
 
 
 def _strip_detail_metadata(products):
-    return [replace(product, as_of_date=None, detail_route=None) for product in products]
+    return [
+        replace(product, as_of_date=None, detail_route=None) for product in products
+    ]
 
 
 def _build_stock_snapshot(symbols: list[str]) -> StockPriceSnapshot:
     latest_prices = {symbol: 10.0 + index for index, symbol in enumerate(symbols)}
     previous_prices = {symbol: 9.5 + index for index, symbol in enumerate(symbols)}
-    latest_amounts = {symbol: 100_000_000.0 + index for index, symbol in enumerate(symbols)}
+    latest_amounts = {
+        symbol: 100_000_000.0 + index for index, symbol in enumerate(symbols)
+    }
     recent_closes = {
-        symbol: [
-            (f"2026-04-0{day}", 9.0 + index + day * 0.1)
-            for day in range(1, 8)
-        ]
+        symbol: [(f"2026-04-0{day}", 9.0 + index + day * 0.1) for day in range(1, 8)]
         for index, symbol in enumerate(symbols)
     }
     return StockPriceSnapshot(
         as_of_date="2026-04-09",
         latest_prices=latest_prices,
         previous_prices=previous_prices,
-        latest_volumes={symbol: 1_000_000.0 + index for index, symbol in enumerate(symbols)},
+        latest_volumes={
+            symbol: 1_000_000.0 + index for index, symbol in enumerate(symbols)
+        },
         latest_amounts=latest_amounts,
         recent_closes=recent_closes,
     )
@@ -105,6 +118,130 @@ def test_money_fund_proxy_adapter_maps_public_rows_into_candidate_products() -> 
     assert candidate.risk_level == "R1"
 
 
+def test_money_fund_proxy_adapter_accepts_daily_fallback_columns() -> None:
+    adapter = MoneyFundWealthProxyAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "001078",
+                    "基金简称": "华夏现金宝货币B",
+                    "2026-04-08-7日年化%": "1.7500%",
+                    "手续费": "0费率",
+                    "成立日期": "2013-01-22",
+                }
+            ]
+        )
+    )
+
+    user_profile = map_user_profile("balanced")
+    candidates = adapter.list_candidates(user_profile)
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.category == "wealth_management"
+    assert candidate.code == "001078"
+    assert candidate.name_zh == "华夏现金宝货币B"
+
+
+def test_bond_fund_detail_adapter_populates_chart_and_yield_metrics() -> None:
+    candidate_adapter = BondFundCandidateAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "000001",
+                    "基金简称": "稳健债券A",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.1234",
+                    "手续费": "0.15%",
+                }
+            ]
+        )
+    )
+
+    detail_adapter = BondFundDetailAdapter(
+        adapter=candidate_adapter,
+        trend_fetcher=lambda symbol: (
+            FakeFrame(
+                [
+                    {"日期": "2026-04-01", "累计收益率": "0.12"},
+                    {"日期": "2026-04-08", "累计收益率": "1.08"},
+                    {"日期": "2026-04-09", "累计收益率": "1.56"},
+                ]
+            )
+            if symbol == "000001"
+            else FakeFrame([])
+        ),
+    )
+
+    details = detail_adapter.list_product_details()
+
+    assert len(details) == 1
+    detail = details[0]
+    assert detail.chart_label_zh == "近1月累计收益率"
+    assert detail.yield_metrics["changePercent"] == "1.56%"
+    assert [point.date for point in detail.chart] == [
+        "2026-04-01",
+        "2026-04-08",
+        "2026-04-09",
+    ]
+    assert detail.chart[-1].value == 1.56
+
+
+def test_money_fund_detail_adapter_populates_annualized_return_and_chart() -> None:
+    candidate_adapter = MoneyFundWealthProxyAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "511990",
+                    "基金简称": "华宝添益",
+                    "日期": "2026-04-02",
+                    "年化收益率7日": "1.88%",
+                    "手续费": "0.00%",
+                }
+            ]
+        )
+    )
+
+    detail_adapter = MoneyFundWealthProxyDetailAdapter(
+        adapter=candidate_adapter,
+        history_fetcher=lambda symbol: (
+            FakeFrame(
+                [
+                    {
+                        "净值日期": "2026-04-01",
+                        "每万份收益": "0.5521",
+                        "7日年化收益率": "1.71",
+                    },
+                    {
+                        "净值日期": "2026-04-08",
+                        "每万份收益": "0.5578",
+                        "7日年化收益率": "1.82",
+                    },
+                    {
+                        "净值日期": "2026-04-09",
+                        "每万份收益": "0.5612",
+                        "7日年化收益率": "1.88",
+                    },
+                ]
+            )
+            if symbol == "511990"
+            else FakeFrame([])
+        ),
+    )
+
+    details = detail_adapter.list_product_details()
+
+    assert len(details) == 1
+    detail = details[0]
+    assert detail.yield_metrics["annualizedReturn"] == "1.88%"
+    assert [point.date for point in detail.chart] == [
+        "2026-04-01",
+        "2026-04-08",
+        "2026-04-09",
+    ]
+    assert detail.chart[-1].value == 1.88
+
+
 def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
     rows = [
         {"代码": f"{600000 + index}", "名称": f"股票{index:03d}"}
@@ -134,7 +271,9 @@ def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
 
 def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None:
     repository = RealDataCandidateRepository(
-        fund_adapter=BondFundCandidateAdapter(fetcher=lambda: (_ for _ in ()).throw(RuntimeError("fund upstream down")))
+        fund_adapter=BondFundCandidateAdapter(
+            fetcher=lambda: (_ for _ in ()).throw(RuntimeError("fund upstream down"))
+        )
     )
 
     user_profile = map_user_profile("balanced")
@@ -148,7 +287,9 @@ def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None
 def test_real_repository_falls_back_to_static_wealth_on_adapter_failure() -> None:
     repository = RealDataCandidateRepository(
         wealth_adapter=MoneyFundWealthProxyAdapter(
-            fetcher=lambda: (_ for _ in ()).throw(RuntimeError("money fund upstream down"))
+            fetcher=lambda: (_ for _ in ()).throw(
+                RuntimeError("money fund upstream down")
+            )
         )
     )
 
