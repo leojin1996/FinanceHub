@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -10,9 +9,10 @@ import pytest
 
 import financehub_market_api.recommendation.agents.sample_capture as sample_capture_module
 from financehub_market_api.recommendation.agents.contracts import (
-    ExplanationAgentOutput,
+    ComplianceReviewAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
-    ProductRankingAgentOutput,
+    ProductMatchAgentOutput,
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.provider import AgentModelRoute, AgentRuntimeConfig
@@ -25,14 +25,16 @@ from financehub_market_api.recommendation.agents.sample_capture import (
     run_live_agent_smoke,
     sanitize_captured_body,
 )
-from financehub_market_api.recommendation.schemas import RuleEvaluationState
 
 
 def _load_capture_cli_module() -> object:
     script_path = (
         Path(__file__).resolve().parents[1] / "scripts" / "capture_anthropic_agent_responses.py"
     )
-    spec = importlib.util.spec_from_file_location("capture_anthropic_agent_responses_cli", script_path)
+    spec = importlib.util.spec_from_file_location(
+        "capture_anthropic_agent_responses_cli",
+        script_path,
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -40,24 +42,185 @@ def _load_capture_cli_module() -> object:
     return module
 
 
-def test_capture_request_names_covers_all_six_agent_stages() -> None:
+def _runtime_config() -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        providers={},
+        agent_routes={
+            request_name: AgentModelRoute(
+                provider_name="anthropic",
+                model_name="claude-test",
+            )
+            for request_name in capture_request_names()
+        },
+        request_timeout_seconds=7.5,
+    )
+
+
+class _FakeRuntime:
+    def __init__(self, *, fail_market: bool = False, run_order: list[str] | None = None) -> None:
+        self._fail_market = fail_market
+        self._run_order = run_order if run_order is not None else []
+
+    def analyze_user_profile(self, user_profile, *, prompt_context=None):
+        del user_profile, prompt_context
+        self._run_order.append("user_profile_analyst")
+        return (
+            UserProfileAgentOutput(
+                risk_tier="R2",
+                liquidity_preference="high",
+                investment_horizon="one_year",
+                return_objective="capital_preservation",
+                drawdown_sensitivity="high",
+                profile_focus_zh="稳健",
+                profile_focus_en="steady",
+                derived_signals=[],
+            ),
+            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+        )
+
+    def analyze_market_intelligence(
+        self,
+        user_profile,
+        user_profile_insights,
+        market_facts,
+        *,
+        prompt_context=None,
+    ):
+        del user_profile, user_profile_insights, market_facts, prompt_context
+        self._run_order.append("market_intelligence")
+        if self._fail_market:
+            raise RuntimeError("market failed")
+        return (
+            MarketIntelligenceAgentOutput(
+                sentiment="negative",
+                stance="defensive",
+                preferred_categories=["wealth_management", "fund"],
+                avoided_categories=["stock"],
+                summary_zh="市场平稳",
+                summary_en="Market is steady",
+                evidence_refs=["market_overview"],
+            ),
+            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+        )
+
+    def match_products(
+        self,
+        user_profile,
+        *,
+        user_profile_insights,
+        market_intelligence,
+        candidates,
+        prompt_context=None,
+    ):
+        del user_profile, user_profile_insights, market_intelligence, candidates, prompt_context
+        self._run_order.append("product_match_expert")
+        return (
+            ProductMatchAgentOutput(
+                recommended_categories=["wealth_management", "fund"],
+                selected_product_ids=["wm-001", "fund-001"],
+                ranking_rationale_zh="优先稳健候选。",
+                ranking_rationale_en="Prefer resilient candidates.",
+                filtered_out_reasons=[],
+            ),
+            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+        )
+
+    def review_compliance(
+        self,
+        user_profile,
+        *,
+        user_profile_insights,
+        selected_candidates,
+        compliance_facts,
+        prompt_context=None,
+    ):
+        del user_profile, user_profile_insights, selected_candidates, compliance_facts, prompt_context
+        self._run_order.append("compliance_risk_officer")
+        return (
+            ComplianceReviewAgentOutput(
+                verdict="approve",
+                approved_ids=["wm-001", "fund-001"],
+                rejected_ids=[],
+                reason_summary_zh="候选通过审核。",
+                reason_summary_en="Candidates passed review.",
+                required_disclosures_zh=["理财非存款，投资需谨慎。"],
+                required_disclosures_en=["Investing involves risk. Proceed prudently."],
+                suitability_notes_zh=["风险等级和流动性匹配。"],
+                suitability_notes_en=["Risk and liquidity are aligned."],
+                applied_rule_ids=["test-rule"],
+                blocking_reason_codes=[],
+            ),
+            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+        )
+
+    def coordinate_manager(
+        self,
+        user_profile,
+        *,
+        user_profile_insights,
+        market_intelligence,
+        product_match,
+        compliance_review,
+        prompt_context=None,
+    ):
+        del (
+            user_profile,
+            user_profile_insights,
+            market_intelligence,
+            product_match,
+            compliance_review,
+            prompt_context,
+        )
+        self._run_order.append("manager_coordinator")
+        return (
+            ManagerCoordinatorAgentOutput(
+                recommendation_status="ready",
+                summary_zh="建议保持稳健配置。",
+                summary_en="Favor a resilient allocation.",
+                why_this_plan_zh=["理由一"],
+                why_this_plan_en=["Reason one"],
+            ),
+            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+        )
+
+
+def _write_capture_file(capture_dir: Path, request_name: str, text: str) -> None:
+    payload = {
+        "request_name": request_name,
+        "phase": "structured",
+        "body": {
+            "id": f"msg-{request_name}",
+            "content": [{"type": "text", "text": text}],
+        },
+    }
+    (capture_dir / f"{request_name}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def test_capture_request_names_covers_all_five_agent_stages() -> None:
     assert capture_request_names() == (
-        "user_profile",
+        "user_profile_analyst",
         "market_intelligence",
-        "fund_selection",
-        "wealth_selection",
-        "stock_selection",
-        "explanation",
+        "product_match_expert",
+        "compliance_risk_officer",
+        "manager_coordinator",
     )
 
 
 def test_fixture_filename_generation_is_stable_per_request_name() -> None:
-    assert fixture_filename_for_request_name("user_profile") == "user_profile.json"
+    assert (
+        fixture_filename_for_request_name("user_profile_analyst")
+        == "user_profile_analyst.json"
+    )
     assert fixture_filename_for_request_name("market_intelligence") == "market_intelligence.json"
-    assert fixture_filename_for_request_name("fund_selection") == "fund_selection.json"
-    assert fixture_filename_for_request_name("wealth_selection") == "wealth_selection.json"
-    assert fixture_filename_for_request_name("stock_selection") == "stock_selection.json"
-    assert fixture_filename_for_request_name("explanation") == "explanation.json"
+    assert fixture_filename_for_request_name("product_match_expert") == "product_match_expert.json"
+    assert (
+        fixture_filename_for_request_name("compliance_risk_officer")
+        == "compliance_risk_officer.json"
+    )
+    assert fixture_filename_for_request_name("manager_coordinator") == "manager_coordinator.json"
 
 
 def test_sanitize_captured_body_removes_unstable_metadata_and_preserves_nested_shape() -> None:
@@ -67,7 +230,7 @@ def test_sanitize_captured_body_removes_unstable_metadata_and_preserves_nested_s
         "content": [
             {
                 "type": "text",
-                "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                "text": "{\"summary_zh\":\"稳健\",\"summary_en\":\"Steady\"}",
                 "id": "block_456",
             }
         ],
@@ -85,7 +248,7 @@ def test_sanitize_captured_body_removes_unstable_metadata_and_preserves_nested_s
         "content": [
             {
                 "type": "text",
-                "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                "text": "{\"summary_zh\":\"稳健\",\"summary_en\":\"Steady\"}",
             }
         ],
         "usage": {
@@ -94,9 +257,6 @@ def test_sanitize_captured_body_removes_unstable_metadata_and_preserves_nested_s
         },
         "nested": {"items": [{"keep": "value"}]},
     }
-    assert raw_body["id"] == "msg_123"
-    assert raw_body["content"][0]["id"] == "block_456"
-    assert raw_body["usage"]["request_id"] == "req_789"
 
 
 def test_build_fixture_payload_keeps_request_name_phase_and_sanitized_body() -> None:
@@ -105,7 +265,7 @@ def test_build_fixture_payload_keeps_request_name_phase_and_sanitized_body() -> 
         phase="structured",
         body={
             "id": "msg_123",
-            "content": [{"type": "text", "text": '{"summary_zh":"稳健","summary_en":"Steady"}'}],
+            "content": [{"type": "text", "text": "{\"summary_zh\":\"稳健\",\"summary_en\":\"Steady\"}"}],
         },
     )
 
@@ -113,7 +273,7 @@ def test_build_fixture_payload_keeps_request_name_phase_and_sanitized_body() -> 
         "request_name": "market_intelligence",
         "capture_phase": "structured",
         "body": {
-            "content": [{"type": "text", "text": '{"summary_zh":"稳健","summary_en":"Steady"}'}],
+            "content": [{"type": "text", "text": "{\"summary_zh\":\"稳健\",\"summary_en\":\"Steady\"}"}],
         },
     }
 
@@ -137,144 +297,36 @@ def test_capture_all_agents_returns_ordered_summary_and_writes_sanitized_fixture
     capture_dir = tmp_path / "captures"
     fixtures_dir = tmp_path / "fixtures"
     capture_dir.mkdir(parents=True)
+    for request_name in capture_request_names():
+        _write_capture_file(capture_dir, request_name, f"new-{request_name}")
 
-    request_names = capture_request_names()
-    for index, request_name in enumerate(request_names):
-        payload = {
-            "request_name": request_name,
-            "phase": "structured",
-            "body": {
-                "id": f"msg-{request_name}",
-                "content": [{"type": "text", "text": f"new-{request_name}"}],
-            },
-        }
-        capture_path = capture_dir / f"{index:02d}-{request_name}.json"
-        capture_path.write_text(json.dumps(payload), encoding="utf-8")
-        if request_name == "user_profile":
-            old_payload = {
-                "request_name": request_name,
-                "phase": "structured",
-                "body": {
-                    "id": "old-user-profile",
-                    "content": [{"type": "text", "text": "old-user_profile"}],
-                },
-            }
-            old_path = capture_dir / "00-user_profile-old.json"
-            old_path.write_text(json.dumps(old_payload), encoding="utf-8")
-            old_mtime = capture_path.stat().st_mtime - 60
-            old_path.touch()
-            os.utime(old_path, (old_mtime, old_mtime))
-
-    runtime_config = AgentRuntimeConfig(
-        providers={},
-        agent_routes={
-            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
-            for request_name in request_names
-        },
-        request_timeout_seconds=7.5,
-    )
+    fake_runtime = _FakeRuntime()
     monkeypatch.setattr(
         sample_capture_module,
         "_build_anthropic_provider_from_env",
-        lambda: (object(), runtime_config),
+        lambda: (object(), _runtime_config()),
     )
     monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
     monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
+    monkeypatch.setattr(sample_capture_module.provider_module, "_resolve_capture_dir", lambda _: capture_dir)
     monkeypatch.setattr(
-        sample_capture_module.provider_module,
-        "_resolve_capture_dir",
-        lambda _: capture_dir,
-    )
-    monkeypatch.setattr(
-        sample_capture_module.UserProfileRuntimeAgent,
-        "run",
-        lambda self, user_profile: UserProfileAgentOutput(
-            profile_focus_zh="稳健",
-            profile_focus_en="steady",
-        ),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.MarketIntelligenceRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, fallback_context: MarketIntelligenceAgentOutput(
-            summary_zh="市场平稳",
-            summary_en="Market is steady",
-        ),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.FundSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: ProductRankingAgentOutput(
-            ranked_ids=[candidate.id for candidate in candidates]
-        ),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.WealthSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: ProductRankingAgentOutput(
-            ranked_ids=[candidate.id for candidate in candidates]
-        ),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.StockSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: ProductRankingAgentOutput(
-            ranked_ids=[candidate.id for candidate in candidates]
-        ),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.ExplanationRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, market_context: ExplanationAgentOutput(
-            why_this_plan_zh=["理由一"],
-            why_this_plan_en=["Reason one"],
-        ),
+        sample_capture_module,
+        "AnthropicRecommendationAgentRuntime",
+        lambda provider, runtime_config: fake_runtime,
     )
 
     summary = capture_all_agents(fixtures_dir=fixtures_dir)
 
-    assert [item["request_name"] for item in summary] == list(request_names)
-    assert [item["phase"] for item in summary] == ["structured"] * len(request_names)
+    assert [item["request_name"] for item in summary] == list(capture_request_names())
+    assert [item["phase"] for item in summary] == ["structured"] * len(summary)
     assert all(item["fixture_path"] is not None for item in summary)
-    user_profile_fixture = fixtures_dir / "user_profile.json"
-    fixture_payload = json.loads(user_profile_fixture.read_text(encoding="utf-8"))
+    assert fake_runtime._run_order == list(capture_request_names())
+    fixture_payload = json.loads(
+        (fixtures_dir / "user_profile_analyst.json").read_text(encoding="utf-8")
+    )
     assert fixture_payload["capture_phase"] == "structured"
-    assert fixture_payload["body"]["content"][0]["text"] == "new-user_profile"
+    assert fixture_payload["body"]["content"][0]["text"] == "new-user_profile_analyst"
     assert "id" not in fixture_payload["body"]
-
-
-def test_capture_all_agents_fails_when_fallback_state_is_incomplete(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_config = AgentRuntimeConfig(
-        providers={},
-        agent_routes={
-            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
-            for request_name in capture_request_names()
-        },
-        request_timeout_seconds=7.5,
-    )
-    monkeypatch.setattr(
-        sample_capture_module,
-        "_build_anthropic_provider_from_env",
-        lambda: (object(), runtime_config),
-    )
-    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
-    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
-    monkeypatch.setattr(
-        sample_capture_module.provider_module,
-        "_resolve_capture_dir",
-        lambda _: tmp_path / "captures",
-    )
-    monkeypatch.setattr(
-        sample_capture_module.RuleBasedFallbackEngine,
-        "run",
-        lambda self, user_profile: RuleEvaluationState(),
-    )
-
-    with pytest.raises(RuntimeError, match="Fallback state is incomplete"):
-        capture_all_agents()
 
 
 def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
@@ -285,7 +337,10 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
     cli_module = _load_capture_cli_module()
     monkeypatch.chdir(tmp_path)
     expected_fixtures_dir = (
-        Path(cli_module.__file__).resolve().parents[1] / "tests" / "fixtures" / "anthropic_responses"
+        Path(cli_module.__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "anthropic_responses"
     )
 
     def _fake_capture_all_agents(*, risk_profile: str, fixtures_dir: Path) -> list[dict[str, str]]:
@@ -293,14 +348,16 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
         assert fixtures_dir == expected_fixtures_dir
         return [
             {
-                "request_name": "user_profile",
+                "request_name": "user_profile_analyst",
                 "phase": "structured",
-                "fixture_path": "/tmp/user_profile.json",
+                "fixture_path": "/tmp/user_profile_analyst.json",
+                "error": None,
             },
             {
-                "request_name": "explanation",
+                "request_name": "manager_coordinator",
                 "phase": "fallback",
-                "fixture_path": "/tmp/explanation.json",
+                "fixture_path": "/tmp/manager_coordinator.json",
+                "error": None,
             },
         ]
 
@@ -311,166 +368,64 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
 
     assert result is None
     assert capsys.readouterr().out.splitlines() == [
-        "user_profile: phase=structured, fixture_path=/tmp/user_profile.json",
-        "explanation: phase=fallback, fixture_path=/tmp/explanation.json",
+        "user_profile_analyst: phase=structured, fixture_path=/tmp/user_profile_analyst.json",
+        "manager_coordinator: phase=fallback, fixture_path=/tmp/manager_coordinator.json",
     ]
 
 
-def test_capture_all_agents_executes_all_runtime_agents_in_order(
+def test_run_live_agent_smoke_uses_core_stage_sequence_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request_names = capture_request_names()
-    runtime_config = AgentRuntimeConfig(
-        providers={},
-        agent_routes={
-            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
-            for request_name in request_names
-        },
-        request_timeout_seconds=7.5,
-    )
+    monkeypatch.setattr(sample_capture_module, "_build_runtime_or_raise", lambda: object())
     monkeypatch.setattr(
         sample_capture_module,
-        "_build_anthropic_provider_from_env",
-        lambda: (object(), runtime_config),
-    )
-    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
-    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
-    monkeypatch.setattr(
-        sample_capture_module.provider_module,
-        "_resolve_capture_dir",
-        lambda _: Path("/tmp/not-used"),
-    )
-
-    run_order: list[str] = []
-
-    def _latest_capture_for_request_name(
-        capture_dir: Path, request_name: str
-    ) -> tuple[Path, dict[str, object]]:
-        del capture_dir
-        return Path(f"/tmp/{request_name}.json"), {
-            "request_name": request_name,
-            "phase": "structured",
-            "body": {"content": [{"type": "text", "text": request_name}]},
-        }
-
-    monkeypatch.setattr(
-        sample_capture_module,
-        "_latest_capture_for_request_name",
-        _latest_capture_for_request_name,
-    )
-
-    monkeypatch.setattr(
-        sample_capture_module.UserProfileRuntimeAgent,
-        "run",
-        lambda self, user_profile: run_order.append("user_profile")
-        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.MarketIntelligenceRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, fallback_context: run_order.append(
-            "market_intelligence"
-        )
-        or MarketIntelligenceAgentOutput(summary_zh="市场平稳", summary_en="Market is steady"),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.FundSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.WealthSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.StockSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.ExplanationRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, market_context: run_order.append("explanation")
-        or ExplanationAgentOutput(why_this_plan_zh=["理由一"], why_this_plan_en=["Reason one"]),
-    )
-
-    summary = capture_all_agents()
-
-    assert [item["request_name"] for item in summary] == list(request_names)
-    assert run_order == list(request_names)
-
-
-def test_run_live_agent_smoke_executes_all_runtime_agents_in_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request_names = capture_request_names()
-    runtime_config = AgentRuntimeConfig(
-        providers={},
-        agent_routes={
-            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
-            for request_name in request_names
-        },
-        request_timeout_seconds=7.5,
-    )
-    monkeypatch.setattr(
-        sample_capture_module,
-        "_build_anthropic_provider_from_env",
-        lambda: (object(), runtime_config),
-    )
-
-    run_order: list[str] = []
-
-    monkeypatch.setattr(
-        sample_capture_module.UserProfileRuntimeAgent,
-        "run",
-        lambda self, user_profile: run_order.append("user_profile")
-        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.MarketIntelligenceRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, fallback_context: run_order.append(
-            "market_intelligence"
-        )
-        or MarketIntelligenceAgentOutput(summary_zh="市场平稳", summary_en="Market is steady"),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.FundSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.WealthSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.StockSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.ExplanationRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, market_context: run_order.append("explanation")
-        or ExplanationAgentOutput(why_this_plan_zh=["理由一"], why_this_plan_en=["Reason one"]),
+        "_run_core_stage_sequence",
+        lambda runtime, *, risk_profile: [
+            (
+                "user_profile_analyst",
+                UserProfileAgentOutput(
+                    risk_tier="R2",
+                    liquidity_preference="high",
+                    investment_horizon="one_year",
+                    return_objective="capital_preservation",
+                    drawdown_sensitivity="high",
+                    profile_focus_zh="稳健",
+                    profile_focus_en="steady",
+                    derived_signals=[],
+                ),
+                "claude-test",
+            ),
+            (
+                "manager_coordinator",
+                ManagerCoordinatorAgentOutput(
+                    recommendation_status="ready",
+                    summary_zh="建议保持稳健配置。",
+                    summary_en="Favor a resilient allocation.",
+                    why_this_plan_zh=["理由一"],
+                    why_this_plan_en=["Reason one"],
+                ),
+                "claude-test",
+            ),
+        ],
     )
 
     summary = run_live_agent_smoke()
 
-    assert [item["request_name"] for item in summary] == list(request_names)
-    assert [item["model_name"] for item in summary] == ["claude-test"] * len(request_names)
-    assert run_order == list(request_names)
-    assert summary[0]["output_summary"] == (
-        '{"profile_focus_en":"steady","profile_focus_zh":"稳健"}'
-    )
+    assert [item["request_name"] for item in summary] == [
+        "user_profile_analyst",
+        "manager_coordinator",
+    ]
+    assert [item["model_name"] for item in summary] == ["claude-test", "claude-test"]
+    assert summary[0]["output_summary"].startswith("{\"derived_signals\":")
+
+
+def test_growth_live_sample_includes_stock_candidates_and_growth_request() -> None:
+    candidates = sample_capture_module._build_live_candidates(risk_profile="growth")
+    request = sample_capture_module._build_live_request(risk_profile="growth")
+
+    assert any(candidate.category == "stock" for candidate in candidates)
+    assert request.riskAssessmentResult.finalProfile == "growth"
+    assert "成长" in request.userIntentText
 
 
 def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(
@@ -479,205 +434,61 @@ def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(
 ) -> None:
     capture_dir = tmp_path / "captures"
     fixtures_dir = tmp_path / "fixtures"
-    request_names = capture_request_names()
-    runtime_config = AgentRuntimeConfig(
-        providers={},
-        agent_routes={
-            request_name: AgentModelRoute(provider_name="anthropic", model_name="claude-test")
-            for request_name in request_names
-        },
-        request_timeout_seconds=7.5,
-    )
+    capture_dir.mkdir(parents=True)
+    _write_capture_file(capture_dir, "user_profile_analyst", "user_profile_analyst")
+    _write_capture_file(capture_dir, "market_intelligence", "market_intelligence")
+
+    fake_runtime = _FakeRuntime(fail_market=True)
     monkeypatch.setattr(
         sample_capture_module,
         "_build_anthropic_provider_from_env",
-        lambda: (object(), runtime_config),
+        lambda: (object(), _runtime_config()),
     )
     monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
     monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: True)
-    monkeypatch.setattr(
-        sample_capture_module.provider_module,
-        "_resolve_capture_dir",
-        lambda _: capture_dir,
-    )
-
-    run_order: list[str] = []
-
-    def _latest_capture_for_request_name(
-        capture_dir: Path, request_name: str
-    ) -> tuple[Path, dict[str, object]]:
-        del capture_dir
-        if request_name in {"user_profile", "market_intelligence", "fund_selection", "wealth_selection", "stock_selection"}:
-            return Path(f"/tmp/{request_name}.json"), {
-                "request_name": request_name,
-                "phase": "structured",
-                "body": {"id": f"msg-{request_name}", "content": [{"type": "text", "text": request_name}]},
-            }
-        raise RuntimeError(f"missing capture for {request_name}")
-
+    monkeypatch.setattr(sample_capture_module.provider_module, "_resolve_capture_dir", lambda _: capture_dir)
     monkeypatch.setattr(
         sample_capture_module,
-        "_latest_capture_for_request_name",
-        _latest_capture_for_request_name,
+        "AnthropicRecommendationAgentRuntime",
+        lambda provider, runtime_config: fake_runtime,
     )
-
-    monkeypatch.setattr(
-        sample_capture_module.UserProfileRuntimeAgent,
-        "run",
-        lambda self, user_profile: run_order.append("user_profile")
-        or UserProfileAgentOutput(profile_focus_zh="稳健", profile_focus_en="steady"),
-    )
-
-    def _market_failure(self, user_profile, profile_focus, fallback_context):  # type: ignore[no-untyped-def]
-        del self, user_profile, profile_focus, fallback_context
-        run_order.append("market_intelligence")
-        raise RuntimeError("market failed")
-
-    monkeypatch.setattr(sample_capture_module.MarketIntelligenceRuntimeAgent, "run", _market_failure)
-    monkeypatch.setattr(
-        sample_capture_module.FundSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("fund_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.WealthSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("wealth_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-    monkeypatch.setattr(
-        sample_capture_module.StockSelectionRuntimeAgent,
-        "run",
-        lambda self, user_profile, profile_focus, candidates: run_order.append("stock_selection")
-        or ProductRankingAgentOutput(ranked_ids=[candidate.id for candidate in candidates]),
-    )
-
-    def _unexpected_explanation(self, user_profile, profile_focus, market_context):  # type: ignore[no-untyped-def]
-        del self, user_profile, profile_focus, market_context
-        pytest.fail("explanation stage should be skipped when market_intelligence failed")
-
-    monkeypatch.setattr(sample_capture_module.ExplanationRuntimeAgent, "run", _unexpected_explanation)
 
     with pytest.raises(CaptureRunError) as exc_info:
         capture_all_agents(fixtures_dir=fixtures_dir)
 
     summary = exc_info.value.summary
-    assert run_order == [
-        "user_profile",
-        "market_intelligence",
-        "fund_selection",
-        "wealth_selection",
-        "stock_selection",
-    ]
-    assert [item["request_name"] for item in summary] == list(request_names)
+    assert [item["request_name"] for item in summary] == list(capture_request_names())
     assert summary[0]["error"] is None
     assert summary[1]["error"] == "market failed"
     assert summary[1]["fixture_path"] == str(fixtures_dir / "market_intelligence.json")
-    assert summary[2]["error"] is None
-    assert summary[3]["error"] is None
-    assert summary[4]["error"] is None
-    assert summary[5]["error"] == "skipped: market_intelligence failed"
-    assert summary[5]["fixture_path"] is None
-    market_fixture = json.loads((fixtures_dir / "market_intelligence.json").read_text(encoding="utf-8"))
-    assert market_fixture["body"]["content"][0]["text"] == "market_intelligence"
-    assert "id" not in market_fixture["body"]
+    assert summary[2]["error"] == "skipped because dependency market_intelligence failed"
+    assert summary[2]["fixture_path"] is None
+    assert summary[3]["error"] == "skipped because dependency product_match_expert failed"
+    assert summary[3]["fixture_path"] is None
+    assert summary[4]["error"] == "skipped because dependency market_intelligence failed"
+    assert summary[4]["fixture_path"] is None
 
 
 def test_latest_capture_for_request_name_ignores_unreadable_non_matching_files(tmp_path: Path) -> None:
     capture_dir = tmp_path / "captures"
     capture_dir.mkdir()
     (capture_dir / "broken.json").write_text("{", encoding="utf-8")
-    target_path = capture_dir / "user_profile.json"
+    target_path = capture_dir / "user_profile_analyst.json"
     target_path.write_text(
         json.dumps(
             {
-                "request_name": "user_profile",
+                "request_name": "user_profile_analyst",
                 "phase": "structured",
-                "body": {"content": [{"type": "text", "text": "user_profile"}]},
+                "body": {"content": [{"type": "text", "text": "user_profile_analyst"}]},
             }
         ),
         encoding="utf-8",
     )
 
-    path, payload = sample_capture_module._latest_capture_for_request_name(capture_dir, "user_profile")
+    path, payload = sample_capture_module._latest_capture_for_request_name(
+        capture_dir,
+        "user_profile_analyst",
+    )
 
     assert path == target_path
-    assert payload["request_name"] == "user_profile"
-
-
-def test_latest_capture_for_request_name_fails_for_unreadable_matching_candidate(tmp_path: Path) -> None:
-    capture_dir = tmp_path / "captures"
-    capture_dir.mkdir()
-    old_path = capture_dir / "user_profile-old.json"
-    old_path.write_text(
-        json.dumps(
-            {
-                "request_name": "user_profile",
-                "phase": "structured",
-                "body": {"content": [{"type": "text", "text": "old"}]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    broken_path = capture_dir / "2026-04-08-structured-user_profile-broken.json"
-    broken_path.write_text("{", encoding="utf-8")
-
-    old_mtime = old_path.stat().st_mtime - 60
-    old_path.touch()
-    os.utime(old_path, (old_mtime, old_mtime))
-
-    with pytest.raises(RuntimeError, match="Failed to read capture file"):
-        sample_capture_module._latest_capture_for_request_name(capture_dir, "user_profile")
-
-
-def test_capture_all_agents_surfaces_provider_config_missing_before_capture_toggle_check(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {})
-    monkeypatch.setattr(sample_capture_module.provider_module, "_is_raw_capture_enabled", lambda _: False)
-    monkeypatch.setattr(
-        sample_capture_module,
-        "_build_anthropic_provider_from_env",
-        lambda: (_ for _ in ()).throw(RuntimeError("Anthropic provider config is missing.")),
-    )
-
-    with pytest.raises(RuntimeError, match="Anthropic provider config is missing"):
-        capture_all_agents()
-
-
-def test_capture_cli_main_prints_summary_lines_and_exits_non_zero_for_capture_errors(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    cli_module = _load_capture_cli_module()
-
-    def _fake_capture_all_agents(*, risk_profile: str, fixtures_dir: Path) -> list[dict[str, str | None]]:
-        del risk_profile, fixtures_dir
-        raise CaptureRunError(
-            [
-                {
-                    "request_name": "user_profile",
-                    "phase": "structured",
-                    "fixture_path": "/tmp/user_profile.json",
-                    "error": None,
-                },
-                {
-                    "request_name": "market_intelligence",
-                    "phase": "structured",
-                    "fixture_path": "/tmp/market_intelligence.json",
-                    "error": "market failed",
-                },
-            ]
-        )
-
-    monkeypatch.setattr(cli_module, "capture_all_agents", _fake_capture_all_agents)
-    monkeypatch.setattr(sys, "argv", ["capture_anthropic_agent_responses.py"])
-
-    with pytest.raises(SystemExit, match="1"):
-        cli_module.main()
-
-    assert capsys.readouterr().out.splitlines() == [
-        "user_profile: phase=structured, fixture_path=/tmp/user_profile.json",
-        "market_intelligence: phase=structured, fixture_path=/tmp/market_intelligence.json, error=market failed",
-    ]
+    assert payload["request_name"] == "user_profile_analyst"

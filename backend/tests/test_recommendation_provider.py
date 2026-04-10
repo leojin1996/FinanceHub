@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from financehub_market_api.recommendation.agents.contracts import ProductRankingAgentOutput
 from financehub_market_api.recommendation.agents import provider as provider_module
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
@@ -17,9 +18,6 @@ from financehub_market_api.recommendation.agents.provider import (
     LLMProviderError,
     ProviderConfig,
 )
-from financehub_market_api.recommendation.agents.contracts import ProductRankingAgentOutput
-
-
 class _FakeResponse:
     def __init__(self, payload: object, *, json_error: Exception | None = None) -> None:
         self._payload = payload
@@ -1340,8 +1338,8 @@ def test_runtime_config_reads_anthropic_values_from_explicit_env_file(tmp_path) 
 
     assert config.providers[ANTHROPIC_PROVIDER_NAME].api_key == "test-key"
     assert config.providers[ANTHROPIC_PROVIDER_NAME].base_url == "https://example.invalid/v1"
-    assert config.agent_routes["user_profile"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["user_profile"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["user_profile_analyst"].provider_name == ANTHROPIC_PROVIDER_NAME
+    assert config.agent_routes["user_profile_analyst"].model_name == "claude-sonnet-4-6"
 
 
 def test_runtime_config_loads_anthropic_provider_and_agent_overrides() -> None:
@@ -1350,7 +1348,7 @@ def test_runtime_config_loads_anthropic_provider_and_agent_overrides() -> None:
             "ANTHROPIC_AUTH_TOKEN": "anthropic-key",
             "ANTHROPIC_BASE_URL": "https://oneapi.hk",
             "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_MODEL_DEFAULT": "claude-opus-4-6",
-            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "claude-sonnet-4-6",
         },
         env_files=[],
     )
@@ -1360,8 +1358,8 @@ def test_runtime_config_loads_anthropic_provider_and_agent_overrides() -> None:
     assert config.providers[ANTHROPIC_PROVIDER_NAME].kind == "anthropic"
     assert config.agent_routes["market_intelligence"].provider_name == ANTHROPIC_PROVIDER_NAME
     assert config.agent_routes["market_intelligence"].model_name == "claude-opus-4-6"
-    assert config.agent_routes["explanation"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["explanation"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["manager_coordinator"].provider_name == ANTHROPIC_PROVIDER_NAME
+    assert config.agent_routes["manager_coordinator"].model_name == "claude-sonnet-4-6"
 
 
 def test_runtime_config_applies_single_agent_override_without_replacing_default_map() -> None:
@@ -1369,16 +1367,16 @@ def test_runtime_config_applies_single_agent_override_without_replacing_default_
         environ={
             "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
             "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
-            "FINANCEHUB_LLM_AGENT_STOCK_SELECTION_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_PRODUCT_MATCH_EXPERT_MODEL": "claude-sonnet-4-6",
         },
         env_files=[],
     )
 
-    assert AGENT_MODEL_ROUTE_ENV_NAMES["stock_selection"] == "STOCK_SELECTION"
-    assert config.agent_routes["stock_selection"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["stock_selection"].model_name == "claude-sonnet-4-6"
-    assert config.agent_routes["fund_selection"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["fund_selection"].model_name == ANTHROPIC_DEFAULT_MODEL
+    assert AGENT_MODEL_ROUTE_ENV_NAMES["product_match_expert"] == "PRODUCT_MATCH_EXPERT"
+    assert config.agent_routes["product_match_expert"].provider_name == ANTHROPIC_PROVIDER_NAME
+    assert config.agent_routes["product_match_expert"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["market_intelligence"].provider_name == ANTHROPIC_PROVIDER_NAME
+    assert config.agent_routes["market_intelligence"].model_name == ANTHROPIC_DEFAULT_MODEL
 
 
 def test_runtime_config_reads_llm_timeout_seconds_from_env() -> None:

@@ -36,6 +36,7 @@ class UserIntelligence(BaseModel):
     drawdown_sensitivity: str
     profile_summary_zh: str
     profile_summary_en: str
+    derived_signals: list[str] = Field(default_factory=list)
 
 
 class AgentProfileFocusState(BaseModel):
@@ -56,6 +57,7 @@ class MarketIntelligenceState(BaseModel):
     summary_zh: str
     summary_en: str
     evidence: list[MarketEvidenceItem] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class ProductStrategy(BaseModel):
@@ -69,6 +71,8 @@ class RuntimeCandidateSnapshot(BaseModel):
     category: str
     code: str | None = None
     liquidity: str | None = None
+    lockup_days: int | None = None
+    max_drawdown_percent: float | None = None
     as_of_date: str | None = None
     detail_route: str | None = None
     name_zh: str
@@ -102,6 +106,8 @@ class ComplianceReviewState(BaseModel):
     disclosures_en: list[str] = Field(default_factory=list)
     suitability_notes_zh: list[str] = Field(default_factory=list)
     suitability_notes_en: list[str] = Field(default_factory=list)
+    applied_rule_ids: list[str] = Field(default_factory=list)
+    blocking_reason_codes: list[str] = Field(default_factory=list)
 
 
 class FinalResponseState(BaseModel):

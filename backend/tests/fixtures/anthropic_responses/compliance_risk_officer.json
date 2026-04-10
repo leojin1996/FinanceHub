@@ -1,0 +1,16 @@
+{
+  "request_name": "compliance_risk_officer",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"action\": \"return_decision\",\n  \"verdict\": \"approve\",\n  \"approved_ids\": [\"wm-001\", \"fund-001\"],\n  \"rejected_ids\": [],\n  \"reason_summary_zh\": \"候选通过适当性与合规审核。\",\n  \"reason_summary_en\": \"The candidates passed suitability and compliance review.\",\n  \"required_disclosures_zh\": [\"理财非存款，投资需谨慎。\"],\n  \"required_disclosures_en\": [\"Investing involves risk. Proceed prudently.\"],\n  \"suitability_notes_zh\": [\"风险等级与流动性匹配。\"],\n  \"suitability_notes_en\": [\"Risk level and liquidity are aligned.\"],\n  \"applied_rule_ids\": [\"cn-suitability-r2\"],\n  \"blocking_reason_codes\": []\n}\n```"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message"
+  }
+}

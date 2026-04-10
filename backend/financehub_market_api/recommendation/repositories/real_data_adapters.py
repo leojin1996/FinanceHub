@@ -18,6 +18,8 @@ from financehub_market_api.watchlist import WATCHLIST
 DataRow = Mapping[str, object]
 DataFetcher = Callable[[], object]
 SymbolDataFetcher = Callable[[str], object]
+_DEFAULT_FUND_POOL_MAX_ITEMS = 20
+_DEFAULT_WEALTH_POOL_MAX_ITEMS = 20
 _PREMIUM_STOCK_POOL_MAX_ITEMS = 60
 _STOCK_R4_WEEKLY_RANGE_THRESHOLD = 8.0
 _STOCK_R5_WEEKLY_RANGE_THRESHOLD = 18.0
@@ -246,7 +248,10 @@ class BondFundCandidateAdapter:
     """Fetches low-risk bond fund candidates from public AkShare data."""
 
     def __init__(
-        self, fetcher: DataFetcher | None = None, *, max_items: int = 2
+        self,
+        fetcher: DataFetcher | None = None,
+        *,
+        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
     ) -> None:
         self._fetcher = fetcher or (lambda: ak.fund_open_fund_rank_em(symbol="债券型"))
         self._max_items = max_items
@@ -297,7 +302,10 @@ class MoneyFundWealthProxyAdapter:
     """Fetches cash-management proxy candidates from public money-fund data."""
 
     def __init__(
-        self, fetcher: DataFetcher | None = None, *, max_items: int = 2
+        self,
+        fetcher: DataFetcher | None = None,
+        *,
+        max_items: int = _DEFAULT_WEALTH_POOL_MAX_ITEMS,
     ) -> None:
         self._fetcher = fetcher or self._fetch_default_frame
         self._max_items = max_items
@@ -446,7 +454,10 @@ class PublicWealthManagementDetailAdapter:
     """Attempts to parse public bank or wealth-subsidiary products into detail snapshots."""
 
     def __init__(
-        self, fetcher: DataFetcher | None = None, *, max_items: int = 3
+        self,
+        fetcher: DataFetcher | None = None,
+        *,
+        max_items: int = _DEFAULT_WEALTH_POOL_MAX_ITEMS,
     ) -> None:
         self._fetcher = fetcher
         self._max_items = max_items

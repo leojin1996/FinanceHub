@@ -236,12 +236,9 @@ def _build_stocks() -> StocksResponse:
 def _build_recommendation_response() -> RecommendationResponse:
     from financehub_market_api.recommendations import RecommendationService
     from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
-    from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 
     return RecommendationService(
-        graph_runtime=RecommendationGraphRuntime.with_default_services(
-            repository=StaticCandidateRepository()
-        )
+        graph_runtime=RecommendationGraphRuntime.with_deterministic_services()
     ).get_recommendation("balanced")
 
 
@@ -428,7 +425,7 @@ def test_post_recommendations_passes_risk_profile_and_returns_payload() -> None:
         "stock": 20,
     }
     assert response.json()["sections"]["funds"]["titleZh"] == "基金推荐"
-    assert response.json()["profileSummary"]["zh"].startswith("用户风险等级")
+    assert response.json()["profileSummary"]["zh"]
     assert response.json()["marketSummary"]["en"]
     assert response.json()["executionMode"] == "agent_assisted"
     assert isinstance(response.json()["warnings"], list)

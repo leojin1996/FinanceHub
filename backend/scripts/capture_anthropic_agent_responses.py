@@ -16,7 +16,7 @@ def _parse_args() -> argparse.Namespace:
         "--risk-profile",
         default="balanced",
         choices=("conservative", "stable", "balanced", "growth", "aggressive"),
-        help="Risk profile used for running the six-stage capture flow.",
+        help="Risk profile used for running the five-agent capture flow.",
     )
     parser.add_argument(
         "--fixtures-dir",

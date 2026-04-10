@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Protocol
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -19,6 +21,45 @@ class ComplianceReviewResult(BaseModel):
     disclosures_en: list[str] = Field(default_factory=list)
     suitability_notes_zh: list[str] = Field(default_factory=list)
     suitability_notes_en: list[str] = Field(default_factory=list)
+
+
+class ComplianceRuleSnapshotSource(Protocol):
+    def fetch_snapshot(self) -> Mapping[str, object]: ...
+
+
+class ComplianceFactsService:
+    def __init__(
+        self,
+        rule_snapshot_source: ComplianceRuleSnapshotSource | None = None,
+    ) -> None:
+        self._rule_snapshot_source = rule_snapshot_source
+
+    def build_review_facts(
+        self,
+        *,
+        request_payload: Mapping[str, object],
+        selected_candidates: list[CandidateProduct],
+    ) -> dict[str, object]:
+        snapshot = (
+            {"available": False, "reason": "rule_snapshot_source_unavailable"}
+            if self._rule_snapshot_source is None
+            else dict(self._rule_snapshot_source.fetch_snapshot())
+        )
+        return {
+            "request_payload": dict(request_payload),
+            "selected_candidates": [
+                {
+                    "id": candidate.id,
+                    "category": candidate.category,
+                    "risk_level": candidate.risk_level,
+                    "liquidity": candidate.liquidity,
+                    "lockup_days": candidate.lockup_days,
+                    "max_drawdown_percent": candidate.max_drawdown_percent,
+                }
+                for candidate in selected_candidates
+            ],
+            "rule_snapshot": snapshot,
+        }
 
 
 class ComplianceReviewService:

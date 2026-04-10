@@ -10,8 +10,11 @@ from typing import Literal, TypeVar
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from financehub_market_api.recommendation.agents.contracts import (
+    ComplianceReviewAgentOutput,
     ExplanationAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
+    ProductMatchAgentOutput,
     ProductRankingAgentOutput,
     UserProfileAgentOutput,
 )
@@ -30,7 +33,6 @@ from financehub_market_api.recommendation.agents.runtime_context import (
 )
 from financehub_market_api.recommendation.schemas import (
     CandidateProduct,
-    MarketContext,
     UserProfile,
 )
 
@@ -40,7 +42,7 @@ UVICORN_ERROR_LOGGER = logging.getLogger("uvicorn.error")
 _MAX_TRACE_STRING_LENGTH = 240
 _MAX_TRACE_LIST_ITEMS = 8
 _MAX_TRACE_OBJECT_KEYS = 16
-_MAX_TOOL_CALLS = 2
+_MAX_TOOL_CALLS = 4
 _MAX_VALIDATION_RETRIES = 1
 _ValidatedOutputT = TypeVar("_ValidatedOutputT")
 
@@ -84,6 +86,36 @@ class _ToolLoopDecision(BaseModel):
                 if isinstance(alias_arguments, dict):
                     normalized["tool_arguments"] = alias_arguments
                     break
+
+        raw_action = normalized.get("action")
+        if isinstance(raw_action, str):
+            lowered_action = raw_action.strip().lower()
+            if lowered_action in {
+                "return_decision",
+                "return_final",
+                "final_decision",
+                "decision",
+                "done",
+            }:
+                normalized["action"] = "final"
+            elif lowered_action in {"call_tool", "use_tool"}:
+                normalized["action"] = "tool_call"
+
+        if not isinstance(normalized.get("final_payload"), dict):
+            decision_payload = normalized.get("decision")
+            if isinstance(decision_payload, dict):
+                normalized["final_payload"] = decision_payload
+        if (
+            normalized.get("action") == "final"
+            and not isinstance(normalized.get("final_payload"), dict)
+        ):
+            final_payload = {
+                key: value
+                for key, value in normalized.items()
+                if key not in {"action", "tool_name", "tool_arguments", "final_payload"}
+            }
+            if final_payload:
+                normalized["final_payload"] = final_payload
 
         if "action" not in normalized:
             if normalized.get("tool_name"):
@@ -211,6 +243,8 @@ def _serialize_candidate(candidate: CandidateProduct) -> dict[str, object]:
         "category": candidate.category,
         "code": candidate.code,
         "liquidity": candidate.liquidity,
+        "lockup_days": candidate.lockup_days,
+        "max_drawdown_percent": candidate.max_drawdown_percent,
         "name_zh": candidate.name_zh,
         "name_en": candidate.name_en,
         "rationale_zh": candidate.rationale_zh,
@@ -560,15 +594,15 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
     def run(
         self,
         user_profile: UserProfile,
-        profile_focus: UserProfileAgentOutput,
-        fallback_context: MarketContext,
+        user_profile_insights: UserProfileAgentOutput,
+        market_facts: dict[str, object],
         *,
         prompt_context: AgentPromptContext | None = None,
     ) -> MarketIntelligenceAgentOutput:
         output, _ = self.run_with_trace(
             user_profile,
-            profile_focus,
-            fallback_context,
+            user_profile_insights,
+            market_facts,
             prompt_context=prompt_context,
         )
         return output
@@ -576,48 +610,46 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
     def run_with_trace(
         self,
         user_profile: UserProfile,
-        profile_focus: UserProfileAgentOutput,
-        fallback_context: MarketContext,
+        user_profile_insights: UserProfileAgentOutput,
+        market_facts: dict[str, object],
         *,
         prompt_context: AgentPromptContext | None = None,
     ) -> tuple[MarketIntelligenceAgentOutput, tuple[AgentToolCallRecord, ...]]:
         default_context = AgentPromptContext(
             task=(
-                "Produce a bilingual market summary for the recommendation workflow "
-                "that reflects the investor profile focus and market snapshot."
+                "Produce a structured market intelligence output for the recommendation "
+                "workflow. Decide sentiment, stance, preferred categories, avoided "
+                "categories, bilingual summaries, and evidence references."
             ),
             sections=(
                 AgentPromptSection(
-                    "User profile context",
+                    "User profile insights",
                     _serialize_mapping(
                         {
                             "risk_profile": user_profile.risk_profile,
                             "label_zh": user_profile.label_zh,
                             "label_en": user_profile.label_en,
-                            "profile_focus_zh": profile_focus.profile_focus_zh,
-                            "profile_focus_en": profile_focus.profile_focus_en,
+                            "user_profile_insights": user_profile_insights.model_dump(
+                                mode="json"
+                            ),
                         }
                     ),
                 ),
                 AgentPromptSection(
-                    "Market snapshot context",
-                    _serialize_mapping(
-                        {
-                            "fallback_summary_zh": fallback_context.summary_zh,
-                            "fallback_summary_en": fallback_context.summary_en,
-                        }
-                    ),
+                    "Market facts",
+                    _serialize_mapping(market_facts),
                 ),
             ),
             instructions=(
-                "Use tools before finalizing if more grounded context is needed.",
-                "Return summary_zh and summary_en suitable for recommendation copy.",
+                "Use tools before finalizing if more grounded market facts are needed.",
+                "Decide sentiment and stance from the supplied facts rather than copying any upstream label.",
+                "Return evidence_refs using only source keys that are present in the supplied facts.",
             ),
         )
         tool_definitions = {
             "get_user_profile_context": _ToolDefinition(
                 name="get_user_profile_context",
-                description="Return the structured user profile and profile-focus context.",
+                description="Return the structured user profile and profile insights context.",
                 handler=lambda arguments: _tool_result_no_args(
                     arguments,
                     {
@@ -626,24 +658,18 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
                             "label_zh": user_profile.label_zh,
                             "label_en": user_profile.label_en,
                         },
-                        "profile_focus": {
-                            "profile_focus_zh": profile_focus.profile_focus_zh,
-                            "profile_focus_en": profile_focus.profile_focus_en,
-                        },
+                        "user_profile_insights": user_profile_insights.model_dump(
+                            mode="json"
+                        ),
                     },
                 ),
             ),
-            "get_market_snapshot": _ToolDefinition(
-                name="get_market_snapshot",
-                description="Return the current fallback market snapshot.",
+            "get_market_facts": _ToolDefinition(
+                name="get_market_facts",
+                description="Return the structured market facts for this request.",
                 handler=lambda arguments: _tool_result_no_args(
                     arguments,
-                    {
-                        "market_snapshot": {
-                            "summary_zh": fallback_context.summary_zh,
-                            "summary_en": fallback_context.summary_en,
-                        }
-                    },
+                    {"market_facts": _json_ready(market_facts)},
                 ),
             ),
         }
@@ -656,6 +682,313 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
             tool_definitions=tool_definitions,
             output_schema=MarketIntelligenceAgentOutput.model_json_schema(),
             output_validator=MarketIntelligenceAgentOutput.model_validate,
+        )
+
+
+class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ProductMatchAgentOutput:
+        output, _ = self.run_with_trace(
+            user_profile,
+            user_profile_insights,
+            market_intelligence,
+            candidates,
+            prompt_context=prompt_context,
+        )
+        return output
+
+    def run_with_trace(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ProductMatchAgentOutput, tuple[AgentToolCallRecord, ...]]:
+        default_context = AgentPromptContext(
+            task=(
+                "Choose the final recommendation candidates. Return recommended "
+                "categories, per-category selected IDs, bilingual ranking rationale, "
+                "and filtered-out reasons."
+            ),
+            sections=(
+                AgentPromptSection(
+                    "User profile insights",
+                    _serialize_mapping(
+                        {
+                            "risk_profile": user_profile.risk_profile,
+                            "label_zh": user_profile.label_zh,
+                            "label_en": user_profile.label_en,
+                            "user_profile_insights": user_profile_insights.model_dump(
+                                mode="json"
+                            ),
+                        }
+                    ),
+                ),
+                AgentPromptSection(
+                    "Market intelligence",
+                    _serialize_mapping(
+                        {"market_intelligence": market_intelligence.model_dump(mode="json")}
+                    ),
+                ),
+                AgentPromptSection(
+                    "Candidate list context",
+                    _render_candidates(candidates) or "(empty)",
+                ),
+            ),
+            instructions=(
+                "Use tools before finalizing if candidate detail or the full candidate list is needed.",
+                "Only return IDs that exist in the supplied candidate list.",
+                "Choose the final recommendation set; do not ask the caller to filter candidates after you decide.",
+            ),
+        )
+        candidate_lookup = {candidate.id: candidate for candidate in candidates}
+        tool_definitions = {
+            "list_candidate_products": _ToolDefinition(
+                name="list_candidate_products",
+                description="Return the full candidate list as structured objects.",
+                handler=lambda arguments: _tool_result_no_args(
+                    arguments,
+                    {"candidates": [_serialize_candidate(candidate) for candidate in candidates]},
+                ),
+            ),
+            "get_candidate_detail": _ToolDefinition(
+                name="get_candidate_detail",
+                description="Return the full structured detail for a single candidate_id.",
+                handler=lambda arguments: {
+                    "candidate": _serialize_candidate(
+                        _candidate_from_arguments(candidate_lookup, arguments)
+                    )
+                },
+            ),
+        }
+        return self._run_tool_loop(
+            system_prompt=(
+                "You are ProductMatchExpertAgent. Use the available tools when you "
+                "need grounding. Return only the requested structured decision JSON."
+            ),
+            prompt_context=_combine_prompt_context(default_context, prompt_context),
+            tool_definitions=tool_definitions,
+            output_schema=ProductMatchAgentOutput.model_json_schema(),
+            output_validator=ProductMatchAgentOutput.model_validate,
+        )
+
+
+class ComplianceReviewRuntimeAgent(_BaseStructuredOutputAgent):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ComplianceReviewAgentOutput:
+        output, _ = self.run_with_trace(
+            user_profile,
+            user_profile_insights,
+            selected_candidates,
+            compliance_facts,
+            prompt_context=prompt_context,
+        )
+        return output
+
+    def run_with_trace(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ComplianceReviewAgentOutput, tuple[AgentToolCallRecord, ...]]:
+        default_context = AgentPromptContext(
+            task=(
+                "Review the selected candidates for suitability and compliance. "
+                "Return the verdict, approved and rejected IDs, bilingual reason "
+                "summary, disclosures, suitability notes, applied rule IDs, and "
+                "blocking reason codes."
+            ),
+            sections=(
+                AgentPromptSection(
+                    "User profile insights",
+                    _serialize_mapping(
+                        {
+                            "risk_profile": user_profile.risk_profile,
+                            "label_zh": user_profile.label_zh,
+                            "label_en": user_profile.label_en,
+                            "user_profile_insights": user_profile_insights.model_dump(
+                                mode="json"
+                            ),
+                        }
+                    ),
+                ),
+                AgentPromptSection(
+                    "Selected candidates",
+                    _render_candidates(selected_candidates) or "(empty)",
+                ),
+                AgentPromptSection(
+                    "Compliance facts",
+                    _serialize_mapping(compliance_facts),
+                ),
+            ),
+            instructions=(
+                "Use tools before finalizing if candidate or rule facts need grounding.",
+                "Return verdict as approve, revise_conservative, or block.",
+                "Only use candidate IDs that exist in the supplied selected candidates list.",
+            ),
+        )
+        candidate_lookup = {candidate.id: candidate for candidate in selected_candidates}
+        tool_definitions = {
+            "get_selected_candidates": _ToolDefinition(
+                name="get_selected_candidates",
+                description="Return the selected candidates as structured objects.",
+                handler=lambda arguments: _tool_result_no_args(
+                    arguments,
+                    {
+                        "selected_candidates": [
+                            _serialize_candidate(candidate)
+                            for candidate in selected_candidates
+                        ]
+                    },
+                ),
+            ),
+            "get_candidate_detail": _ToolDefinition(
+                name="get_candidate_detail",
+                description="Return the full structured detail for a single selected candidate_id.",
+                handler=lambda arguments: {
+                    "candidate": _serialize_candidate(
+                        _candidate_from_arguments(candidate_lookup, arguments)
+                    )
+                },
+            ),
+            "get_compliance_facts": _ToolDefinition(
+                name="get_compliance_facts",
+                description="Return the structured compliance facts for this request.",
+                handler=lambda arguments: _tool_result_no_args(
+                    arguments,
+                    {"compliance_facts": _json_ready(compliance_facts)},
+                ),
+            ),
+        }
+        return self._run_tool_loop(
+            system_prompt=(
+                "You are ComplianceRiskOfficerAgent. Use the available tools when "
+                "you need grounding. Return only the requested structured decision JSON."
+            ),
+            prompt_context=_combine_prompt_context(default_context, prompt_context),
+            tool_definitions=tool_definitions,
+            output_schema=ComplianceReviewAgentOutput.model_json_schema(),
+            output_validator=ComplianceReviewAgentOutput.model_validate,
+        )
+
+
+class ManagerCoordinatorRuntimeAgent(_BaseStructuredOutputAgent):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        product_match: ProductMatchAgentOutput,
+        compliance_review: ComplianceReviewAgentOutput,
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ManagerCoordinatorAgentOutput:
+        output, _ = self.run_with_trace(
+            user_profile,
+            user_profile_insights,
+            market_intelligence,
+            product_match,
+            compliance_review,
+            prompt_context=prompt_context,
+        )
+        return output
+
+    def run_with_trace(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        product_match: ProductMatchAgentOutput,
+        compliance_review: ComplianceReviewAgentOutput,
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ManagerCoordinatorAgentOutput, tuple[AgentToolCallRecord, ...]]:
+        default_context = AgentPromptContext(
+            task=(
+                "Coordinate the final user-facing recommendation. Return recommendation "
+                "status, bilingual summary, and bilingual why-this-plan bullet lists."
+            ),
+            sections=(
+                AgentPromptSection(
+                    "User profile insights",
+                    _serialize_mapping(
+                        {"user_profile_insights": user_profile_insights.model_dump(mode="json")}
+                    ),
+                ),
+                AgentPromptSection(
+                    "Market intelligence",
+                    _serialize_mapping(
+                        {"market_intelligence": market_intelligence.model_dump(mode="json")}
+                    ),
+                ),
+                AgentPromptSection(
+                    "Product match",
+                    _serialize_mapping(
+                        {"product_match": product_match.model_dump(mode="json")}
+                    ),
+                ),
+                AgentPromptSection(
+                    "Compliance review",
+                    _serialize_mapping(
+                        {"compliance_review": compliance_review.model_dump(mode="json")}
+                    ),
+                ),
+            ),
+            instructions=(
+                "Use tools before finalizing if context needs to be refreshed.",
+                "Do not change the supplied compliance verdict semantics.",
+            ),
+        )
+        tool_definitions = {
+            "get_decision_context": _ToolDefinition(
+                name="get_decision_context",
+                description="Return the assembled context from upstream agents.",
+                handler=lambda arguments: _tool_result_no_args(
+                    arguments,
+                    {
+                        "user_profile": {
+                            "risk_profile": user_profile.risk_profile,
+                            "label_zh": user_profile.label_zh,
+                            "label_en": user_profile.label_en,
+                        },
+                        "user_profile_insights": user_profile_insights.model_dump(
+                            mode="json"
+                        ),
+                        "market_intelligence": market_intelligence.model_dump(mode="json"),
+                        "product_match": product_match.model_dump(mode="json"),
+                        "compliance_review": compliance_review.model_dump(mode="json"),
+                    },
+                ),
+            ),
+        }
+        return self._run_tool_loop(
+            system_prompt=(
+                "You are ManagerCoordinatorAgent. Use the available tools when you "
+                "need grounding. Return only the requested structured decision JSON."
+            ),
+            prompt_context=_combine_prompt_context(default_context, prompt_context),
+            tool_definitions=tool_definitions,
+            output_schema=ManagerCoordinatorAgentOutput.model_json_schema(),
+            output_validator=ManagerCoordinatorAgentOutput.model_validate,
         )
 
 
@@ -907,9 +1240,12 @@ def _candidate_from_arguments(
 
 
 __all__ = [
+    "ComplianceReviewRuntimeAgent",
     "ExplanationRuntimeAgent",
     "FundSelectionRuntimeAgent",
+    "ManagerCoordinatorRuntimeAgent",
     "MarketIntelligenceRuntimeAgent",
+    "ProductMatchRuntimeAgent",
     "StockSelectionRuntimeAgent",
     "UserProfileRuntimeAgent",
     "WealthSelectionRuntimeAgent",

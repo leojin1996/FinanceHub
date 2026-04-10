@@ -1,9 +1,10 @@
 import pytest
-from pydantic import ValidationError
 
 from financehub_market_api.recommendation.agents.contracts import (
+    ComplianceReviewAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
-    ProductRankingAgentOutput,
+    ProductMatchAgentOutput,
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.live_runtime import (
@@ -15,11 +16,7 @@ from financehub_market_api.recommendation.agents.provider import (
     AgentModelRoute,
     AgentRuntimeConfig,
 )
-from financehub_market_api.recommendation.schemas import (
-    CandidateProduct,
-    MarketContext,
-    UserProfile,
-)
+from financehub_market_api.recommendation.schemas import CandidateProduct, UserProfile
 
 
 class _QueuedProvider:
@@ -80,28 +77,32 @@ def _user_profile() -> UserProfile:
     )
 
 
-def _profile_focus() -> UserProfileAgentOutput:
+def _profile_insights() -> UserProfileAgentOutput:
     return UserProfileAgentOutput(
+        risk_tier="R3",
+        liquidity_preference="medium",
+        investment_horizon="medium",
+        return_objective="balanced_growth",
+        drawdown_sensitivity="medium",
         profile_focus_zh="偏好稳健底仓与良好流动性。",
         profile_focus_en="Prefers a resilient core and solid liquidity.",
+        derived_signals=["intent:steady_growth"],
     )
 
 
-def _market_context() -> MarketIntelligenceAgentOutput:
+def _market_output() -> MarketIntelligenceAgentOutput:
     return MarketIntelligenceAgentOutput(
-        summary_zh="当前市场处于震荡区间，适合控制回撤并逐步配置。",
-        summary_en="Markets are range-bound, favoring drawdown control and gradual allocation.",
+        sentiment="positive",
+        stance="balanced",
+        preferred_categories=["fund", "stock"],
+        avoided_categories=[],
+        summary_zh="当前市场相对均衡。",
+        summary_en="Current market conditions are broadly balanced.",
+        evidence_refs=["market_overview"],
     )
 
 
-def _fallback_market_context() -> MarketContext:
-    return MarketContext(
-        summary_zh="规则引擎市场摘要。",
-        summary_en="Rules-based market summary.",
-    )
-
-
-def _fund_candidates() -> list[CandidateProduct]:
+def _candidates() -> list[CandidateProduct]:
     return [
         CandidateProduct(
             id="fund-001",
@@ -117,142 +118,55 @@ def _fund_candidates() -> list[CandidateProduct]:
             tags_en=["steady", "bond"],
         ),
         CandidateProduct(
-            id="fund-002",
-            category="fund",
-            code="000002",
+            id="stock-001",
+            category="stock",
+            code="600000",
             liquidity="T+1",
-            name_zh="红利低波精选A",
-            name_en="Dividend Low Vol A",
-            rationale_zh="兼顾分红质量与波动控制。",
-            rationale_en="Balances dividend quality and volatility control.",
+            name_zh="龙头科技股",
+            name_en="Leading Tech Equity",
+            rationale_zh="提供权益弹性。",
+            rationale_en="Provides upside optionality.",
             risk_level="R3",
-            tags_zh=["红利", "低波"],
-            tags_en=["dividend", "low-vol"],
+            tags_zh=["科技"],
+            tags_en=["technology"],
         ),
     ]
 
 
-def test_rank_candidates_runs_tool_loop_and_records_tool_trace() -> None:
+def test_analyze_user_profile_accepts_direct_structured_output() -> None:
     provider = _QueuedProvider(
         [
             {
-                "action": "tool_call",
-                "tool_name": "get_ranking_guardrails",
-                "tool_arguments": {},
-            },
-            {
-                "action": "tool_call",
-                "tool_name": "get_candidate_detail",
-                "tool_arguments": {"candidate_id": "fund-002"},
-            },
-            {
-                "action": "final",
-                "final_payload": {"ranked_ids": ["fund-002", "fund-001"]},
-            },
+                "risk_tier": "R2",
+                "liquidity_preference": "high",
+                "investment_horizon": "one_year",
+                "return_objective": "capital_preservation",
+                "drawdown_sensitivity": "high",
+                "profile_focus_zh": "强调保本和流动性。",
+                "profile_focus_en": "Prioritize principal protection and liquidity.",
+                "derived_signals": ["intent:保本"],
+            }
         ]
     )
     runtime = _build_runtime(provider)
 
-    output, metadata = runtime.rank_candidates(
-        "fund_selection",
-        _user_profile(),
-        _profile_focus(),
-        _fund_candidates(),
+    output, metadata = runtime.analyze_user_profile(_user_profile())
+
+    assert output == UserProfileAgentOutput(
+        risk_tier="R2",
+        liquidity_preference="high",
+        investment_horizon="one_year",
+        return_objective="capital_preservation",
+        drawdown_sensitivity="high",
+        profile_focus_zh="强调保本和流动性。",
+        profile_focus_en="Prioritize principal protection and liquidity.",
+        derived_signals=["intent:保本"],
     )
-
-    assert output == ProductRankingAgentOutput(ranked_ids=["fund-002", "fund-001"])
-    assert [call.tool_name for call in metadata.tool_calls] == [
-        "get_ranking_guardrails",
-        "get_candidate_detail",
-    ]
-    assert metadata.tool_calls[1].arguments == {"candidate_id": "fund-002"}
-    assert metadata.tool_calls[1].result["candidate"]["id"] == "fund-002"
-
-    initial_user_prompt = provider.calls[0]["messages"][1]["content"]
-    assert "Task" in initial_user_prompt
-    assert "Candidate list context" in initial_user_prompt
-    assert "Available tools" in initial_user_prompt
+    assert metadata.provider_name == "anthropic"
+    assert metadata.model_name == "test-model-user_profile_analyst"
 
 
-def test_rank_candidates_accepts_tool_alias_payload_shape() -> None:
-    provider = _QueuedProvider(
-        [
-            {
-                "tool": "get_ranking_guardrails",
-                "parameters": {},
-            },
-            {
-                "tool": "get_candidate_detail",
-                "parameters": {"candidate_id": "fund-002"},
-            },
-            {
-                "final_payload": {"ranked_ids": ["fund-002", "fund-001"]},
-            },
-        ]
-    )
-    runtime = _build_runtime(provider)
-
-    output, metadata = runtime.rank_candidates(
-        "fund_selection",
-        _user_profile(),
-        _profile_focus(),
-        _fund_candidates(),
-    )
-
-    assert output == ProductRankingAgentOutput(ranked_ids=["fund-002", "fund-001"])
-    assert [call.tool_name for call in metadata.tool_calls] == [
-        "get_ranking_guardrails",
-        "get_candidate_detail",
-    ]
-    assert metadata.tool_calls[1].arguments == {"candidate_id": "fund-002"}
-
-
-def test_explain_plan_supports_selected_plan_tool_context() -> None:
-    provider = _QueuedProvider(
-        [
-            {
-                "action": "tool_call",
-                "tool_name": "get_selected_plan",
-                "tool_arguments": {},
-            },
-            {
-                "action": "final",
-                "final_payload": {
-                    "why_this_plan_zh": [
-                        "优先使用稳健底仓，帮助平衡波动与流动性。",
-                    ],
-                    "why_this_plan_en": [
-                        "A resilient core balances volatility and liquidity needs.",
-                    ],
-                },
-            },
-        ]
-    )
-    runtime = _build_runtime(provider)
-
-    output, metadata = runtime.explain_plan(
-        _user_profile(),
-        _profile_focus(),
-        _market_context(),
-        selected_plan_context={
-            "fund_ids": ["fund-002"],
-            "wealth_management_ids": ["wm-001"],
-            "stock_ids": [],
-        },
-    )
-
-    assert output.why_this_plan_zh == ["优先使用稳健底仓，帮助平衡波动与流动性。"]
-    assert [call.tool_name for call in metadata.tool_calls] == ["get_selected_plan"]
-    assert list(metadata.tool_calls[0].result["selected_plan"]["fund_ids"]) == [
-        "fund-002"
-    ]
-
-    initial_user_prompt = provider.calls[0]["messages"][1]["content"]
-    assert "Selected plan context" in initial_user_prompt
-    assert "Available tools" in initial_user_prompt
-
-
-def test_runtime_raises_clean_error_for_invalid_tool_request() -> None:
+def test_analyze_market_intelligence_raises_clean_error_for_invalid_tool_request() -> None:
     provider = _QueuedProvider(
         [
             {
@@ -267,159 +181,127 @@ def test_runtime_raises_clean_error_for_invalid_tool_request() -> None:
     with pytest.raises(RuntimeError, match="invalid tool request"):
         runtime.analyze_market_intelligence(
             _user_profile(),
-            _profile_focus(),
-            _fallback_market_context(),
+            _profile_insights(),
+            {"summary_zh": "测试市场事实"},
         )
 
 
-def test_runtime_raises_clean_error_for_malformed_tool_request() -> None:
+def test_match_products_runs_tool_loop_and_records_tool_trace() -> None:
     provider = _QueuedProvider(
         [
             {
                 "action": "tool_call",
+                "tool_name": "list_candidate_products",
                 "tool_arguments": {},
             },
             {
-                "action": "tool_call",
-                "tool_arguments": {},
+                "action": "final",
+                "final_payload": {
+                    "recommended_categories": ["fund", "stock"],
+                    "fund_ids": ["fund-001"],
+                    "wealth_management_ids": [],
+                    "stock_ids": ["stock-001"],
+                    "ranking_rationale_zh": "保留稳健底仓，并配置少量权益增强。",
+                    "ranking_rationale_en": "Keep a resilient core with limited equity exposure.",
+                    "filtered_out_reasons": [],
+                },
             },
         ]
     )
     runtime = _build_runtime(provider)
 
-    with pytest.raises(RuntimeError, match="invalid tool request"):
-        runtime.analyze_market_intelligence(
-            _user_profile(),
-            _profile_focus(),
-            _fallback_market_context(),
-        )
-    assert len(provider.calls) == 2
+    output, metadata = runtime.match_products(
+        _user_profile(),
+        user_profile_insights=_profile_insights(),
+        market_intelligence=_market_output(),
+        candidates=_candidates(),
+    )
+
+    assert output == ProductMatchAgentOutput(
+        recommended_categories=["fund", "stock"],
+        fund_ids=["fund-001"],
+        wealth_management_ids=[],
+        stock_ids=["stock-001"],
+        ranking_rationale_zh="保留稳健底仓，并配置少量权益增强。",
+        ranking_rationale_en="Keep a resilient core with limited equity exposure.",
+        filtered_out_reasons=[],
+    )
+    assert [call.tool_name for call in metadata.tool_calls] == ["list_candidate_products"]
 
 
-def test_runtime_raises_clean_error_for_tool_request_with_unexpected_arguments() -> None:
+def test_review_compliance_retries_invalid_payload_once_before_surfacing_error() -> None:
     provider = _QueuedProvider(
         [
             {
-                "action": "tool_call",
-                "tool_name": "get_candidate_detail",
-                "tool_arguments": {
-                    "candidate_id": "fund-001",
-                    "unexpected": "value",
+                "action": "final",
+                "final_payload": {"verdict": "approve"},
+            },
+            {
+                "action": "final",
+                "final_payload": {"verdict": "approve"},
+            },
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    with pytest.raises(Exception):
+        runtime.review_compliance(
+            _user_profile(),
+            user_profile_insights=_profile_insights(),
+            selected_candidates=_candidates()[:1],
+            compliance_facts={"rule_snapshot": {"version": "test"}},
+        )
+
+
+def test_coordinate_manager_returns_structured_summary() -> None:
+    provider = _QueuedProvider(
+        [
+            {
+                "action": "final",
+                "final_payload": {
+                    "recommendation_status": "ready",
+                    "summary_zh": "建议以稳健资产为主。",
+                    "summary_en": "Favor resilient assets.",
+                    "why_this_plan_zh": ["匹配当前风险承受能力。"],
+                    "why_this_plan_en": ["Matches the current risk profile."],
                 },
             }
         ]
     )
     runtime = _build_runtime(provider)
 
-    with pytest.raises(RuntimeError, match="invalid tool request: get_candidate_detail"):
-        runtime.rank_candidates(
-            "fund_selection",
-            _user_profile(),
-            _profile_focus(),
-            _fund_candidates(),
-        )
-
-
-def test_runtime_raises_clean_error_for_malformed_final_response() -> None:
-    provider = _QueuedProvider([{"action": "final"}, {"action": "final"}])
-    runtime = _build_runtime(provider)
-
-    with pytest.raises(RuntimeError, match="invalid final payload"):
-        runtime.analyze_market_intelligence(
-            _user_profile(),
-            _profile_focus(),
-            _fallback_market_context(),
-        )
-    assert len(provider.calls) == 2
-
-
-def test_runtime_retries_invalid_final_payload_once_before_surfacing_error() -> None:
-    provider = _QueuedProvider(
-        [
-            {"action": "final", "final_payload": {"ranked_ids": []}},
-            {"action": "final", "final_payload": {"ranked_ids": []}},
-        ]
-    )
-    runtime = _build_runtime(provider)
-
-    with pytest.raises(ValidationError, match="ProductRankingAgentOutput"):
-        runtime.rank_candidates(
-            "fund_selection",
-            _user_profile(),
-            _profile_focus(),
-            _fund_candidates(),
-        )
-    assert len(provider.calls) == 2
-
-
-def test_runtime_recovers_after_invalid_direct_ranking_output() -> None:
-    provider = _QueuedProvider(
-        [
-            {"ranked_ids": []},
-            {"ranked_ids": ["fund-001", "fund-002"]},
-        ]
-    )
-    runtime = _build_runtime(provider)
-
-    output, metadata = runtime.rank_candidates(
-        "fund_selection",
+    output, _ = runtime.coordinate_manager(
         _user_profile(),
-        _profile_focus(),
-        _fund_candidates(),
+        user_profile_insights=_profile_insights(),
+        market_intelligence=_market_output(),
+        product_match=ProductMatchAgentOutput(
+            recommended_categories=["fund", "stock"],
+            fund_ids=["fund-001"],
+            wealth_management_ids=[],
+            stock_ids=["stock-001"],
+            ranking_rationale_zh="测试排序。",
+            ranking_rationale_en="Test ranking.",
+            filtered_out_reasons=[],
+        ),
+        compliance_review=ComplianceReviewAgentOutput(
+            verdict="approve",
+            approved_ids=["fund-001", "stock-001"],
+            rejected_ids=[],
+            reason_summary_zh="通过审核。",
+            reason_summary_en="Approved.",
+            required_disclosures_zh=["理财非存款，投资需谨慎。"],
+            required_disclosures_en=["Investing involves risk. Proceed prudently."],
+            suitability_notes_zh=["适配通过。"],
+            suitability_notes_en=["Approved."],
+            applied_rule_ids=["test-rule"],
+            blocking_reason_codes=[],
+        ),
     )
 
-    assert output == ProductRankingAgentOutput(ranked_ids=["fund-001", "fund-002"])
-    assert metadata.tool_calls == ()
-    assert len(provider.calls) == 2
-
-
-def test_runtime_raises_clean_error_when_tool_loop_is_exhausted() -> None:
-    provider = _QueuedProvider(
-        [
-            {
-                "action": "tool_call",
-                "tool_name": "get_user_profile_context",
-                "tool_arguments": {},
-            },
-            {
-                "action": "tool_call",
-                "tool_name": "get_user_profile_context",
-                "tool_arguments": {},
-            },
-            {
-                "action": "tool_call",
-                "tool_name": "get_user_profile_context",
-                "tool_arguments": {},
-            },
-        ]
+    assert output == ManagerCoordinatorAgentOutput(
+        recommendation_status="ready",
+        summary_zh="建议以稳健资产为主。",
+        summary_en="Favor resilient assets.",
+        why_this_plan_zh=["匹配当前风险承受能力。"],
+        why_this_plan_en=["Matches the current risk profile."],
     )
-    runtime = _build_runtime(provider)
-
-    with pytest.raises(RuntimeError, match="tool loop exhausted"):
-        runtime.analyze_market_intelligence(
-            _user_profile(),
-            _profile_focus(),
-            _fallback_market_context(),
-        )
-
-
-def test_runtime_accepts_direct_output_without_requiring_tool_loop_action() -> None:
-    provider = _QueuedProvider(
-        [
-            {
-                "profile_focus_zh": "平衡风险与收益，追求稳健增长。",
-                "profile_focus_en": "Balance risk and return for steady growth.",
-            },
-        ]
-    )
-    runtime = _build_runtime(provider)
-
-    output, metadata = runtime.analyze_user_profile(_user_profile())
-
-    assert output == UserProfileAgentOutput(
-        profile_focus_zh="平衡风险与收益，追求稳健增长。",
-        profile_focus_en="Balance risk and return for steady growth.",
-    )
-    assert metadata.tool_calls == ()
-    assert len(provider.calls) == 1
-    assert provider.calls[0]["response_schema"].get("required") in (None, [])

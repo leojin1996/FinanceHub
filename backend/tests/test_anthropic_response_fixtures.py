@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from financehub_market_api.recommendation.agents.contracts import (
-    ExplanationAgentOutput,
+    ComplianceReviewAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
-    ProductRankingAgentOutput,
+    ProductMatchAgentOutput,
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.provider import (
@@ -35,7 +36,7 @@ def _provider() -> AnthropicChatProvider:
     ("request_name", "response_schema", "output_model"),
     [
         (
-            "user_profile",
+            "user_profile_analyst",
             UserProfileAgentOutput.model_json_schema(),
             UserProfileAgentOutput,
         ),
@@ -45,24 +46,19 @@ def _provider() -> AnthropicChatProvider:
             MarketIntelligenceAgentOutput,
         ),
         (
-            "fund_selection",
-            ProductRankingAgentOutput.model_json_schema(),
-            ProductRankingAgentOutput,
+            "product_match_expert",
+            ProductMatchAgentOutput.model_json_schema(),
+            ProductMatchAgentOutput,
         ),
         (
-            "wealth_selection",
-            ProductRankingAgentOutput.model_json_schema(),
-            ProductRankingAgentOutput,
+            "compliance_risk_officer",
+            ComplianceReviewAgentOutput.model_json_schema(),
+            ComplianceReviewAgentOutput,
         ),
         (
-            "stock_selection",
-            ProductRankingAgentOutput.model_json_schema(),
-            ProductRankingAgentOutput,
-        ),
-        (
-            "explanation",
-            ExplanationAgentOutput.model_json_schema(),
-            ExplanationAgentOutput,
+            "manager_coordinator",
+            ManagerCoordinatorAgentOutput.model_json_schema(),
+            ManagerCoordinatorAgentOutput,
         ),
     ],
 )
@@ -72,8 +68,9 @@ def test_parse_response_body_extracts_required_fields_from_sanitized_real_fixtur
     output_model: type[
         UserProfileAgentOutput
         | MarketIntelligenceAgentOutput
-        | ProductRankingAgentOutput
-        | ExplanationAgentOutput
+        | ProductMatchAgentOutput
+        | ComplianceReviewAgentOutput
+        | ManagerCoordinatorAgentOutput
     ],
 ) -> None:
     fixture_path = _FIXTURE_DIR / f"{request_name}.json"

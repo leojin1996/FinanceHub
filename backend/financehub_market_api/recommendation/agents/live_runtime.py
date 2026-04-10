@@ -3,17 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from financehub_market_api.recommendation.agents.anthropic_runtime import (
-    ExplanationRuntimeAgent,
-    FundSelectionRuntimeAgent,
+    ComplianceReviewRuntimeAgent,
+    ManagerCoordinatorRuntimeAgent,
     MarketIntelligenceRuntimeAgent,
-    StockSelectionRuntimeAgent,
+    ProductMatchRuntimeAgent,
     UserProfileRuntimeAgent,
-    WealthSelectionRuntimeAgent,
 )
 from financehub_market_api.recommendation.agents.contracts import (
-    ExplanationAgentOutput,
+    ComplianceReviewAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
-    ProductRankingAgentOutput,
+    ProductMatchAgentOutput,
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.interfaces import (
@@ -28,12 +28,9 @@ from financehub_market_api.recommendation.agents.provider import (
 from financehub_market_api.recommendation.agents.runtime_context import (
     AgentPromptContext,
     AgentToolCallRecord,
-    SelectedPlanContext,
-    coerce_selected_plan_context,
 )
 from financehub_market_api.recommendation.schemas import (
     CandidateProduct,
-    MarketContext,
     UserProfile,
 )
 
@@ -74,20 +71,20 @@ class AnthropicRecommendationAgentRuntime:
         *,
         prompt_context: AgentPromptContext | None = None,
     ) -> tuple[UserProfileAgentOutput, AgentInvocationMetadata]:
-        route = self._route_or_raise("user_profile")
+        route = self._route_or_raise("user_profile_analyst")
         output, tool_calls = UserProfileRuntimeAgent(
             self._provider,
             route.model_name,
             self.request_timeout_seconds,
-            "user_profile",
+            "user_profile_analyst",
         ).run_with_trace(user_profile, prompt_context=prompt_context)
         return output, _metadata_for(route, tool_calls=tool_calls)
 
     def analyze_market_intelligence(
         self,
         user_profile: UserProfile,
-        profile_focus: UserProfileAgentOutput,
-        fallback_context: MarketContext,
+        user_profile_insights: UserProfileAgentOutput,
+        market_facts: dict[str, object],
         *,
         prompt_context: AgentPromptContext | None = None,
     ) -> tuple[MarketIntelligenceAgentOutput, AgentInvocationMetadata]:
@@ -99,80 +96,83 @@ class AnthropicRecommendationAgentRuntime:
             "market_intelligence",
         ).run_with_trace(
             user_profile,
-            profile_focus,
-            fallback_context,
+            user_profile_insights,
+            market_facts,
             prompt_context=prompt_context,
         )
         return output, _metadata_for(route, tool_calls=tool_calls)
 
-    def rank_candidates(
+    def match_products(
         self,
-        request_name: str,
         user_profile: UserProfile,
-        profile_focus: UserProfileAgentOutput,
-        candidates: list[CandidateProduct],
         *,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
         prompt_context: AgentPromptContext | None = None,
-    ) -> tuple[ProductRankingAgentOutput, AgentInvocationMetadata]:
-        route = self._route_or_raise(request_name)
-        ranking_agent: (
-            FundSelectionRuntimeAgent
-            | WealthSelectionRuntimeAgent
-            | StockSelectionRuntimeAgent
-        )
-        if request_name == "fund_selection":
-            ranking_agent = FundSelectionRuntimeAgent(
-                self._provider,
-                route.model_name,
-                self.request_timeout_seconds,
-                request_name,
-            )
-        elif request_name == "wealth_selection":
-            ranking_agent = WealthSelectionRuntimeAgent(
-                self._provider,
-                route.model_name,
-                self.request_timeout_seconds,
-                request_name,
-            )
-        elif request_name == "stock_selection":
-            ranking_agent = StockSelectionRuntimeAgent(
-                self._provider,
-                route.model_name,
-                self.request_timeout_seconds,
-                request_name,
-            )
-        else:
-            raise ValueError(f"unsupported ranking request_name: {request_name}")
-
-        output, tool_calls = ranking_agent.run_with_trace(
+    ) -> tuple[ProductMatchAgentOutput, AgentInvocationMetadata]:
+        route = self._route_or_raise("product_match_expert")
+        output, tool_calls = ProductMatchRuntimeAgent(
+            self._provider,
+            route.model_name,
+            self.request_timeout_seconds,
+            "product_match_expert",
+        ).run_with_trace(
             user_profile,
-            profile_focus,
+            user_profile_insights,
+            market_intelligence,
             candidates,
             prompt_context=prompt_context,
         )
         return output, _metadata_for(route, tool_calls=tool_calls)
 
-    def explain_plan(
+    def review_compliance(
         self,
         user_profile: UserProfile,
-        profile_focus: UserProfileAgentOutput,
-        market_context: MarketIntelligenceAgentOutput,
         *,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
         prompt_context: AgentPromptContext | None = None,
-        selected_plan_context: SelectedPlanContext | dict[str, object] | None = None,
-    ) -> tuple[ExplanationAgentOutput, AgentInvocationMetadata]:
-        route = self._route_or_raise("explanation")
-        output, tool_calls = ExplanationRuntimeAgent(
+    ) -> tuple[ComplianceReviewAgentOutput, AgentInvocationMetadata]:
+        route = self._route_or_raise("compliance_risk_officer")
+        output, tool_calls = ComplianceReviewRuntimeAgent(
             self._provider,
             route.model_name,
             self.request_timeout_seconds,
-            "explanation",
+            "compliance_risk_officer",
         ).run_with_trace(
             user_profile,
-            profile_focus,
-            market_context,
+            user_profile_insights,
+            selected_candidates,
+            compliance_facts,
             prompt_context=prompt_context,
-            selected_plan_context=coerce_selected_plan_context(selected_plan_context),
+        )
+        return output, _metadata_for(route, tool_calls=tool_calls)
+
+    def coordinate_manager(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        product_match: ProductMatchAgentOutput,
+        compliance_review: ComplianceReviewAgentOutput,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ManagerCoordinatorAgentOutput, AgentInvocationMetadata]:
+        route = self._route_or_raise("manager_coordinator")
+        output, tool_calls = ManagerCoordinatorRuntimeAgent(
+            self._provider,
+            route.model_name,
+            self.request_timeout_seconds,
+            "manager_coordinator",
+        ).run_with_trace(
+            user_profile,
+            user_profile_insights,
+            market_intelligence,
+            product_match,
+            compliance_review,
+            prompt_context=prompt_context,
         )
         return output, _metadata_for(route, tool_calls=tool_calls)
 

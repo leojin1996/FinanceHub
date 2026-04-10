@@ -27,7 +27,7 @@ class MarketDataSnapshotSource(Protocol):
 
 
 class MarketSnapshot(BaseModel):
-    sentiment: Literal["neutral", "positive"]
+    sentiment: Literal["negative", "neutral", "positive"]
     stance: Literal["defensive", "balanced", "offensive"]
     preferred_categories: list[str] = Field(default_factory=list)
     avoided_categories: list[str] = Field(default_factory=list)
@@ -62,11 +62,13 @@ class MarketIntelligenceService:
             "Deterministic market snapshot built from overview, macro, rates, and news inputs."
         )
 
-        stance = "defensive" if ("债" in summary_zh or "降息" in summary_zh) else "balanced"
-        sentiment = "neutral" if "震荡" in summary_zh else "positive"
+        sentiment = _sentiment_from_text(summary_zh)
+        stance = _stance_from_text(summary_zh, sentiment=sentiment)
         preferred_categories = (
             ["wealth_management", "fund"]
             if stance == "defensive"
+            else ["fund", "stock"]
+            if stance == "offensive"
             else ["fund", "stock"]
         )
         avoided_categories = ["stock"] if stance == "defensive" else []
@@ -153,15 +155,21 @@ class MarketIntelligenceService:
             if indices.cards
             else 0.0
         )
-        sentiment: Literal["neutral", "positive"] = (
-            "positive" if average_change_percent > 0 else "neutral"
+        positive_count = len(positive_indices)
+        negative_count = len(negative_indices)
+        sentiment: Literal["negative", "neutral", "positive"] = _sentiment_from_change(
+            average_change_percent
         )
-        stance: Literal["defensive", "balanced", "offensive"] = (
-            "balanced" if average_change_percent >= 0 else "defensive"
+        stance: Literal["defensive", "balanced", "offensive"] = _stance_from_change(
+            average_change_percent,
+            positive_count=positive_count,
+            negative_count=negative_count,
         )
         preferred_categories = (
             ["wealth_management", "fund"]
             if stance == "defensive"
+            else ["fund", "stock"]
+            if stance == "offensive"
             else ["fund", "stock"]
         )
         avoided_categories = ["stock"] if stance == "defensive" else []
@@ -199,3 +207,54 @@ class MarketIntelligenceService:
             summary_en=summary_en,
             evidence=evidence,
         )
+
+
+def _sentiment_from_text(
+    summary_zh: str,
+) -> Literal["negative", "neutral", "positive"]:
+    if "震荡" in summary_zh:
+        return "neutral"
+    negative_keywords = ("承压", "回撤", "下跌", "走弱", "下行")
+    positive_keywords = ("上涨", "走强", "回暖", "反弹", "修复")
+    if any(keyword in summary_zh for keyword in negative_keywords):
+        return "negative"
+    if any(keyword in summary_zh for keyword in positive_keywords):
+        return "positive"
+    return "neutral"
+
+
+def _stance_from_text(
+    summary_zh: str,
+    *,
+    sentiment: Literal["negative", "neutral", "positive"],
+) -> Literal["defensive", "balanced", "offensive"]:
+    defensive_keywords = ("债", "降息", "避险", "低波动")
+    offensive_keywords = ("科技", "成长", "权益走强", "风险偏好回升", "进攻")
+    if sentiment == "negative" or any(keyword in summary_zh for keyword in defensive_keywords):
+        return "defensive"
+    if sentiment == "positive" and any(keyword in summary_zh for keyword in offensive_keywords):
+        return "offensive"
+    return "balanced"
+
+
+def _sentiment_from_change(
+    average_change_percent: float,
+) -> Literal["negative", "neutral", "positive"]:
+    if average_change_percent > 0.2:
+        return "positive"
+    if average_change_percent < -0.2:
+        return "negative"
+    return "neutral"
+
+
+def _stance_from_change(
+    average_change_percent: float,
+    *,
+    positive_count: int,
+    negative_count: int,
+) -> Literal["defensive", "balanced", "offensive"]:
+    if average_change_percent > 0.2 and positive_count > negative_count:
+        return "offensive"
+    if average_change_percent < -0.2 and negative_count > positive_count:
+        return "defensive"
+    return "balanced"

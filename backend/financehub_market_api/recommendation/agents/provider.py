@@ -31,12 +31,11 @@ LLM_CAPTURE_DIR_ENV = "FINANCEHUB_LLM_CAPTURE_DIR"
 LLM_AGENT_TRACE_LOGS_ENV = "FINANCEHUB_LLM_AGENT_TRACE_LOGS"
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 AGENT_MODEL_ROUTE_ENV_NAMES = {
-    "user_profile": "USER_PROFILE",
+    "user_profile_analyst": "USER_PROFILE_ANALYST",
     "market_intelligence": "MARKET_INTELLIGENCE",
-    "fund_selection": "FUND_SELECTION",
-    "wealth_selection": "WEALTH_SELECTION",
-    "stock_selection": "STOCK_SELECTION",
-    "explanation": "EXPLANATION",
+    "product_match_expert": "PRODUCT_MATCH_EXPERT",
+    "compliance_risk_officer": "COMPLIANCE_RISK_OFFICER",
+    "manager_coordinator": "MANAGER_COORDINATOR",
 }
 
 

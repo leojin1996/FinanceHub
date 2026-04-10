@@ -1,0 +1,16 @@
+{
+  "request_name": "user_profile_analyst",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"risk_tier\": \"R2\",\n  \"liquidity_preference\": \"high\",\n  \"investment_horizon\": \"one_year\",\n  \"return_objective\": \"capital_preservation\",\n  \"drawdown_sensitivity\": \"high\",\n  \"profile_focus_zh\": \"用户强调保本、一年期与高流动性。\",\n  \"profile_focus_en\": \"The user prioritizes principal protection, a one-year horizon, and high liquidity.\",\n  \"derived_signals\": [\"intent:保本\", \"conversation:高流动性\"]\n}\n```"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message"
+  }
+}

@@ -10,8 +10,10 @@ from financehub_market_api.models import (
     RecommendationResponse,
     TrendPoint,
 )
+from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
+from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.services import RecommendationService as DomainRecommendationService
 from financehub_market_api.recommendations import RecommendationService
 
@@ -189,9 +191,9 @@ def test_conservative_profile_zeroes_stock_allocation_when_no_stock_candidates_s
     assert response.allocationDisplay.fund == 25
     assert response.allocationDisplay.wealthManagement == 75
     assert response.allocationDisplay.stock == 0
-    assert response.reviewStatus == "pass"
-    assert response.recommendationStatus == "ready"
-    assert response.complianceReview is None
+    assert response.reviewStatus == "partial_pass"
+    assert response.recommendationStatus == "limited"
+    assert response.complianceReview is not None
     assert response.sections.stocks.items == []
 
 
@@ -332,10 +334,170 @@ def test_recommendation_response_exposes_detail_routes_and_as_of_dates() -> None
 
 
 def test_default_graph_runtime_uses_market_data_service_for_market_intelligence() -> None:
+    from financehub_market_api.recommendation.compliance import ComplianceFactsService
+    from financehub_market_api.recommendation.graph.runtime import GraphServices
+    from financehub_market_api.recommendation.memory import MemoryRecallService
+    from financehub_market_api.recommendation.product_index import ProductRetrievalService
+
+    class _MemoryStore:
+        def search(self, query: str, *, limit: int) -> list[str]:
+            del query
+            return ["memory:balanced"][:limit]
+
+    class _VectorStore:
+        def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+            del query_text
+            return [
+                {"id": "fund-001", "score": 0.99},
+                {"id": "wm-001", "score": 0.95},
+                {"id": "stock-001", "score": 0.9},
+            ][:limit]
+
+    class _RuntimeDouble:
+        def analyze_user_profile(self, user_profile, *, prompt_context=None):
+            del user_profile, prompt_context
+            from financehub_market_api.recommendation.agents.contracts import UserProfileAgentOutput
+            from financehub_market_api.recommendation.agents.live_runtime import AgentInvocationMetadata
+
+            return (
+                UserProfileAgentOutput(
+                    risk_tier="R3",
+                    liquidity_preference="medium",
+                    investment_horizon="medium",
+                    return_objective="balanced_growth",
+                    drawdown_sensitivity="medium",
+                    profile_focus_zh="测试画像。",
+                    profile_focus_en="Test profile.",
+                    derived_signals=["questionnaire:test"],
+                ),
+                AgentInvocationMetadata(provider_name="anthropic", model_name="test-user"),
+            )
+
+        def analyze_market_intelligence(
+            self,
+            user_profile,
+            user_profile_insights,
+            market_facts,
+            *,
+            prompt_context=None,
+        ):
+            del user_profile, user_profile_insights, prompt_context
+            from financehub_market_api.recommendation.agents.contracts import MarketIntelligenceAgentOutput
+            from financehub_market_api.recommendation.agents.live_runtime import AgentInvocationMetadata
+
+            return (
+                MarketIntelligenceAgentOutput(
+                    sentiment="positive",
+                    stance="offensive",
+                    preferred_categories=["fund", "stock"],
+                    avoided_categories=[],
+                    summary_zh=market_facts["summary_zh"],
+                    summary_en=market_facts["summary_en"],
+                    evidence_refs=["market_overview", "indices", "market_leadership"],
+                ),
+                AgentInvocationMetadata(provider_name="anthropic", model_name="test-market"),
+            )
+
+        def match_products(
+            self,
+            user_profile,
+            *,
+            user_profile_insights,
+            market_intelligence,
+            candidates,
+            prompt_context=None,
+        ):
+            del user_profile, user_profile_insights, market_intelligence, prompt_context
+            from financehub_market_api.recommendation.agents.contracts import ProductMatchAgentOutput
+            from financehub_market_api.recommendation.agents.live_runtime import AgentInvocationMetadata
+
+            return (
+                ProductMatchAgentOutput(
+                    recommended_categories=["fund", "wealth_management", "stock"],
+                    fund_ids=[candidate.id for candidate in candidates if candidate.category == "fund"][:1],
+                    wealth_management_ids=[candidate.id for candidate in candidates if candidate.category == "wealth_management"][:1],
+                    stock_ids=[candidate.id for candidate in candidates if candidate.category == "stock"][:1],
+                    ranking_rationale_zh="测试匹配。",
+                    ranking_rationale_en="Test match.",
+                    filtered_out_reasons=[],
+                ),
+                AgentInvocationMetadata(provider_name="anthropic", model_name="test-match"),
+            )
+
+        def review_compliance(
+            self,
+            user_profile,
+            *,
+            user_profile_insights,
+            selected_candidates,
+            compliance_facts,
+            prompt_context=None,
+        ):
+            del user_profile, user_profile_insights, compliance_facts, prompt_context
+            from financehub_market_api.recommendation.agents.contracts import ComplianceReviewAgentOutput
+            from financehub_market_api.recommendation.agents.live_runtime import AgentInvocationMetadata
+
+            return (
+                ComplianceReviewAgentOutput(
+                    verdict="approve",
+                    approved_ids=[candidate.id for candidate in selected_candidates],
+                    rejected_ids=[],
+                    reason_summary_zh="测试通过。",
+                    reason_summary_en="Approved for test.",
+                    required_disclosures_zh=["理财非存款，投资需谨慎。"],
+                    required_disclosures_en=["Investing involves risk. Proceed prudently."],
+                    suitability_notes_zh=["适配通过。"],
+                    suitability_notes_en=["Approved."],
+                    applied_rule_ids=["test-rule"],
+                    blocking_reason_codes=[],
+                ),
+                AgentInvocationMetadata(provider_name="anthropic", model_name="test-compliance"),
+            )
+
+        def coordinate_manager(
+            self,
+            user_profile,
+            *,
+            user_profile_insights,
+            market_intelligence,
+            product_match,
+            compliance_review,
+            prompt_context=None,
+        ):
+            del user_profile, user_profile_insights, market_intelligence, product_match, compliance_review, prompt_context
+            from financehub_market_api.recommendation.agents.contracts import ManagerCoordinatorAgentOutput
+            from financehub_market_api.recommendation.agents.live_runtime import AgentInvocationMetadata
+
+            return (
+                ManagerCoordinatorAgentOutput(
+                    recommendation_status="ready",
+                    summary_zh="测试经理总结。",
+                    summary_en="Test manager summary.",
+                    why_this_plan_zh=["测试理由。"],
+                    why_this_plan_en=["Test reason."],
+                ),
+                AgentInvocationMetadata(provider_name="anthropic", model_name="test-manager"),
+            )
+
+    repository = StaticCandidateRepository()
+    user_profile = map_user_profile("balanced")
+    candidates = [
+        *repository.list_funds(user_profile),
+        *repository.list_wealth_management(user_profile),
+        *repository.list_stocks(user_profile),
+    ]
     service = DomainRecommendationService(
-        graph_runtime=RecommendationGraphRuntime.with_default_services(
-            repository=StaticCandidateRepository(),
-            market_data_service=_FakeMarketDataService(),
+        graph_runtime=RecommendationGraphRuntime(
+            GraphServices(
+                market_intelligence=MarketIntelligenceService(
+                    market_data_service=_FakeMarketDataService()
+                ),
+                memory_recall=MemoryRecallService(store=_MemoryStore()),
+                product_retrieval=ProductRetrievalService(vector_store=_VectorStore()),
+                compliance_facts_service=ComplianceFactsService(),
+                product_candidates=candidates,
+                agent_runtime=_RuntimeDouble(),
+            )
         )
     )
 
@@ -356,9 +518,9 @@ def test_domain_service_filters_high_risk_candidates_before_compliance_for_conse
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
     assert response.executionMode == "agent_assisted"
-    assert response.recommendationStatus == "ready"
-    assert response.reviewStatus == "pass"
-    assert response.complianceReview is None
+    assert response.recommendationStatus == "limited"
+    assert response.reviewStatus == "partial_pass"
+    assert response.complianceReview is not None
     assert response.sections.stocks.items == []
 
 

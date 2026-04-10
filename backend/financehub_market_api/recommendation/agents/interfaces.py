@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Protocol
 
 from financehub_market_api.recommendation.agents.contracts import (
+    ComplianceReviewAgentOutput,
     ExplanationAgentOutput,
+    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
+    ProductMatchAgentOutput,
     ProductRankingAgentOutput,
     UserProfileAgentOutput,
 )
@@ -54,6 +57,19 @@ class MarketIntelligenceAgent(Protocol):
         """Return structured market summary fields."""
 
 
+class ProductMatchAgent(Protocol):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ProductMatchAgentOutput:
+        """Return structured candidate selection and ranking output."""
+
+
 class FundSelectionAgent(Protocol):
     def run(
         self,
@@ -101,3 +117,30 @@ class ExplanationAgent(Protocol):
         selected_plan_context: SelectedPlanContext | None = None,
     ) -> ExplanationAgentOutput:
         """Return bilingual rationale bullet lists."""
+
+
+class ComplianceReviewAgent(Protocol):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ComplianceReviewAgentOutput:
+        """Return the structured compliance verdict."""
+
+
+class ManagerCoordinatorAgent(Protocol):
+    def run(
+        self,
+        user_profile: UserProfile,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        product_match: ProductMatchAgentOutput,
+        compliance_review: ComplianceReviewAgentOutput,
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> ManagerCoordinatorAgentOutput:
+        """Return final recommendation summary and rationale."""

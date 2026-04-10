@@ -10,6 +10,7 @@ from financehub_market_api.recommendation.repositories.real_data_adapters import
     MoneyFundWealthProxyDetailAdapter,
     MoneyFundWealthProxyAdapter,
     PremiumStockDetailAdapter,
+    PublicWealthManagementDetailAdapter,
 )
 from financehub_market_api.recommendation.repositories.real_data_repository import (
     RealDataCandidateRepository,
@@ -120,6 +121,24 @@ def test_bond_fund_adapter_maps_public_rows_into_candidate_products() -> None:
     assert candidate.risk_level == "R2"
 
 
+def test_bond_fund_adapter_keeps_broader_default_candidate_pool() -> None:
+    rows = [
+        {
+            "基金代码": f"{100000 + index:06d}",
+            "基金简称": f"稳健债券{index:02d}",
+            "日期": "2026-04-02",
+            "单位净值": "1.1234",
+            "手续费": "0.15%",
+        }
+        for index in range(25)
+    ]
+    adapter = BondFundCandidateAdapter(fetcher=lambda: FakeFrame(rows))
+
+    candidates = adapter.list_candidates(map_user_profile("balanced"))
+
+    assert len(candidates) == 20
+
+
 def test_money_fund_proxy_adapter_maps_public_rows_into_candidate_products() -> None:
     adapter = MoneyFundWealthProxyAdapter(
         fetcher=lambda: FakeFrame(
@@ -148,6 +167,24 @@ def test_money_fund_proxy_adapter_maps_public_rows_into_candidate_products() -> 
     assert candidate.risk_level == "R1"
 
 
+def test_money_fund_proxy_adapter_keeps_broader_default_candidate_pool() -> None:
+    rows = [
+        {
+            "基金代码": f"{500000 + index:06d}",
+            "基金简称": f"现金管理{index:02d}",
+            "日期": "2026-04-02",
+            "年化收益率7日": "1.88%",
+            "手续费": "0.00%",
+        }
+        for index in range(25)
+    ]
+    adapter = MoneyFundWealthProxyAdapter(fetcher=lambda: FakeFrame(rows))
+
+    candidates = adapter.list_candidates(map_user_profile("balanced"))
+
+    assert len(candidates) == 20
+
+
 def test_money_fund_proxy_adapter_accepts_daily_fallback_columns() -> None:
     adapter = MoneyFundWealthProxyAdapter(
         fetcher=lambda: FakeFrame(
@@ -171,6 +208,27 @@ def test_money_fund_proxy_adapter_accepts_daily_fallback_columns() -> None:
     assert candidate.category == "wealth_management"
     assert candidate.code == "001078"
     assert candidate.name_zh == "华夏现金宝货币B"
+
+
+def test_public_wealth_management_detail_adapter_keeps_broader_default_pool() -> None:
+    rows = [
+        {
+            "产品代码": f"WM{index:04d}",
+            "产品名称": f"稳健理财{index:02d}",
+            "机构名称": "示例理财子",
+            "风险等级": "R2",
+            "日期": "2026-04-02",
+            "期限": "30天",
+            "近1月年化收益率": "2.10%",
+            "管理费": "0.25%",
+        }
+        for index in range(25)
+    ]
+    adapter = PublicWealthManagementDetailAdapter(fetcher=lambda: FakeFrame(rows))
+
+    details = adapter.list_product_details()
+
+    assert len(details) == 20
 
 
 def test_bond_fund_detail_adapter_populates_chart_and_yield_metrics() -> None:
@@ -524,11 +582,17 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_explici
 
     assert response.allocationDisplay.model_dump() == {
         "fund": 45,
-        "wealthManagement": 35,
-        "stock": 20,
+        "wealthManagement": 55,
+        "stock": 0,
     }
     assert response.sections.funds.titleZh == "基金推荐"
     assert response.sections.wealthManagement.titleZh == "银行理财推荐"
     assert response.executionMode == "agent_assisted"
-    assert response.sections.funds.items[0].nameZh == "稳健债券A"
-    assert response.sections.wealthManagement.items[0].nameZh == "华宝添益"
+    assert response.recommendationStatus == "blocked"
+    assert response.sections.funds.items == []
+    assert response.sections.wealthManagement.items == []
+    assert response.complianceReview is not None
+    assert response.complianceReview.verdict == "block"
+    assert response.warnings is not None
+    assert response.warnings[0].stage == "user_profile_analyst"
+    assert response.warnings[0].code == "agent_runtime_required"

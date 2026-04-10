@@ -132,6 +132,93 @@ class _FakeMarketDataService:
         )
 
 
+class _NegativeMarketDataService:
+    def get_market_overview(self) -> MarketOverviewResponse:
+        return MarketOverviewResponse(
+            asOfDate="2026-04-03",
+            stale=False,
+            metrics=[
+                MetricCard(
+                    label="上证指数",
+                    value="3,180.12",
+                    delta="-0.9%",
+                    changeValue=-28.1,
+                    changePercent=-0.9,
+                    tone="negative",
+                ),
+                MetricCard(
+                    label="深证成指",
+                    value="9,980.45",
+                    delta="-0.4%",
+                    changeValue=-40.2,
+                    changePercent=-0.4,
+                    tone="negative",
+                ),
+            ],
+            chartLabel="上证指数",
+            trendSeries=[
+                TrendPoint(date="2026-04-01", value=3230.0),
+                TrendPoint(date="2026-04-02", value=3208.0),
+                TrendPoint(date="2026-04-03", value=3180.12),
+            ],
+            topGainers=[],
+            topLosers=[],
+        )
+
+    def get_indices(self) -> IndicesResponse:
+        return IndicesResponse(
+            asOfDate="2026-04-03",
+            stale=False,
+            cards=[
+                IndexCard(
+                    name="上证指数",
+                    code="000001",
+                    market="SH",
+                    description="上海证券交易所综合指数",
+                    value="3,180.12",
+                    valueNumber=3180.12,
+                    changeValue=-28.1,
+                    changePercent=-0.9,
+                    tone="negative",
+                    trendSeries=[
+                        TrendPoint(date="2026-04-02", value=3208.0),
+                        TrendPoint(date="2026-04-03", value=3180.12),
+                    ],
+                ),
+                IndexCard(
+                    name="深证成指",
+                    code="399001",
+                    market="SZ",
+                    description="深圳证券交易所成份指数",
+                    value="9,980.45",
+                    valueNumber=9980.45,
+                    changeValue=-40.2,
+                    changePercent=-0.4,
+                    tone="negative",
+                    trendSeries=[
+                        TrendPoint(date="2026-04-02", value=10020.0),
+                        TrendPoint(date="2026-04-03", value=9980.45),
+                    ],
+                ),
+                IndexCard(
+                    name="创业板指",
+                    code="399006",
+                    market="SZ",
+                    description="创业板指数",
+                    value="2,100.00",
+                    valueNumber=2100.0,
+                    changeValue=-12.0,
+                    changePercent=-0.6,
+                    tone="negative",
+                    trendSeries=[
+                        TrendPoint(date="2026-04-02", value=2112.0),
+                        TrendPoint(date="2026-04-03", value=2100.0),
+                    ],
+                ),
+            ],
+        )
+
+
 def test_market_intelligence_service_normalizes_live_and_fallback_sources() -> None:
     service = MarketIntelligenceService()
 
@@ -164,7 +251,7 @@ def test_market_intelligence_service_builds_snapshot_from_market_data_models() -
     snapshot = service.build_recommendation_snapshot()
 
     assert snapshot.sentiment == "positive"
-    assert snapshot.stance == "balanced"
+    assert snapshot.stance == "offensive"
     assert snapshot.preferred_categories == ["fund", "stock"]
     assert snapshot.avoided_categories == []
     assert snapshot.summary_zh.startswith("市场概览（截至 2026-04-02）")
@@ -177,6 +264,17 @@ def test_market_intelligence_service_builds_snapshot_from_market_data_models() -
         "market_leadership",
     ]
     assert all(item.asOf == "2026-04-02" for item in snapshot.evidence)
+
+
+def test_market_intelligence_service_builds_negative_defensive_snapshot() -> None:
+    service = MarketIntelligenceService(market_data_service=_NegativeMarketDataService())
+
+    snapshot = service.build_recommendation_snapshot()
+
+    assert snapshot.sentiment == "negative"
+    assert snapshot.stance == "defensive"
+    assert snapshot.preferred_categories == ["wealth_management", "fund"]
+    assert snapshot.avoided_categories == ["stock"]
 
 
 def test_memory_recall_service_returns_ranked_memories() -> None:

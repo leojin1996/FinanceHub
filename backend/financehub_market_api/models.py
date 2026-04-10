@@ -239,12 +239,31 @@ class ComplianceReviewPayload(BaseModel):
     reasonSummary: LocalizedText
     requiredDisclosures: LocalizedTextList
     suitabilityNotes: LocalizedTextList
+    appliedRuleIds: list[str] = Field(default_factory=list)
+    blockingReasonCodes: list[str] = Field(default_factory=list)
 
 
 class MarketEvidenceItem(BaseModel):
     source: str
     asOf: str
     summary: LocalizedText
+
+
+class ProfileInsightsPayload(BaseModel):
+    riskTier: str
+    liquidityPreference: str
+    investmentHorizon: str
+    returnObjective: str
+    drawdownSensitivity: str
+    derivedSignals: list[str] = Field(default_factory=list)
+
+
+class RecommendationMarketIntelligencePayload(BaseModel):
+    sentiment: str
+    stance: str
+    preferredCategories: list[str] = Field(default_factory=list)
+    avoidedCategories: list[str] = Field(default_factory=list)
+    evidenceRefs: list[str] = Field(default_factory=list)
 
 
 class AgentTraceToolCall(BaseModel):
@@ -270,7 +289,9 @@ class RecommendationResponse(BaseModel):
     allocationDisplay: AllocationDisplay
     executionMode: ExecutionMode
     marketSummary: LocalizedText
+    marketIntelligence: RecommendationMarketIntelligencePayload | None = None
     profileSummary: LocalizedText
+    profileInsights: ProfileInsightsPayload | None = None
     reviewStatus: ReviewStatus
     riskNotice: LocalizedTextList
     sections: RecommendationSections
