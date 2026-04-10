@@ -1,4 +1,11 @@
-from financehub_market_api.models import RecommendationGenerationRequest
+from financehub_market_api.models import (
+    IndexCard,
+    IndicesResponse,
+    MarketOverviewResponse,
+    MetricCard,
+    RecommendationGenerationRequest,
+    TrendPoint,
+)
 from financehub_market_api.recommendation.agents.contracts import (
     ExplanationAgentOutput,
     MarketIntelligenceAgentOutput,
@@ -153,6 +160,83 @@ def test_graph_runtime_builds_defensive_product_strategy_for_capital_preservatio
     assert retrieval_context is not None
     assert all(item.category != "stock" for item in retrieval_context.candidates)
     assert any("stock" in reason for reason in retrieval_context.filtered_out_reasons)
+
+
+class _NegativeMarketDataSource:
+    def get_market_overview(self) -> MarketOverviewResponse:
+        return MarketOverviewResponse(
+            asOfDate="2026-04-09",
+            stale=False,
+            metrics=[
+                MetricCard(
+                    label="上证指数",
+                    value="3966.17",
+                    delta="-0.7%",
+                    changeValue=-27.8,
+                    changePercent=-0.7,
+                    tone="negative",
+                ),
+                MetricCard(
+                    label="深证成指",
+                    value="13996.27",
+                    delta="-0.3%",
+                    changeValue=-42.1,
+                    changePercent=-0.3,
+                    tone="negative",
+                ),
+            ],
+            chartLabel="近20日走势",
+            trendSeries=[TrendPoint(date="2026-04-09", value=3966.17)],
+            topGainers=[],
+            topLosers=[],
+        )
+
+    def get_indices(self) -> IndicesResponse:
+        return IndicesResponse(
+            asOfDate="2026-04-09",
+            stale=False,
+            cards=[
+                IndexCard(
+                    name="上证指数",
+                    code="000001",
+                    market="CN",
+                    description="negative day",
+                    value="3966.17",
+                    valueNumber=3966.17,
+                    changeValue=-27.8,
+                    changePercent=-0.7,
+                    tone="negative",
+                    trendSeries=[TrendPoint(date="2026-04-09", value=3966.17)],
+                ),
+                IndexCard(
+                    name="深证成指",
+                    code="399001",
+                    market="CN",
+                    description="negative day",
+                    value="13996.27",
+                    valueNumber=13996.27,
+                    changeValue=-42.1,
+                    changePercent=-0.3,
+                    tone="negative",
+                    trendSeries=[TrendPoint(date="2026-04-09", value=13996.27)],
+                ),
+            ],
+        )
+
+
+def test_graph_runtime_keeps_stock_candidates_for_balanced_users_in_defensive_market() -> None:
+    service = RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=StaticCandidateRepository(),
+            market_data_service=_NegativeMarketDataSource(),
+            use_ai_agents=False,
+        )
+    )
+
+    response = service.generate_recommendation(_build_generation_request("balanced"))
+
+    assert response.sections.stocks.items
+    assert response.allocationDisplay.stock > 0
 
 
 class _SingleMemoryStore:

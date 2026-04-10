@@ -41,6 +41,7 @@ _MAX_TRACE_STRING_LENGTH = 240
 _MAX_TRACE_LIST_ITEMS = 8
 _MAX_TRACE_OBJECT_KEYS = 16
 _MAX_TOOL_CALLS = 2
+_MAX_VALIDATION_RETRIES = 1
 _ValidatedOutputT = TypeVar("_ValidatedOutputT")
 
 
@@ -63,6 +64,35 @@ class _ToolLoopDecision(BaseModel):
     tool_arguments: dict[str, object] = Field(default_factory=dict)
     final_payload: dict[str, object] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        tool_name = normalized.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            alias_tool_name = normalized.get("tool")
+            if isinstance(alias_tool_name, str) and alias_tool_name:
+                normalized["tool_name"] = alias_tool_name
+
+        tool_arguments = normalized.get("tool_arguments")
+        if not isinstance(tool_arguments, dict):
+            for alias_key in ("parameters", "arguments"):
+                alias_arguments = normalized.get(alias_key)
+                if isinstance(alias_arguments, dict):
+                    normalized["tool_arguments"] = alias_arguments
+                    break
+
+        if "action" not in normalized:
+            if normalized.get("tool_name"):
+                normalized["action"] = "tool_call"
+            elif isinstance(normalized.get("final_payload"), dict):
+                normalized["action"] = "final"
+
+        return normalized
+
     @model_validator(mode="after")
     def _validate_shape(self) -> _ToolLoopDecision:
         if self.action == "tool_call":
@@ -72,6 +102,36 @@ class _ToolLoopDecision(BaseModel):
         if self.final_payload is None:
             raise ValueError("final_payload is required when action=final")
         return self
+
+
+def _tool_loop_response_schema(output_schema: Mapping[str, object]) -> dict[str, object]:
+    final_payload_schema = (
+        dict(output_schema)
+        if isinstance(output_schema, dict)
+        else {"type": "object", "additionalProperties": True}
+    )
+    top_level_properties = output_schema.get("properties")
+    if not isinstance(top_level_properties, dict):
+        top_level_properties = {}
+    return {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["tool_call", "final"],
+            },
+            "tool_name": {
+                "type": ["string", "null"],
+            },
+            "tool_arguments": {
+                "type": "object",
+                "additionalProperties": True,
+            },
+            "final_payload": final_payload_schema,
+            **top_level_properties,
+        },
+        "additionalProperties": True,
+    }
 
 
 def _trim_trace_value(value: object) -> object:
@@ -181,6 +241,13 @@ def _build_tool_descriptions(tool_definitions: Mapping[str, _ToolDefinition]) ->
     return tuple(
         f"{tool.name}: {tool.description}" for tool in tool_definitions.values()
     )
+
+
+def _required_output_keys(output_schema: Mapping[str, object]) -> tuple[str, ...]:
+    raw_required = output_schema.get("required")
+    if not isinstance(raw_required, list):
+        return ()
+    return tuple(item for item in raw_required if isinstance(item, str))
 
 
 class _BaseStructuredOutputAgent:
@@ -313,45 +380,84 @@ class _BaseStructuredOutputAgent:
         system_prompt: str,
         prompt_context: AgentPromptContext,
         tool_definitions: Mapping[str, _ToolDefinition],
+        output_schema: dict[str, object],
         output_validator: Callable[[dict[str, object]], _ValidatedOutputT],
     ) -> tuple[_ValidatedOutputT, tuple[AgentToolCallRecord, ...]]:
         tool_calls: list[AgentToolCallRecord] = []
         tool_descriptions = _build_tool_descriptions(tool_definitions)
+        response_schema = _tool_loop_response_schema(output_schema)
+        validation_feedback: str | None = None
+        validation_retries = 0
+        required_output_keys = _required_output_keys(output_schema)
 
-        for _ in range(_MAX_TOOL_CALLS + 1):
+        for _ in range(_MAX_TOOL_CALLS + _MAX_VALIDATION_RETRIES + 1):
             user_prompt = prompt_context.render_user_prompt(
                 tool_descriptions=tool_descriptions
             )
             tool_history = self._render_tool_history(tool_calls)
             if tool_history:
                 user_prompt = f"{user_prompt}\n\n{tool_history}"
+            if validation_feedback:
+                user_prompt = (
+                    f"{user_prompt}\n\n"
+                    "Previous response was invalid. Return corrected structured JSON only.\n"
+                    f"{validation_feedback}"
+                )
 
             payload, trace_context = self._execute(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                response_schema=_ToolLoopDecision.model_json_schema(),
+                response_schema=response_schema,
             )
             try:
                 decision = _ToolLoopDecision.model_validate(payload)
             except ValidationError as exc:
-                error_message = (
-                    "invalid final payload"
-                    if payload.get("action") == "final"
-                    else "invalid tool request"
-                )
-                raise self._tool_error(
-                    trace_context,
-                    error_message,
-                ) from exc
+                try:
+                    validated_output = self._validate_without_finish(
+                        payload,
+                        trace_context,
+                        output_validator,
+                    )
+                except ValidationError:
+                    if validation_retries < _MAX_VALIDATION_RETRIES:
+                        validation_retries += 1
+                        validation_feedback = (
+                            "The payload did not satisfy the required schema. "
+                            f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
+                            f"Validation error: {exc}"
+                        )
+                        continue
+                    error_message = (
+                        "invalid final payload"
+                        if payload.get("action") == "final"
+                        else "invalid tool request"
+                    )
+                    raise self._tool_error(
+                        trace_context,
+                        error_message,
+                    ) from exc
+                self._log_trace_finish(trace_context, payload)
+                return validated_output, tuple(tool_calls)
             if decision.action == "final":
                 final_payload = decision.final_payload
                 if final_payload is None:
                     raise self._tool_error(trace_context, "invalid final payload")
-                validated_output = self._validate_without_finish(
-                    final_payload,
-                    trace_context,
-                    output_validator,
-                )
+                try:
+                    validated_output = self._validate_without_finish(
+                        final_payload,
+                        trace_context,
+                        output_validator,
+                    )
+                except ValidationError as exc:
+                    if validation_retries < _MAX_VALIDATION_RETRIES:
+                        validation_retries += 1
+                        validation_feedback = (
+                            "The final payload did not satisfy the required schema. "
+                            f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
+                            f"Validation error: {exc}"
+                        )
+                        continue
+                    raise
                 self._log_trace_finish(trace_context, final_payload)
                 return validated_output, tuple(tool_calls)
 
@@ -445,6 +551,7 @@ class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
+            output_schema=UserProfileAgentOutput.model_json_schema(),
             output_validator=UserProfileAgentOutput.model_validate,
         )
 
@@ -547,6 +654,7 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
+            output_schema=MarketIntelligenceAgentOutput.model_json_schema(),
             output_validator=MarketIntelligenceAgentOutput.model_validate,
         )
 
@@ -651,6 +759,7 @@ class _BaseRankingRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
+            output_schema=ProductRankingAgentOutput.model_json_schema(),
             output_validator=ProductRankingAgentOutput.model_validate,
         )
 
@@ -767,6 +876,7 @@ class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
+            output_schema=ExplanationAgentOutput.model_json_schema(),
             output_validator=ExplanationAgentOutput.model_validate,
         )
 

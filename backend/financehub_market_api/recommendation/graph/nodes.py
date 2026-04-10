@@ -700,7 +700,8 @@ def _blocked_categories_for_strategy(
     user_intelligence: UserIntelligence,
     market_intelligence: MarketIntelligenceState,
 ) -> set[str]:
-    blocked_categories = set(market_intelligence.avoided_categories)
+    del market_intelligence
+    blocked_categories: set[str] = set()
     if user_intelligence.risk_tier in {"R1", "R2"}:
         blocked_categories.add("stock")
     if user_intelligence.drawdown_sensitivity == "high":

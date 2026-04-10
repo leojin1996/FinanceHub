@@ -23,7 +23,7 @@ from financehub_market_api.recommendation.schemas import (
 
 
 class _QueuedProvider:
-    def __init__(self, responses: list[dict[str, object]]) -> None:
+    def __init__(self, responses: list[object]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, object]] = []
 
@@ -47,7 +47,12 @@ class _QueuedProvider:
         )
         if not self._responses:
             raise AssertionError("unexpected provider call")
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if not isinstance(response, dict):
+            raise AssertionError("test provider responses must be dicts or exceptions")
+        return response
 
 
 def _build_runtime(provider: _QueuedProvider) -> AnthropicRecommendationAgentRuntime:
@@ -169,6 +174,39 @@ def test_rank_candidates_runs_tool_loop_and_records_tool_trace() -> None:
     assert "Available tools" in initial_user_prompt
 
 
+def test_rank_candidates_accepts_tool_alias_payload_shape() -> None:
+    provider = _QueuedProvider(
+        [
+            {
+                "tool": "get_ranking_guardrails",
+                "parameters": {},
+            },
+            {
+                "tool": "get_candidate_detail",
+                "parameters": {"candidate_id": "fund-002"},
+            },
+            {
+                "final_payload": {"ranked_ids": ["fund-002", "fund-001"]},
+            },
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    output, metadata = runtime.rank_candidates(
+        "fund_selection",
+        _user_profile(),
+        _profile_focus(),
+        _fund_candidates(),
+    )
+
+    assert output == ProductRankingAgentOutput(ranked_ids=["fund-002", "fund-001"])
+    assert [call.tool_name for call in metadata.tool_calls] == [
+        "get_ranking_guardrails",
+        "get_candidate_detail",
+    ]
+    assert metadata.tool_calls[1].arguments == {"candidate_id": "fund-002"}
+
+
 def test_explain_plan_supports_selected_plan_tool_context() -> None:
     provider = _QueuedProvider(
         [
@@ -240,7 +278,11 @@ def test_runtime_raises_clean_error_for_malformed_tool_request() -> None:
             {
                 "action": "tool_call",
                 "tool_arguments": {},
-            }
+            },
+            {
+                "action": "tool_call",
+                "tool_arguments": {},
+            },
         ]
     )
     runtime = _build_runtime(provider)
@@ -251,6 +293,7 @@ def test_runtime_raises_clean_error_for_malformed_tool_request() -> None:
             _profile_focus(),
             _fallback_market_context(),
         )
+    assert len(provider.calls) == 2
 
 
 def test_runtime_raises_clean_error_for_tool_request_with_unexpected_arguments() -> None:
@@ -278,7 +321,7 @@ def test_runtime_raises_clean_error_for_tool_request_with_unexpected_arguments()
 
 
 def test_runtime_raises_clean_error_for_malformed_final_response() -> None:
-    provider = _QueuedProvider([{"action": "final"}])
+    provider = _QueuedProvider([{"action": "final"}, {"action": "final"}])
     runtime = _build_runtime(provider)
 
     with pytest.raises(RuntimeError, match="invalid final payload"):
@@ -287,11 +330,15 @@ def test_runtime_raises_clean_error_for_malformed_final_response() -> None:
             _profile_focus(),
             _fallback_market_context(),
         )
+    assert len(provider.calls) == 2
 
 
-def test_runtime_surfaces_validation_error_for_invalid_final_payload() -> None:
+def test_runtime_retries_invalid_final_payload_once_before_surfacing_error() -> None:
     provider = _QueuedProvider(
-        [{"action": "final", "final_payload": {"ranked_ids": []}}]
+        [
+            {"action": "final", "final_payload": {"ranked_ids": []}},
+            {"action": "final", "final_payload": {"ranked_ids": []}},
+        ]
     )
     runtime = _build_runtime(provider)
 
@@ -302,6 +349,28 @@ def test_runtime_surfaces_validation_error_for_invalid_final_payload() -> None:
             _profile_focus(),
             _fund_candidates(),
         )
+    assert len(provider.calls) == 2
+
+
+def test_runtime_recovers_after_invalid_direct_ranking_output() -> None:
+    provider = _QueuedProvider(
+        [
+            {"ranked_ids": []},
+            {"ranked_ids": ["fund-001", "fund-002"]},
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    output, metadata = runtime.rank_candidates(
+        "fund_selection",
+        _user_profile(),
+        _profile_focus(),
+        _fund_candidates(),
+    )
+
+    assert output == ProductRankingAgentOutput(ranked_ids=["fund-001", "fund-002"])
+    assert metadata.tool_calls == ()
+    assert len(provider.calls) == 2
 
 
 def test_runtime_raises_clean_error_when_tool_loop_is_exhausted() -> None:
@@ -332,3 +401,25 @@ def test_runtime_raises_clean_error_when_tool_loop_is_exhausted() -> None:
             _profile_focus(),
             _fallback_market_context(),
         )
+
+
+def test_runtime_accepts_direct_output_without_requiring_tool_loop_action() -> None:
+    provider = _QueuedProvider(
+        [
+            {
+                "profile_focus_zh": "平衡风险与收益，追求稳健增长。",
+                "profile_focus_en": "Balance risk and return for steady growth.",
+            },
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    output, metadata = runtime.analyze_user_profile(_user_profile())
+
+    assert output == UserProfileAgentOutput(
+        profile_focus_zh="平衡风险与收益，追求稳健增长。",
+        profile_focus_en="Balance risk and return for steady growth.",
+    )
+    assert metadata.tool_calls == ()
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["response_schema"].get("required") in (None, [])

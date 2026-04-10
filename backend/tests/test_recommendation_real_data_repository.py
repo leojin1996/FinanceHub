@@ -64,6 +64,34 @@ def _build_stock_snapshot(symbols: list[str]) -> StockPriceSnapshot:
     )
 
 
+def _build_stock_snapshot_with_series(
+    series_by_symbol: dict[str, dict[str, object]],
+) -> StockPriceSnapshot:
+    return StockPriceSnapshot(
+        as_of_date="2026-04-09",
+        latest_prices={
+            symbol: float(payload["latest_price"])
+            for symbol, payload in series_by_symbol.items()
+        },
+        previous_prices={
+            symbol: float(payload["previous_price"])
+            for symbol, payload in series_by_symbol.items()
+        },
+        latest_volumes={
+            symbol: float(payload.get("latest_volume", 1_000_000.0))
+            for symbol, payload in series_by_symbol.items()
+        },
+        latest_amounts={
+            symbol: float(payload.get("latest_amount", 100_000_000.0))
+            for symbol, payload in series_by_symbol.items()
+        },
+        recent_closes={
+            symbol: list(payload["recent_closes"])
+            for symbol, payload in series_by_symbol.items()
+        },
+    )
+
+
 def test_bond_fund_adapter_maps_public_rows_into_candidate_products() -> None:
     adapter = BondFundCandidateAdapter(
         fetcher=lambda: FakeFrame(
@@ -269,6 +297,96 @@ def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
     assert len(details) == 5
     assert requested_batch_sizes == [8] * 15
     assert details[0].source == "premium_stock_refresh"
+
+
+def test_premium_stock_detail_adapter_keeps_broader_default_stock_pool() -> None:
+    rows = [
+        {"代码": f"{600000 + index}", "名称": f"股票{index:03d}"}
+        for index in range(90)
+    ]
+    adapter = PremiumStockDetailAdapter(
+        constituent_fetchers=(("CSI300", lambda: FakeFrame(rows)),),
+        price_snapshot_fetcher=_build_stock_snapshot,
+        max_universe_size=90,
+    )
+
+    details = adapter.list_product_details()
+
+    assert len(details) == 60
+
+
+def test_premium_stock_detail_adapter_assigns_stock_risk_levels_from_volatility() -> None:
+    rows = [
+        {"代码": "600001", "名称": "稳健股票"},
+        {"代码": "600002", "名称": "均衡股票"},
+        {"代码": "600003", "名称": "高波股票"},
+    ]
+
+    def fake_price_snapshot_fetcher(symbols: list[str]) -> StockPriceSnapshot:
+        assert symbols == ["SH600001", "SH600002", "SH600003"]
+        return _build_stock_snapshot_with_series(
+            {
+                "SH600001": {
+                    "latest_price": 10.2,
+                    "previous_price": 10.0,
+                    "recent_closes": [
+                        ("2026-04-01", 9.9),
+                        ("2026-04-02", 10.0),
+                        ("2026-04-03", 10.1),
+                        ("2026-04-04", 10.0),
+                        ("2026-04-07", 10.1),
+                        ("2026-04-08", 10.2),
+                        ("2026-04-09", 10.2),
+                    ],
+                    "latest_amount": 500_000_000.0,
+                },
+                "SH600002": {
+                    "latest_price": 10.6,
+                    "previous_price": 10.1,
+                    "recent_closes": [
+                        ("2026-04-01", 9.7),
+                        ("2026-04-02", 10.0),
+                        ("2026-04-03", 10.4),
+                        ("2026-04-04", 10.2),
+                        ("2026-04-07", 10.5),
+                        ("2026-04-08", 10.3),
+                        ("2026-04-09", 10.6),
+                    ],
+                    "latest_amount": 400_000_000.0,
+                },
+                "SH600003": {
+                    "latest_price": 11.8,
+                    "previous_price": 10.7,
+                    "recent_closes": [
+                        ("2026-04-01", 8.6),
+                        ("2026-04-02", 9.2),
+                        ("2026-04-03", 10.4),
+                        ("2026-04-04", 9.8),
+                        ("2026-04-07", 11.2),
+                        ("2026-04-08", 10.9),
+                        ("2026-04-09", 11.8),
+                    ],
+                    "latest_amount": 300_000_000.0,
+                },
+            }
+        )
+
+    adapter = PremiumStockDetailAdapter(
+        constituent_fetchers=(("CSI300", lambda: FakeFrame(rows)),),
+        price_snapshot_fetcher=fake_price_snapshot_fetcher,
+        max_universe_size=3,
+        max_items=3,
+        price_snapshot_batch_size=8,
+    )
+
+    details = adapter.list_product_details()
+    risk_by_code = {detail.code: detail.risk_level for detail in details}
+
+    assert risk_by_code == {
+        "600001": "R3",
+        "600002": "R4",
+        "600003": "R5",
+    }
 
 
 def test_premium_stock_detail_adapter_fetches_batches_concurrently() -> None:

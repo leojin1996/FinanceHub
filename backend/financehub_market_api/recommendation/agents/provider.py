@@ -248,7 +248,60 @@ def _load_agent_model_routes(env_values: Mapping[str, str]) -> dict[str, AgentMo
     return routes
 
 
-def _extract_json_candidates_from_text(content: str) -> list[dict[str, object]]:
+def _array_required_field_candidates_from_text(
+    content: str,
+    *,
+    response_schema: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if response_schema is None:
+        return []
+
+    raw_properties = response_schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        return []
+
+    required_keys = _extract_required_schema_keys(response_schema)
+    if not required_keys:
+        return []
+
+    property_schemas = {
+        key: value for key, value in raw_properties.items() if isinstance(value, dict)
+    }
+    if any(property_schemas.get(key, {}).get("type") != "array" for key in required_keys):
+        return []
+
+    snippets = [content.strip()]
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
+    if fenced_match is not None:
+        snippets.insert(0, fenced_match.group(1).strip())
+
+    candidates: list[dict[str, object]] = []
+    for snippet in snippets:
+        candidate: dict[str, object] = {}
+        for key in required_keys:
+            match = re.search(
+                rf'"{re.escape(key)}"\s*:\s*\[(?P<items>.*?)\]\s*(?=,\s*"|\s*\}})',
+                snippet,
+                re.DOTALL,
+            )
+            if match is None:
+                break
+            items = re.findall(
+                r'"([^"\\]*(?:\\.[^"\\]*)*)"',
+                match.group("items"),
+                re.DOTALL,
+            )
+            candidate[key] = [json.loads(f'"{item}"') for item in items]
+        else:
+            candidates.append(candidate)
+    return _dedupe_dict_candidates(candidates)
+
+
+def _extract_json_candidates_from_text(
+    content: str,
+    *,
+    response_schema: Mapping[str, object] | None = None,
+) -> list[dict[str, object]]:
     normalized_content = content.strip()
     candidates = [normalized_content]
 
@@ -281,6 +334,13 @@ def _extract_json_candidates_from_text(content: str) -> list[dict[str, object]]:
 
     if found:
         return found
+
+    relaxed_candidates = _array_required_field_candidates_from_text(
+        normalized_content,
+        response_schema=response_schema,
+    )
+    if relaxed_candidates:
+        return relaxed_candidates
 
     raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
 
@@ -362,8 +422,16 @@ def _looks_like_structured_json_text(content: str) -> bool:
 def _is_provider_metadata_object(candidate: Mapping[str, object]) -> bool:
     block_type = candidate.get("type")
     if not isinstance(block_type, str):
-        return False
+        return _looks_like_usage_metadata(candidate)
     return "text" in candidate or "input" in candidate or "content" in candidate
+
+
+def _looks_like_usage_metadata(candidate: Mapping[str, object]) -> bool:
+    keys = set(candidate)
+    usage_keys = {"input_tokens", "output_tokens"}
+    if not usage_keys.issubset(keys):
+        return False
+    return all(isinstance(candidate.get(key), int) for key in usage_keys)
 
 
 def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
@@ -373,6 +441,13 @@ def _is_retryable_anthropic_error(exc: httpx.HTTPError) -> bool:
         status_code = exc.response.status_code
         return status_code == 429 or 500 <= status_code < 600
     return False
+
+
+def _has_empty_content_blocks(body: object) -> bool:
+    if not isinstance(body, dict):
+        return False
+    content = body.get("content")
+    return isinstance(content, list) and len(content) == 0
 
 
 class AnthropicChatProvider:
@@ -536,7 +611,14 @@ class AnthropicChatProvider:
                     timeout=timeout_seconds,
                 )
                 response.raise_for_status()
-                return response.json()
+                response_body = response.json()
+                if (
+                    _has_empty_content_blocks(response_body)
+                    and attempt + 1 < ANTHROPIC_MAX_ATTEMPTS
+                ):
+                    time.sleep(ANTHROPIC_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                return response_body
             except httpx.HTTPError as exc:
                 if attempt + 1 >= ANTHROPIC_MAX_ATTEMPTS or not _is_retryable_anthropic_error(exc):
                     raise LLMProviderError(f"Anthropic provider request failed: {exc}") from exc
@@ -570,7 +652,12 @@ class AnthropicChatProvider:
             if not isinstance(text, str):
                 raise LLMInvalidResponseError("provider text block must contain a string")
             try:
-                text_candidates.extend(_extract_json_candidates_from_text(text))
+                text_candidates.extend(
+                    _extract_json_candidates_from_text(
+                        text,
+                        response_schema=response_schema,
+                    )
+                )
             except LLMInvalidResponseError as exc:
                 if _looks_like_structured_json_text(text) and deferred_text_error is None:
                     deferred_text_error = exc
@@ -597,17 +684,8 @@ class AnthropicChatProvider:
                 if not _is_provider_metadata_object(candidate)
             ]
             if non_metadata_candidates:
-                leaf_candidates = [
-                    candidate for candidate in non_metadata_candidates if _is_leaf_dict(candidate)
-                ]
-                if leaf_candidates:
-                    return leaf_candidates[0]
                 return non_metadata_candidates[0]
-
-            leaf_candidates = [candidate for candidate in recursive_candidates if _is_leaf_dict(candidate)]
-            if leaf_candidates:
-                return leaf_candidates[0]
-            return recursive_candidates[0]
+            raise LLMInvalidResponseError("provider response has no extractable structured content")
 
         recursive_schema_matches = _match_schema_candidates(
             recursive_candidates,

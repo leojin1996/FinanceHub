@@ -18,6 +18,11 @@ from financehub_market_api.watchlist import WATCHLIST
 DataRow = Mapping[str, object]
 DataFetcher = Callable[[], object]
 SymbolDataFetcher = Callable[[str], object]
+_PREMIUM_STOCK_POOL_MAX_ITEMS = 60
+_STOCK_R4_WEEKLY_RANGE_THRESHOLD = 8.0
+_STOCK_R5_WEEKLY_RANGE_THRESHOLD = 18.0
+_STOCK_R4_DAILY_CHANGE_THRESHOLD = 4.0
+_STOCK_R5_DAILY_CHANGE_THRESHOLD = 8.0
 
 
 def _iter_data_rows(frame: object) -> Iterable[DataRow]:
@@ -598,7 +603,7 @@ class PremiumStockDetailAdapter:
         *,
         price_snapshot_fetcher: Callable[[list[str]], StockPriceSnapshot] | None = None,
         max_universe_size: int = 150,
-        max_items: int = 12,
+        max_items: int = _PREMIUM_STOCK_POOL_MAX_ITEMS,
         price_snapshot_batch_size: int = 8,
         price_snapshot_max_workers: int = 4,
     ) -> None:
@@ -657,6 +662,10 @@ class PremiumStockDetailAdapter:
             ):
                 continue
 
+            risk_level = _classify_premium_stock_risk_level(
+                change_percent=change_percent,
+                weekly_range_percent=weekly_range_percent,
+            )
             trend_points = [
                 ProductChartPoint(date=trade_date, value=close)
                 for trade_date, close in recent_closes
@@ -675,7 +684,7 @@ class PremiumStockDetailAdapter:
                 fresh_until=datetime.now().astimezone().isoformat(),
                 source="premium_stock_refresh",
                 stale=False,
-                risk_level="R3",
+                risk_level=risk_level,
                 liquidity=None,
                 tags_zh=[tag for tag in tags_zh if tag],
                 tags_en=[tag for tag in tags_en if tag],
@@ -783,3 +792,22 @@ class _PremiumUniverseEntry:
         self.provider_name = provider_name
         self.sector = sector
         self.sector_en = sector_en
+
+
+def _classify_premium_stock_risk_level(
+    *,
+    change_percent: float,
+    weekly_range_percent: float,
+) -> str:
+    absolute_change_percent = abs(change_percent)
+    if (
+        weekly_range_percent >= _STOCK_R5_WEEKLY_RANGE_THRESHOLD
+        or absolute_change_percent >= _STOCK_R5_DAILY_CHANGE_THRESHOLD
+    ):
+        return "R5"
+    if (
+        weekly_range_percent >= _STOCK_R4_WEEKLY_RANGE_THRESHOLD
+        or absolute_change_percent >= _STOCK_R4_DAILY_CHANGE_THRESHOLD
+    ):
+        return "R4"
+    return "R3"

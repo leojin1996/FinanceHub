@@ -152,7 +152,7 @@ def test_anthropic_provider_uses_messages_api_and_parses_text_json() -> None:
     assert http_client.calls[0]["json"]["output_config"]["format"]["type"] == "json_schema"
 
 
-def test_anthropic_provider_retries_without_output_config_when_structured_response_is_empty() -> None:
+def test_anthropic_provider_retries_structured_request_when_response_content_is_empty() -> None:
     http_client = _SequentialFakeHttpClient(
         [
             {"content": []},
@@ -188,7 +188,7 @@ def test_anthropic_provider_retries_without_output_config_when_structured_respon
 
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
     assert "output_config" in http_client.calls[0]["json"]
-    assert "output_config" not in http_client.calls[1]["json"]
+    assert "output_config" in http_client.calls[1]["json"]
 
 
 def test_anthropic_provider_captures_raw_response_when_enabled(
@@ -344,6 +344,7 @@ def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
     http_client = _SequentialFakeHttpClient(
         [
             {"content": []},
+            {"content": []},
             {
                 "content": [
                     {
@@ -401,6 +402,8 @@ def test_anthropic_provider_logs_fallback_invalid(
         [
             {"content": []},
             {"content": []},
+            {"content": []},
+            {"content": []},
         ]
     )
     provider = AnthropicChatProvider(
@@ -451,6 +454,7 @@ def test_provider_trace_logs_reach_root_handler_when_root_logger_is_warning(
 ) -> None:
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
             {"content": []},
             {
                 "content": [
@@ -508,6 +512,7 @@ def test_provider_trace_logs_reach_uvicorn_logger_when_root_has_no_handlers(
 ) -> None:
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
             {"content": []},
             {
                 "content": [
@@ -712,6 +717,50 @@ def test_anthropic_provider_ignores_non_json_braces_before_object() -> None:
     }
 
 
+def test_anthropic_provider_extracts_ranked_ids_from_json_like_text_with_invalid_string_quotes() -> (
+    None
+):
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "```json\n"
+                        "{\n"
+                        '  "ranked_ids": ["fund-001", "fund-002"],\n'
+                        '  "reasoning_zh": "适配用户的"稳健增值"诉求。",\n'
+                        '  "reasoning_en": "Aligned with balanced-growth goals."\n'
+                        "}\n"
+                        "```"
+                    ),
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return ranked_ids."},
+            {"role": "user", "content": "Provide the ranking result."},
+        ],
+        response_schema={
+            "type": "object",
+            "required": ["ranked_ids"],
+            "properties": {
+                "ranked_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                }
+            },
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {"ranked_ids": ["fund-001", "fund-002"]}
+
+
 def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() -> None:
     provider, _ = _build_anthropic_provider(
         {
@@ -749,6 +798,113 @@ def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() 
         "summary_zh": "从工具输入提取",
         "summary_en": "Extracted from tool input",
     }
+
+
+def test_anthropic_provider_ignores_usage_metadata_when_schema_is_permissive() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "profile_focus_zh": "平衡风险与收益，追求稳健增长",
+                        "profile_focus_en": "Balance risk and return for steady growth",
+                    },
+                }
+            ],
+            "usage": {
+                "input_tokens": 976,
+                "output_tokens": 148,
+            },
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return profile_focus_zh and profile_focus_en."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "profile_focus_zh": "平衡风险与收益，追求稳健增长",
+        "profile_focus_en": "Balance risk and return for steady growth",
+    }
+
+
+def test_anthropic_provider_prefers_top_level_non_metadata_object_when_schema_is_permissive() -> (
+    None
+):
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "emit_result",
+                    "input": {
+                        "ranked_ids": ["fund-001", "fund-002"],
+                        "guardrail_compliance": {
+                            "risk_mismatch": False,
+                            "category_mismatch": False,
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return the ranking result."},
+            {"role": "user", "content": "Provide the result."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "ranked_ids": ["fund-001", "fund-002"],
+        "guardrail_compliance": {
+            "risk_mismatch": False,
+            "category_mismatch": False,
+        },
+    }
+
+
+def test_anthropic_provider_rejects_usage_metadata_without_structured_payload() -> None:
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "I need more context before I can finalize.",
+                }
+            ],
+            "usage": {
+                "input_tokens": 976,
+                "output_tokens": 101,
+            },
+        }
+    )
+
+    with pytest.raises(
+        LLMInvalidResponseError,
+        match="provider response has no extractable structured content",
+    ):
+        provider.chat_json(
+            model_name="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Return profile_focus_zh and profile_focus_en."},
+                {"role": "user", "content": "Provide the result."},
+            ],
+            response_schema={"type": "object"},
+            timeout_seconds=5.0,
+        )
 
 
 def test_anthropic_provider_rejects_nested_object_not_matching_schema() -> None:
