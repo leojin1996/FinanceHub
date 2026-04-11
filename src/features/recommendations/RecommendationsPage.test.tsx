@@ -12,6 +12,7 @@ const dimensionAwareAnswerPattern = [
   3, 3, 3, 3,
   2, 2, 2, 2,
 ];
+const conservativeAnswerPattern = new Array(questionnaire.length).fill(0);
 
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve(
@@ -43,11 +44,18 @@ function createStorageMock(): Storage {
   };
 }
 
-async function completeQuestionnaire(user: ReturnType<typeof userEvent.setup>) {
-  for (const optionIndex of dimensionAwareAnswerPattern) {
+async function completeQuestionnaireWithPattern(
+  user: ReturnType<typeof userEvent.setup>,
+  answerPattern: number[],
+) {
+  for (const optionIndex of answerPattern) {
     await user.click(screen.getAllByRole("radio")[optionIndex]);
     await user.click(screen.getByRole("button", { name: /下一题|提交|Next|Submit/ }));
   }
+}
+
+async function completeQuestionnaire(user: ReturnType<typeof userEvent.setup>) {
+  await completeQuestionnaireWithPattern(user, dimensionAwareAnswerPattern);
 }
 
 describe("RecommendationsPage", () => {
@@ -603,6 +611,37 @@ describe("RecommendationsPage", () => {
     expect(screen.getByText("年化回报")).toBeInTheDocument();
   });
 
+  it("reuses the cached recommendation after returning from product detail", async () => {
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 });
+
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(1);
+
+    await user.click(screen.getAllByRole("link", { name: "查看详情" })[0]);
+    expect(await screen.findByRole("heading", { level: 1, name: "中欧稳利债券A" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "返回推荐页" }));
+    expect(await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 })).toBeInTheDocument();
+
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("revalidates stale product detail once after the initial cached response", async () => {
     let detailCallCount = 0;
     const fetchMock = vi.mocked(fetch);
@@ -724,6 +763,79 @@ describe("RecommendationsPage", () => {
         ),
       ).toHaveLength(2);
     });
+  });
+
+  it("invalidates the recommendation cache when locale changes", async () => {
+    window.history.pushState({}, "", "/risk-assessment");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 });
+
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(1);
+
+    await user.selectOptions(screen.getAllByRole("combobox")[0], "en-US");
+    await screen.findByRole("heading", { name: "A Balanced plan that fits you", level: 2 });
+
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/api/recommendations/generate") &&
+        JSON.parse(String(init?.body ?? "{}")).clientContext?.locale === "en-US",
+      ),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("invalidates the recommendation cache when the assessment result changes", async () => {
+    window.history.pushState({}, "", "/risk-assessment");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 });
+
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(1);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaireWithPattern(user, conservativeAnswerPattern);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+    await screen.findByRole("heading", { name: "适合您的平衡型配置建议", level: 2 });
+
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) => {
+        if (!String(input).endsWith("/api/recommendations/generate")) {
+          return false;
+        }
+        const payload = JSON.parse(String(init?.body ?? "{}")) as {
+          riskAssessmentResult?: { finalProfile?: string };
+        };
+        return payload.riskAssessmentResult?.finalProfile === "conservative";
+      }),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/recommendations/generate"),
+      ),
+    ).toHaveLength(2);
   });
 
   it("posts the full risk assessment payload to the generate endpoint", async () => {

@@ -111,17 +111,16 @@ def test_graph_runtime_executes_funnel_nodes_in_order() -> None:
     ]
 
 
-def test_graph_runtime_marks_high_risk_candidate_result_as_limited_for_conservative_users() -> None:
+def test_graph_runtime_prefilters_high_risk_candidate_for_conservative_users() -> None:
     service = RecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_high_risk_candidate()
     )
 
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
-    assert response.recommendationStatus == "limited"
-    assert response.reviewStatus == "partial_pass"
-    assert response.complianceReview is not None
-    assert response.complianceReview.verdict == "revise_conservative"
+    assert response.recommendationStatus == "ready"
+    assert response.reviewStatus == "pass"
+    assert response.complianceReview is None
     assert response.sections.stocks.items == []
 
 
@@ -220,6 +219,34 @@ class _SingleVectorStore:
     def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
         del query_text
         return [{"id": "fund-001", "score": 0.99}][:limit]
+
+
+class _StockFirstVectorStore:
+    def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+        del query_text
+        return [
+            {"id": "stock-001", "score": 0.99},
+            {"id": "wm-001", "score": 0.95},
+            {"id": "fund-001", "score": 0.9},
+        ][:limit]
+
+
+class _IlliquidFirstVectorStore:
+    def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+        del query_text
+        return [
+            {"id": "fund-locked-001", "score": 0.99},
+            {"id": "fund-liquid-001", "score": 0.95},
+        ][:limit]
+
+
+class _HighRiskFirstVectorStore:
+    def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+        del query_text
+        return [
+            {"id": "fund-aggressive-001", "score": 0.99},
+            {"id": "fund-balanced-001", "score": 0.95},
+        ][:limit]
 
 
 class _FakeFrame:
@@ -689,6 +716,65 @@ class _RecordingAgentRuntime(_CurrentAgentRuntime):
         )
 
 
+class _CandidatePassthroughRuntime(_CurrentAgentRuntime):
+    def __init__(self) -> None:
+        self.match_candidate_ids: list[str] = []
+
+    def match_products(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ProductMatchAgentOutput, AgentInvocationMetadata]:
+        del (
+            user_profile,
+            user_profile_insights,
+            market_intelligence,
+            prompt_context,
+        )
+        self.match_candidate_ids = [candidate.id for candidate in candidates]
+        selected_product_ids = [candidate.id for candidate in candidates]
+        recommended_categories = list(
+            dict.fromkeys(candidate.category for candidate in candidates)
+        )
+        return (
+            ProductMatchAgentOutput(
+                recommended_categories=recommended_categories,
+                selected_product_ids=selected_product_ids,
+                ranking_rationale_zh="测试运行时直接返回检索层传入的候选。",
+                ranking_rationale_en="The test runtime returns the candidates passed from retrieval.",
+                filtered_out_reasons=[],
+            ),
+            self._metadata("product_match_expert"),
+        )
+
+
+class _HighLiquidityPassthroughRuntime(_CandidatePassthroughRuntime):
+    def analyze_user_profile(
+        self,
+        user_profile: UserProfile,
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[UserProfileAgentOutput, AgentInvocationMetadata]:
+        del prompt_context
+        return (
+            UserProfileAgentOutput(
+                risk_tier=_risk_tier_for_profile(user_profile.risk_profile),
+                liquidity_preference="high",
+                investment_horizon="medium",
+                return_objective="capital_preservation",
+                drawdown_sensitivity="high",
+                profile_focus_zh="AI画像强调高流动性和回撤控制。",
+                profile_focus_en="AI profile focus prioritizes high liquidity and drawdown control.",
+                derived_signals=["intent:高流动性"],
+            ),
+            self._metadata("user_profile_analyst"),
+        )
+
+
 class _FailingMarketDataService:
     def get_market_overview(self):
         raise RuntimeError("market data unavailable")
@@ -742,6 +828,179 @@ def test_graph_runtime_omits_stock_candidates_for_balanced_users_in_defensive_ma
     assert response.sections.stocks.items == []
     assert response.marketIntelligence is not None
     assert response.marketIntelligence.stance == "defensive"
+
+
+def test_graph_runtime_filters_market_avoided_categories_before_product_match() -> None:
+    runtime_double = _CandidatePassthroughRuntime()
+    candidates = [
+        CandidateProduct(
+            id="fund-001",
+            category="fund",
+            name_zh="测试基金",
+            name_en="Test Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试基金候选。",
+            rationale_en="Test fund candidate.",
+            liquidity="T+1",
+        ),
+        CandidateProduct(
+            id="wm-001",
+            category="wealth_management",
+            name_zh="测试理财",
+            name_en="Test Wealth",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试理财候选。",
+            rationale_en="Test wealth candidate.",
+            liquidity="T+0",
+        ),
+        CandidateProduct(
+            id="stock-001",
+            category="stock",
+            name_zh="测试股票",
+            name_en="Test Stock",
+            risk_level="R3",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试股票候选。",
+            rationale_en="Test stock candidate.",
+            code="600036",
+        ),
+    ]
+    graph_runtime = RecommendationGraphRuntime(
+        GraphServices(
+            market_intelligence=MarketIntelligenceService(
+                market_data_service=_NegativeMarketDataSource()
+            ),
+            memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
+            product_retrieval=ProductRetrievalService(
+                vector_store=_StockFirstVectorStore()
+            ),
+            compliance_facts_service=ComplianceFactsService(),
+            product_candidates=candidates,
+            agent_runtime=runtime_double,
+        )
+    )
+
+    response = RecommendationService(graph_runtime=graph_runtime).generate_recommendation(
+        _build_generation_request("balanced")
+    )
+
+    assert response.marketIntelligence is not None
+    assert response.marketIntelligence.stance == "defensive"
+    assert runtime_double.match_candidate_ids == ["wm-001", "fund-001"]
+    assert response.sections.stocks.items == []
+
+
+def test_graph_runtime_filters_low_liquidity_candidates_before_product_match() -> None:
+    runtime_double = _HighLiquidityPassthroughRuntime()
+    candidates = [
+        CandidateProduct(
+            id="fund-liquid-001",
+            category="fund",
+            name_zh="高流动性基金",
+            name_en="Liquid Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="高流动性基金候选。",
+            rationale_en="High-liquidity fund candidate.",
+            liquidity="T+1",
+        ),
+        CandidateProduct(
+            id="fund-locked-001",
+            category="fund",
+            name_zh="封闭期基金",
+            name_en="Locked Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="封闭期基金候选。",
+            rationale_en="Locked fund candidate.",
+            liquidity="180天",
+        ),
+    ]
+    graph_runtime = RecommendationGraphRuntime(
+        GraphServices(
+            market_intelligence=MarketIntelligenceService(
+                market_data_service=_NegativeMarketDataSource()
+            ),
+            memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
+            product_retrieval=ProductRetrievalService(
+                vector_store=_IlliquidFirstVectorStore()
+            ),
+            compliance_facts_service=ComplianceFactsService(),
+            product_candidates=candidates,
+            agent_runtime=runtime_double,
+        )
+    )
+
+    response = RecommendationService(graph_runtime=graph_runtime).generate_recommendation(
+        _build_generation_request("balanced")
+    )
+
+    assert response.recommendationStatus == "ready"
+    assert runtime_double.match_candidate_ids == ["fund-liquid-001"]
+    assert [item.id for item in response.sections.funds.items] == ["fund-liquid-001"]
+    assert response.sections.wealthManagement.items == []
+    assert response.sections.stocks.items == []
+
+
+def test_graph_runtime_filters_high_risk_candidates_before_product_match() -> None:
+    runtime_double = _CandidatePassthroughRuntime()
+    candidates = [
+        CandidateProduct(
+            id="fund-balanced-001",
+            category="fund",
+            name_zh="平衡型基金",
+            name_en="Balanced Fund",
+            risk_level="R3",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="匹配平衡型用户。",
+            rationale_en="Suitable for balanced users.",
+            liquidity="T+1",
+        ),
+        CandidateProduct(
+            id="fund-aggressive-001",
+            category="fund",
+            name_zh="激进型基金",
+            name_en="Aggressive Fund",
+            risk_level="R5",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="风险更高的基金候选。",
+            rationale_en="A higher-risk fund candidate.",
+            liquidity="T+1",
+        ),
+    ]
+    graph_runtime = RecommendationGraphRuntime(
+        GraphServices(
+            market_intelligence=MarketIntelligenceService(
+                market_data_service=_NegativeMarketDataSource()
+            ),
+            memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
+            product_retrieval=ProductRetrievalService(
+                vector_store=_HighRiskFirstVectorStore()
+            ),
+            compliance_facts_service=ComplianceFactsService(),
+            product_candidates=candidates,
+            agent_runtime=runtime_double,
+        )
+    )
+
+    response = RecommendationService(graph_runtime=graph_runtime).generate_recommendation(
+        _build_generation_request("balanced")
+    )
+
+    assert response.recommendationStatus == "ready"
+    assert runtime_double.match_candidate_ids == ["fund-balanced-001"]
+    assert [item.id for item in response.sections.funds.items] == ["fund-balanced-001"]
+    assert response.sections.wealthManagement.items == []
+    assert response.sections.stocks.items == []
 
 
 def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> None:
@@ -964,6 +1223,9 @@ def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:
     assert "我想要稳健投资，同时保留一部分流动性备用金" in user_profile_prompt
     assert "最近市场波动有点大" in user_profile_prompt
     assert "000001" in user_profile_prompt
+    assert "Client context" in user_profile_prompt
+    assert "zh-CN" in user_profile_prompt
+    assert "web" in user_profile_prompt
 
     assert runtime_double.market_prompt_context is not None
     market_prompt = runtime_double.market_prompt_context.render_user_prompt()
@@ -977,6 +1239,10 @@ def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:
     assert runtime_double.compliance_prompt_context is not None
     compliance_prompt = runtime_double.compliance_prompt_context.render_user_prompt()
     assert "test-rule" not in compliance_prompt
+    assert "Market intelligence" in compliance_prompt
+    assert "AI市场解读" in compliance_prompt
+    assert "Product match" in compliance_prompt
+    assert "AI认为当前候选更匹配当前用户画像与市场环境" in compliance_prompt
     assert "Compliance facts" in compliance_prompt
 
     assert runtime_double.manager_prompt_context is not None

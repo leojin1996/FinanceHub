@@ -36,6 +36,71 @@ def _normalize_text_list(
     return normalized_items
 
 
+def _normalize_signal_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        if any(
+            key in value
+            for key in ("signal", "source", "rationale", "reason", "evidence", "description")
+        ):
+            return [_stringify_signal_entry(value)]
+        return [
+            _stringify_signal_entry(item, fallback_key=str(key))
+            for key, item in value.items()
+        ]
+    if not isinstance(value, list):
+        return None
+
+    return [_stringify_signal_entry(item) for item in value]
+
+
+def _stringify_signal_entry(
+    item: object,
+    *,
+    fallback_key: str | None = None,
+) -> str:
+    if isinstance(item, str):
+        if fallback_key is None:
+            return item
+        return f"{fallback_key}: {item}"
+
+    if isinstance(item, dict):
+        signal = item.get("signal")
+        source = item.get("source")
+        rationale = (
+            item.get("rationale")
+            or item.get("reason")
+            or item.get("evidence")
+            or item.get("description")
+        )
+        if isinstance(signal, str) and isinstance(rationale, str):
+            return f"{signal}: {rationale}"
+        if isinstance(source, str) and isinstance(rationale, str):
+            return f"{source}: {rationale}"
+        if isinstance(signal, str):
+            return signal
+        if isinstance(source, str):
+            return source
+
+        scalar_parts = [
+            f"{key}={value}"
+            for key, value in item.items()
+            if isinstance(value, (str, int, float, bool)) and str(value).strip()
+        ]
+        if scalar_parts:
+            joined = ", ".join(scalar_parts)
+            if fallback_key is None:
+                return joined
+            return f"{fallback_key}: {joined}"
+
+    if fallback_key is None:
+        return str(item)
+    return f"{fallback_key}: {item}"
+
+
 class UserProfileAgentOutput(BaseModel):
     risk_tier: str = Field(min_length=1)
     liquidity_preference: str = Field(min_length=1)
@@ -70,31 +135,9 @@ class UserProfileAgentOutput(BaseModel):
             alias_key = raw_risk_tier.strip().lower()
             normalized["risk_tier"] = risk_tier_aliases.get(alias_key, raw_risk_tier)
 
-        raw_signals = normalized.get("derived_signals")
-        if not isinstance(raw_signals, list):
-            return normalized
-
-        derived_signals: list[str] = []
-        for item in raw_signals:
-            if isinstance(item, str):
-                derived_signals.append(item)
-                continue
-            if isinstance(item, dict):
-                signal = item.get("signal")
-                rationale = item.get("rationale") or item.get("reason")
-                if isinstance(signal, str) and isinstance(rationale, str):
-                    derived_signals.append(f"{signal}: {rationale}")
-                    continue
-                if isinstance(signal, str):
-                    derived_signals.append(signal)
-                    continue
-                source = item.get("source")
-                if isinstance(source, str) and isinstance(rationale, str):
-                    derived_signals.append(f"{source}: {rationale}")
-                    continue
-            derived_signals.append(str(item))
-
-        normalized["derived_signals"] = derived_signals
+        derived_signals = _normalize_signal_list(normalized.get("derived_signals"))
+        if derived_signals is not None:
+            normalized["derived_signals"] = derived_signals
         return normalized
 
 
@@ -170,6 +213,14 @@ class ProductMatchAgentOutput(BaseModel):
             return value
 
         normalized = dict(value)
+        alias_selected_product_ids = normalized.get("selected_candidate_ids")
+        if "selected_product_ids" not in normalized and isinstance(
+            alias_selected_product_ids, list
+        ):
+            normalized["selected_product_ids"] = [
+                str(item) for item in alias_selected_product_ids
+            ]
+
         selected_groups = normalized.get("selected_ids")
         if not isinstance(selected_groups, dict):
             alias_selected_groups = normalized.get("selected_products")
@@ -227,6 +278,14 @@ class ProductMatchAgentOutput(BaseModel):
             normalized.get("rationale_en"), str
         ):
             normalized["ranking_rationale_en"] = normalized["rationale_en"]
+        if "ranking_rationale_zh" not in normalized and isinstance(
+            normalized.get("selection_rationale_zh"), str
+        ):
+            normalized["ranking_rationale_zh"] = normalized["selection_rationale_zh"]
+        if "ranking_rationale_en" not in normalized and isinstance(
+            normalized.get("selection_rationale_en"), str
+        ):
+            normalized["ranking_rationale_en"] = normalized["selection_rationale_en"]
 
         filtered_out = normalized.get("filtered_out")
         filtered_out_reasons = normalized.get("filtered_out_reasons")
@@ -293,6 +352,15 @@ class ComplianceReviewAgentOutput(BaseModel):
         for source_key, target_key in alias_pairs.items():
             if target_key not in normalized and source_key in normalized:
                 normalized[target_key] = normalized[source_key]
+        if "approved_ids" not in normalized and isinstance(
+            normalized.get("approved_product_ids"), list
+        ):
+            normalized["approved_ids"] = list(normalized["approved_product_ids"])
+        if "rejected_ids" not in normalized:
+            for alias_key in ("rejected_product_ids", "blocked_product_ids", "blocked_candidate_ids"):
+                if isinstance(normalized.get(alias_key), list):
+                    normalized["rejected_ids"] = list(normalized[alias_key])
+                    break
 
         disclosures = normalized.get("disclosures")
         disclosure_list = _normalize_text_list(
@@ -316,6 +384,18 @@ class ComplianceReviewAgentOutput(BaseModel):
         )
         if normalized_required_disclosures_en is not None:
             normalized["required_disclosures_en"] = normalized_required_disclosures_en
+        alias_required_disclosures_zh = _normalize_text_list(
+            normalized.get("disclosures_zh"),
+            preferred_keys=("disclosure_zh", "disclosure", "message_zh", "message"),
+        )
+        if "required_disclosures_zh" not in normalized and alias_required_disclosures_zh is not None:
+            normalized["required_disclosures_zh"] = alias_required_disclosures_zh
+        alias_required_disclosures_en = _normalize_text_list(
+            normalized.get("disclosures_en"),
+            preferred_keys=("disclosure_en", "disclosure", "message_en", "message"),
+        )
+        if "required_disclosures_en" not in normalized and alias_required_disclosures_en is not None:
+            normalized["required_disclosures_en"] = alias_required_disclosures_en
 
         suitability_notes = normalized.get("suitability_notes")
         note_list = _normalize_text_list(
@@ -339,6 +419,20 @@ class ComplianceReviewAgentOutput(BaseModel):
         )
         if normalized_suitability_notes_en is not None:
             normalized["suitability_notes_en"] = normalized_suitability_notes_en
+        if "reason_summary_zh" not in normalized:
+            fallback_reason_zh = (
+                (normalized.get("required_disclosures_zh") or [None])[0]
+                or (normalized.get("suitability_notes_zh") or [None])[0]
+            )
+            if isinstance(fallback_reason_zh, str) and fallback_reason_zh.strip():
+                normalized["reason_summary_zh"] = fallback_reason_zh
+        if "reason_summary_en" not in normalized:
+            fallback_reason_en = (
+                (normalized.get("required_disclosures_en") or [None])[0]
+                or (normalized.get("suitability_notes_en") or [None])[0]
+            )
+            if isinstance(fallback_reason_en, str) and fallback_reason_en.strip():
+                normalized["reason_summary_en"] = fallback_reason_en
 
         return normalized
 
@@ -354,3 +448,45 @@ class ManagerCoordinatorAgentOutput(BaseModel):
     summary_en: str = Field(min_length=1)
     why_this_plan_zh: list[str] = Field(min_length=1)
     why_this_plan_en: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_aliases(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        if "summary_zh" not in normalized and isinstance(
+            normalized.get("recommendation_summary_zh"), str
+        ):
+            normalized["summary_zh"] = normalized["recommendation_summary_zh"]
+        if "summary_en" not in normalized and isinstance(
+            normalized.get("recommendation_summary_en"), str
+        ):
+            normalized["summary_en"] = normalized["recommendation_summary_en"]
+
+        why_this_plan_zh = _normalize_text_list(
+            normalized.get("why_this_plan_zh"),
+            preferred_keys=("bullet", "reason", "text", "content", "description"),
+        )
+        if why_this_plan_zh is None:
+            why_this_plan_zh = _normalize_text_list(
+                normalized.get("why_this_plan_bullets_zh"),
+                preferred_keys=("bullet", "reason", "text", "content", "description"),
+            )
+        if why_this_plan_zh is not None:
+            normalized["why_this_plan_zh"] = why_this_plan_zh
+
+        why_this_plan_en = _normalize_text_list(
+            normalized.get("why_this_plan_en"),
+            preferred_keys=("bullet", "reason", "text", "content", "description"),
+        )
+        if why_this_plan_en is None:
+            why_this_plan_en = _normalize_text_list(
+                normalized.get("why_this_plan_bullets_en"),
+                preferred_keys=("bullet", "reason", "text", "content", "description"),
+            )
+        if why_this_plan_en is not None:
+            normalized["why_this_plan_en"] = why_this_plan_en
+
+        return normalized

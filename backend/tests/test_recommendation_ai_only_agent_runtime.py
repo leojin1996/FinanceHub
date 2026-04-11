@@ -273,6 +273,53 @@ def test_match_products_accepts_return_decision_with_top_level_selected_product_
     assert output.ranking_rationale_en == "Return decision fields at the top level."
 
 
+def test_match_products_accepts_selected_candidate_ids_and_selection_rationale_aliases() -> None:
+    provider = _QueuedProvider(
+        [
+            {
+                "action": "return_decision",
+                "selected_candidate_ids": ["fund-001", "wm-001"],
+                "primary_recommendation_id": "wm-001",
+                "selection_rationale_zh": "候选兼顾稳健底仓与流动性。",
+                "selection_rationale_en": "The picks balance resilience and liquidity.",
+                "filtered_out_reasons": [],
+            }
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    output, _ = runtime.match_products(
+        _user_profile(),
+        user_profile_insights=UserProfileAgentOutput(
+            risk_tier="R2",
+            liquidity_preference="high",
+            investment_horizon="one_year",
+            return_objective="capital_preservation",
+            drawdown_sensitivity="high",
+            profile_focus_zh="强调保本和流动性。",
+            profile_focus_en="Prioritize principal protection and liquidity.",
+            derived_signals=["intent:保本", "conversation:高流动性"],
+        ),
+        market_intelligence=MarketIntelligenceAgentOutput(
+            sentiment="negative",
+            stance="defensive",
+            preferred_categories=["wealth_management", "fund"],
+            avoided_categories=["stock"],
+            summary_zh="防守优先。",
+            summary_en="Favor defense.",
+            evidence_refs=["market_overview", "macro_and_rates"],
+        ),
+        candidates=[
+            _candidate("fund-001", category="fund", risk_level="R2"),
+            _candidate("wm-001", category="wealth_management", risk_level="R1"),
+        ],
+    )
+
+    assert output.selected_product_ids == ["wm-001", "fund-001"]
+    assert output.ranking_rationale_zh == "候选兼顾稳健底仓与流动性。"
+    assert output.ranking_rationale_en == "The picks balance resilience and liquidity."
+
+
 def test_product_match_output_normalizes_selected_ids_by_category() -> None:
     output = ProductMatchAgentOutput.model_validate(
         {
@@ -374,6 +421,31 @@ def test_user_profile_output_normalizes_object_derived_signals() -> None:
     assert output.derived_signals == [
         "capital_preservation: 用户明确表示不想亏本",
         "conversation: 用户强调流动性",
+    ]
+
+
+def test_user_profile_output_normalizes_mapping_derived_signals() -> None:
+    output = UserProfileAgentOutput.model_validate(
+        {
+            "risk_tier": "R3",
+            "liquidity_preference": "medium",
+            "investment_horizon": "medium",
+            "return_objective": "balanced_growth",
+            "drawdown_sensitivity": "medium",
+            "profile_focus_zh": "兼顾收益和波动承受能力。",
+            "profile_focus_en": "Balance upside with drawdown tolerance.",
+            "derived_signals": {
+                "risk_tolerance_level": "medium_high",
+                "capital_stability": "12/20",
+                "returnObjective": "16/20",
+            },
+        }
+    )
+
+    assert output.derived_signals == [
+        "risk_tolerance_level: medium_high",
+        "capital_stability: 12/20",
+        "returnObjective: 16/20",
     ]
 
 
@@ -588,6 +660,39 @@ def test_compliance_output_normalizes_structured_disclosure_objects() -> None:
     ]
 
 
+def test_compliance_output_normalizes_product_id_and_disclosure_aliases() -> None:
+    output = ComplianceReviewAgentOutput.model_validate(
+        {
+            "verdict": "revise_conservative",
+            "approved_product_ids": ["fund-005", "stock-000100"],
+            "blocked_product_ids": ["stock-600030"],
+            "blocking_reason_codes": ["RISK_LEVEL_EXCEEDS_PROFILE"],
+            "applied_rule_ids": [],
+            "disclosures_zh": [
+                "用户风险等级为R3（平衡型），中信证券（stock-600030）风险等级为R4，超出用户风险承受能力，已从推荐中移除。",
+                "其余候选符合当前配置需求。",
+            ],
+            "disclosures_en": [
+                "User risk tier is R3 (Balanced). CITIC Securities (stock-600030) exceeds user risk tolerance and has been removed.",
+                "The remaining candidates fit the current allocation need.",
+            ],
+        }
+    )
+
+    assert output.approved_ids == ["fund-005", "stock-000100"]
+    assert output.rejected_ids == ["stock-600030"]
+    assert output.reason_summary_zh == "用户风险等级为R3（平衡型），中信证券（stock-600030）风险等级为R4，超出用户风险承受能力，已从推荐中移除。"
+    assert output.reason_summary_en == "User risk tier is R3 (Balanced). CITIC Securities (stock-600030) exceeds user risk tolerance and has been removed."
+    assert output.required_disclosures_zh == [
+        "用户风险等级为R3（平衡型），中信证券（stock-600030）风险等级为R4，超出用户风险承受能力，已从推荐中移除。",
+        "其余候选符合当前配置需求。",
+    ]
+    assert output.required_disclosures_en == [
+        "User risk tier is R3 (Balanced). CITIC Securities (stock-600030) exceeds user risk tolerance and has been removed.",
+        "The remaining candidates fit the current allocation need.",
+    ]
+
+
 def test_coordinate_manager_returns_summary_and_rationale_lists() -> None:
     provider = _QueuedProvider(
         [
@@ -656,6 +761,95 @@ def test_coordinate_manager_returns_summary_and_rationale_lists() -> None:
         summary_en="Favor high-liquidity resilient assets.",
         why_this_plan_zh=["匹配 R2 稳健需求。"],
         why_this_plan_en=["Matches R2 resilience needs."],
+    )
+
+
+def test_coordinate_manager_normalizes_summary_and_why_plan_aliases() -> None:
+    provider = _QueuedProvider(
+        [
+            {
+                "action": "final",
+                "final_payload": {
+                    "recommendation_status": "approved_with_revisions",
+                    "recommendation_summary_zh": "建议保持稳健底仓，并保留充足流动性。",
+                    "recommendation_summary_en": "Keep a resilient core allocation with ample liquidity.",
+                    "why_this_plan_bullets_zh": [
+                        "保留高流动性资产以覆盖短期资金需求。"
+                    ],
+                    "why_this_plan_bullets_en": [
+                        "Retain high-liquidity assets for near-term cash needs."
+                    ],
+                },
+            },
+            {
+                "action": "final",
+                "final_payload": {
+                    "recommendation_status": "approved_with_revisions",
+                    "recommendation_summary_zh": "建议保持稳健底仓，并保留充足流动性。",
+                    "recommendation_summary_en": "Keep a resilient core allocation with ample liquidity.",
+                    "why_this_plan_bullets_zh": [
+                        "保留高流动性资产以覆盖短期资金需求。"
+                    ],
+                    "why_this_plan_bullets_en": [
+                        "Retain high-liquidity assets for near-term cash needs."
+                    ],
+                },
+            },
+        ]
+    )
+    runtime = _build_runtime(provider)
+
+    output, _ = runtime.coordinate_manager(
+        _user_profile(),
+        user_profile_insights=UserProfileAgentOutput(
+            risk_tier="R2",
+            liquidity_preference="high",
+            investment_horizon="one_year",
+            return_objective="capital_preservation",
+            drawdown_sensitivity="high",
+            profile_focus_zh="强调保本和流动性。",
+            profile_focus_en="Prioritize principal protection and liquidity.",
+            derived_signals=["intent:保本"],
+        ),
+        market_intelligence=MarketIntelligenceAgentOutput(
+            sentiment="negative",
+            stance="defensive",
+            preferred_categories=["wealth_management", "fund"],
+            avoided_categories=["stock"],
+            summary_zh="防守优先。",
+            summary_en="Favor defense.",
+            evidence_refs=["market_overview"],
+        ),
+        product_match=ProductMatchAgentOutput(
+            recommended_categories=["wealth_management", "fund"],
+            fund_ids=["fund-001"],
+            wealth_management_ids=["wm-001"],
+            stock_ids=[],
+            ranking_rationale_zh="优先稳健候选。",
+            ranking_rationale_en="Prefer resilient candidates.",
+            filtered_out_reasons=[],
+        ),
+        compliance_review=ComplianceReviewAgentOutput(
+            verdict="revise_conservative",
+            approved_ids=["fund-001", "wm-001"],
+            rejected_ids=[],
+            reason_summary_zh="建议保守修订。",
+            reason_summary_en="Revise conservatively.",
+            required_disclosures_zh=["理财非存款，投资需谨慎。"],
+            required_disclosures_en=["Investing involves risk. Proceed prudently."],
+            suitability_notes_zh=["建议以高流动性稳健配置为主。"],
+            suitability_notes_en=["Favor liquid and resilient allocations."],
+            applied_rule_ids=["cn-suitability-r2"],
+            blocking_reason_codes=[],
+        ),
+    )
+
+    assert output == ManagerCoordinatorAgentOutput(
+        recommendation_status="approved_with_revisions",
+        summary_zh="建议保持稳健底仓，并保留充足流动性。",
+        summary_en="Keep a resilient core allocation with ample liquidity.",
+        why_this_plan_zh=["保留高流动性资产以覆盖短期资金需求。"],
+        why_this_plan_en=["Retain high-liquidity assets for near-term cash needs."],
     )
 
 

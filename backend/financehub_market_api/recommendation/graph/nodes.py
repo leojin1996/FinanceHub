@@ -46,6 +46,7 @@ _BLOCKED_REASON_ZH = "AI 多智能体评审未完成，当前推荐已阻断。"
 _BLOCKED_REASON_EN = "The AI multi-agent review did not complete, so the recommendation was blocked."
 _BLOCKED_DISCLOSURES_ZH = ["理财非存款，投资需谨慎。"]
 _BLOCKED_DISCLOSURES_EN = ["Investing involves risk. Proceed prudently."]
+_RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
 
 
 def user_profile_analyst_node(
@@ -277,10 +278,10 @@ def product_match_expert_node(
     retrieval_plan = product_retrieval_service.plan_retrieval(
         query_text=query_text,
         candidates=product_candidates,
-        allowed_risk_levels={candidate.risk_level for candidate in product_candidates},
-        preferred_categories=set(),
-        blocked_categories=set(),
-        liquidity_preference=None,
+        allowed_risk_levels=_allowed_risk_levels_for_tier(user_intelligence.risk_tier),
+        preferred_categories=set(market_intelligence.preferred_categories),
+        blocked_categories=set(market_intelligence.avoided_categories),
+        liquidity_preference=user_intelligence.liquidity_preference,
         limit=max(6, len(product_candidates)),
     )
 
@@ -666,38 +667,48 @@ def _build_user_profile_prompt_context(
         for message in payload.conversationMessages
         if message.role == "user"
     ]
+    sections = [
+        AgentPromptSection(
+            title="Risk assessment result",
+            body=_render_json(payload.riskAssessmentResult),
+        ),
+        AgentPromptSection(
+            title="Questionnaire answers",
+            body=_render_json(payload.questionnaireAnswers),
+        ),
+        AgentPromptSection(
+            title="User intent text",
+            body=payload.userIntentText or "none",
+        ),
+        AgentPromptSection(
+            title="User conversation messages",
+            body=_render_json(user_messages),
+        ),
+    ]
+    if payload.clientContext is not None:
+        sections.append(
+            AgentPromptSection(
+                title="Client context",
+                body=_render_json(payload.clientContext),
+            )
+        )
+    sections.append(
+        AgentPromptSection(
+            title="Historical holdings and transactions",
+            body=_render_text_block(
+                (
+                    f"historical_holdings={_render_json(payload.historicalHoldings)}",
+                    f"historical_transactions={_render_json(payload.historicalTransactions)}",
+                )
+            ),
+        )
+    )
     return AgentPromptContext(
         task=(
             "Analyze the user's questionnaire, intent text, conversation, holdings, and transactions. "
             "Return the structured investment profile fields and derived signals."
         ),
-        sections=(
-            AgentPromptSection(
-                title="Risk assessment result",
-                body=_render_json(payload.riskAssessmentResult),
-            ),
-            AgentPromptSection(
-                title="Questionnaire answers",
-                body=_render_json(payload.questionnaireAnswers),
-            ),
-            AgentPromptSection(
-                title="User intent text",
-                body=payload.userIntentText or "none",
-            ),
-            AgentPromptSection(
-                title="User conversation messages",
-                body=_render_json(user_messages),
-            ),
-            AgentPromptSection(
-                title="Historical holdings and transactions",
-                body=_render_text_block(
-                    (
-                        f"historical_holdings={_render_json(payload.historicalHoldings)}",
-                        f"historical_transactions={_render_json(payload.historicalTransactions)}",
-                    )
-                ),
-            ),
-        ),
+        sections=tuple(sections),
         instructions=(
             "Use the full context, not just the questionnaire score.",
             "Infer risk tier, liquidity needs, horizon, return objective, and drawdown sensitivity from the user's own words when possible.",
@@ -768,6 +779,7 @@ def _build_product_match_prompt_context(
         ),
         instructions=(
             "Only return product ids that exist in the supplied candidate pool.",
+            "Use selected_product_ids for the final ids and ranking_rationale_zh/ranking_rationale_en for the bilingual rationale.",
             "Use filtered_out_reasons to explain major exclusions.",
         ),
     )
@@ -790,6 +802,14 @@ def _build_compliance_prompt_context(
                 body=_render_json(_user_profile_output_for_runtime(state)),
             ),
             AgentPromptSection(
+                title="Market intelligence",
+                body=_render_json(_market_output_for_runtime(state)),
+            ),
+            AgentPromptSection(
+                title="Product match",
+                body=_render_json(_product_match_output_for_runtime(state)),
+            ),
+            AgentPromptSection(
                 title="Selected candidate facts",
                 body=_render_json([_candidate_fact(candidate) for candidate in selected_candidates]),
             ),
@@ -800,6 +820,7 @@ def _build_compliance_prompt_context(
         ),
         instructions=(
             "Only reference candidate ids that exist in the selected candidate facts.",
+            "Return approved_ids/rejected_ids plus reason_summary_zh/reason_summary_en and required_disclosures_zh/en using the exact field names.",
             "Use applied_rule_ids and blocking_reason_codes when the facts support them.",
         ),
     )
@@ -1185,6 +1206,16 @@ def _manager_status_for_verdict(
 def _format_runtime_error(exc: Exception) -> str:
     message = str(exc).strip()
     return message or exc.__class__.__name__
+
+
+def _allowed_risk_levels_for_tier(risk_tier: str) -> set[str]:
+    normalized_tier = risk_tier.strip().upper()
+    max_allowed = _RISK_ORDER.get(normalized_tier, _RISK_ORDER["R2"])
+    return {
+        level
+        for level, order in _RISK_ORDER.items()
+        if order <= max_allowed
+    }
 
 
 def _render_json(value: object) -> str:

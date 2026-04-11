@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { type Locale } from "../../app/state/app-state";
+import { useAppState, type Locale } from "../../app/state/app-state";
 import { InsightCard } from "../../components/InsightCard";
 import {
   buildRecommendationGenerationPayload,
@@ -159,15 +159,24 @@ export function RecommendationDeck({
   locale,
   riskAssessmentResult,
 }: RecommendationDeckProps) {
+  const { recommendationCache, setRecommendationCacheEntry } = useAppState();
   const copy = getCopy(locale);
   const recommendationRequestKey = JSON.stringify(
     buildRecommendationGenerationPayload(locale, riskAssessmentResult),
   );
-  const [data, setData] = useState<RecommendationResponse | null>(null);
+  const cachedRecommendation = recommendationCache[recommendationRequestKey] ?? null;
+  const [data, setData] = useState<RecommendationResponse | null>(cachedRecommendation);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedRecommendation);
 
   useEffect(() => {
+    if (cachedRecommendation) {
+      setData(cachedRecommendation);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     setLoading(true);
@@ -179,6 +188,7 @@ export function RecommendationDeck({
           return;
         }
         setData(response);
+        setRecommendationCacheEntry(recommendationRequestKey, response);
       })
       .catch((requestError: unknown) => {
         if (cancelled) {
@@ -196,7 +206,13 @@ export function RecommendationDeck({
     return () => {
       cancelled = true;
     };
-  }, [recommendationRequestKey]);
+  }, [
+    cachedRecommendation,
+    locale,
+    recommendationRequestKey,
+    riskAssessmentResult,
+    setRecommendationCacheEntry,
+  ]);
 
   const sectionList = useMemo(() => {
     if (!data) {

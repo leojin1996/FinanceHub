@@ -748,6 +748,7 @@ class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
                 "Use tools before finalizing if candidate detail or the full candidate list is needed.",
                 "Only return IDs that exist in the supplied candidate list.",
                 "Choose the final recommendation set; do not ask the caller to filter candidates after you decide.",
+                "Return selected_product_ids as the final chosen ids, ranking_rationale_zh and ranking_rationale_en as the bilingual rationale, and filtered_out_reasons as a string list.",
             ),
         )
         candidate_lookup = {candidate.id: candidate for candidate in candidates}
@@ -844,6 +845,7 @@ class ComplianceReviewRuntimeAgent(_BaseStructuredOutputAgent):
                 "Use tools before finalizing if candidate or rule facts need grounding.",
                 "Return verdict as approve, revise_conservative, or block.",
                 "Only use candidate IDs that exist in the supplied selected candidates list.",
+                "Return reason_summary_zh and reason_summary_en as concise summaries, approved_ids and rejected_ids as candidate id lists, required_disclosures_zh/en as string lists, and suitability_notes_zh/en as string lists.",
             ),
         )
         candidate_lookup = {candidate.id: candidate for candidate in selected_candidates}

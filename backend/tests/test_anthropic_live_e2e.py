@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,16 +26,75 @@ def _assert_live_provider_available() -> None:
         pytest.skip("No live LLM provider configured for Anthropic end-to-end coverage.")
 
 
+def _live_failure_context(response) -> str:
+    warning_summary = [
+        f"{warning.stage}:{warning.code}:{warning.message}"
+        for warning in response.warnings
+    ]
+    trace_summary = [
+        f"{event.requestName}:{event.status}:{event.responseSummary or '-'}"
+        for event in response.agentTrace
+    ]
+    return (
+        f"recommendationStatus={response.recommendationStatus} "
+        f"reviewStatus={response.reviewStatus} "
+        f"profileInsights={'present' if response.profileInsights is not None else 'missing'} "
+        f"marketIntelligence={'present' if response.marketIntelligence is not None else 'missing'} "
+        f"funds={len(response.sections.funds.items)} "
+        f"wealth={len(response.sections.wealthManagement.items)} "
+        f"stocks={len(response.sections.stocks.items)} "
+        f"warnings={warning_summary} "
+        f"trace={trace_summary}"
+    )
+
+
 def _assert_common_live_response(response) -> None:
-    assert response.profileInsights is not None
-    assert response.marketIntelligence is not None
-    assert response.whyThisPlan.zh
-    assert response.agentTrace
+    debug = _live_failure_context(response)
+    assert response.profileInsights is not None, debug
+    assert response.marketIntelligence is not None, debug
+    assert response.whyThisPlan.zh, debug
+    assert response.agentTrace, debug
     assert (
         response.sections.funds.items
         or response.sections.wealthManagement.items
         or response.sections.stocks.items
+    ), debug
+
+
+def test_live_failure_context_summarizes_warnings_and_trace() -> None:
+    response = SimpleNamespace(
+        recommendationStatus="blocked",
+        reviewStatus="partial_pass",
+        profileInsights=None,
+        marketIntelligence=None,
+        warnings=[
+            SimpleNamespace(
+                stage="product_match_expert",
+                code="agent_product_match_failed",
+                message="provider returned invalid JSON content",
+            )
+        ],
+        agentTrace=[
+            SimpleNamespace(
+                requestName="product_match_expert",
+                status="error",
+                responseSummary="agent_product_match_failed",
+            )
+        ],
+        sections=SimpleNamespace(
+            funds=SimpleNamespace(items=[]),
+            wealthManagement=SimpleNamespace(items=[]),
+            stocks=SimpleNamespace(items=[]),
+        ),
     )
+
+    summary = _live_failure_context(response)
+
+    assert "recommendationStatus=blocked" in summary
+    assert "profileInsights=missing" in summary
+    assert "marketIntelligence=missing" in summary
+    assert "product_match_expert:agent_product_match_failed:provider returned invalid JSON content" in summary
+    assert "product_match_expert:error:agent_product_match_failed" in summary
 
 
 def test_run_live_agent_e2e_conservative_sample_remains_low_risk() -> None:
