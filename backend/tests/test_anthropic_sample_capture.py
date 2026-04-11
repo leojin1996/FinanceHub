@@ -419,13 +419,29 @@ def test_run_live_agent_smoke_uses_core_stage_sequence_summary(
     assert summary[0]["output_summary"].startswith("{\"derived_signals\":")
 
 
-def test_growth_live_sample_includes_stock_candidates_and_growth_request() -> None:
-    candidates = sample_capture_module._build_live_candidates(risk_profile="growth")
-    request = sample_capture_module._build_live_request(risk_profile="growth")
+@pytest.mark.parametrize(
+    ("risk_profile", "expected_categories"),
+    [
+        ("conservative", {"fund", "wealth_management"}),
+        ("stable", {"fund", "wealth_management"}),
+        ("balanced", {"fund", "wealth_management", "stock"}),
+        ("growth", {"fund", "stock"}),
+        ("aggressive", {"fund", "stock"}),
+    ],
+)
+def test_live_sample_matrix_matches_profile_and_candidate_mix(
+    risk_profile: str,
+    expected_categories: set[str],
+) -> None:
+    candidates = sample_capture_module._build_live_candidates(risk_profile=risk_profile)
+    request = sample_capture_module._build_live_request(risk_profile=risk_profile)
 
-    assert any(candidate.category == "stock" for candidate in candidates)
-    assert request.riskAssessmentResult.finalProfile == "growth"
-    assert "成长" in request.userIntentText
+    assert request.riskAssessmentResult.finalProfile == risk_profile
+    assert {candidate.category for candidate in candidates} == expected_categories
+
+    if risk_profile in {"growth", "aggressive"}:
+        assert any(candidate.category == "stock" for candidate in candidates)
+        assert "收益" in request.userIntentText or "成长" in request.userIntentText
 
 
 def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(

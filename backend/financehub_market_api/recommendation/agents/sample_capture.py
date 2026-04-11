@@ -14,6 +14,7 @@ from financehub_market_api.models import (
     MetricCard,
     RecommendationGenerationRequest,
     RecommendationResponse,
+    RiskProfile,
     TrendPoint,
 )
 from financehub_market_api.recommendation.agents import provider as provider_module
@@ -74,16 +75,13 @@ class CaptureRunError(RuntimeError):
         super().__init__("Capture completed with failures: " + "; ".join(failures))
 
 
-class _SingleMemoryStore:
+class _ConfiguredMemoryStore:
+    def __init__(self, entries: list[str]) -> None:
+        self._entries = list(entries)
+
     def search(self, query: str, *, limit: int) -> list[str]:
         del query
-        return ["memory:capital_preservation", "memory:one_year_horizon"][:limit]
-
-
-class _GrowthMemoryStore:
-    def search(self, query: str, *, limit: int) -> list[str]:
-        del query
-        return ["memory:accepts_equity_volatility", "memory:seeks_growth_upside"][:limit]
+        return self._entries[:limit]
 
 
 class _OrderedVectorStore:
@@ -123,6 +121,62 @@ class _StaticRuleSnapshotSource:
         }
 
 
+class _StableRuleSnapshotSource:
+    def fetch_snapshot(self) -> Mapping[str, object]:
+        return {
+            "version": "2026-04-10-stable",
+            "generated_at": "2026-04-10T08:00:00Z",
+            "risk_tiers": {
+                "R2": {
+                    "max_risk_level": "R2",
+                    "max_lockup_days": 365,
+                    "max_drawdown_percent": 4.0,
+                    "blocked_categories": ["stock"],
+                },
+                "R3": {
+                    "max_risk_level": "R3",
+                    "max_lockup_days": 540,
+                    "max_drawdown_percent": 6.0,
+                    "blocked_categories": ["stock"],
+                },
+            },
+            "unknown_risk_policy": "block",
+            "missing_rules_policy": "block",
+            "missing_required_metric_policy": "block",
+        }
+
+
+class _BalancedRuleSnapshotSource:
+    def fetch_snapshot(self) -> Mapping[str, object]:
+        return {
+            "version": "2026-04-10-balanced",
+            "generated_at": "2026-04-10T08:00:00Z",
+            "risk_tiers": {
+                "R2": {
+                    "max_risk_level": "R2",
+                    "max_lockup_days": 365,
+                    "max_drawdown_percent": 4.0,
+                    "blocked_categories": [],
+                },
+                "R3": {
+                    "max_risk_level": "R3",
+                    "max_lockup_days": 540,
+                    "max_drawdown_percent": 8.0,
+                    "blocked_categories": [],
+                },
+                "R4": {
+                    "max_risk_level": "R4",
+                    "max_lockup_days": 720,
+                    "max_drawdown_percent": 12.0,
+                    "blocked_categories": [],
+                },
+            },
+            "unknown_risk_policy": "block",
+            "missing_rules_policy": "block",
+            "missing_required_metric_policy": "block",
+        }
+
+
 class _GrowthRuleSnapshotSource:
     def fetch_snapshot(self) -> Mapping[str, object]:
         return {
@@ -145,6 +199,31 @@ class _GrowthRuleSnapshotSource:
                     "max_risk_level": "R5",
                     "max_lockup_days": 1080,
                     "max_drawdown_percent": 25.0,
+                    "blocked_categories": [],
+                },
+            },
+            "unknown_risk_policy": "block",
+            "missing_rules_policy": "block",
+            "missing_required_metric_policy": "block",
+        }
+
+
+class _AggressiveRuleSnapshotSource:
+    def fetch_snapshot(self) -> Mapping[str, object]:
+        return {
+            "version": "2026-04-10-aggressive",
+            "generated_at": "2026-04-10T08:00:00Z",
+            "risk_tiers": {
+                "R4": {
+                    "max_risk_level": "R4",
+                    "max_lockup_days": 720,
+                    "max_drawdown_percent": 18.0,
+                    "blocked_categories": [],
+                },
+                "R5": {
+                    "max_risk_level": "R5",
+                    "max_lockup_days": 1080,
+                    "max_drawdown_percent": 28.0,
                     "blocked_categories": [],
                 },
             },
@@ -211,6 +290,68 @@ class _DefensiveMarketDataSource:
                     changePercent=-0.3,
                     tone="negative",
                     trendSeries=[TrendPoint(date="2026-04-10", value=13996.27)],
+                ),
+            ],
+        )
+
+
+class _BalancedMarketDataSource:
+    def get_market_overview(self) -> MarketOverviewResponse:
+        return MarketOverviewResponse(
+            asOfDate="2026-04-10",
+            stale=False,
+            metrics=[
+                MetricCard(
+                    label="上证指数",
+                    value="3996.40",
+                    delta="+0.2%",
+                    changeValue=8.0,
+                    changePercent=0.2,
+                    tone="positive",
+                ),
+                MetricCard(
+                    label="深证成指",
+                    value="14102.30",
+                    delta="-0.1%",
+                    changeValue=-13.6,
+                    changePercent=-0.1,
+                    tone="neutral",
+                ),
+            ],
+            chartLabel="近20日走势",
+            trendSeries=[TrendPoint(date="2026-04-10", value=3996.40)],
+            topGainers=[],
+            topLosers=[],
+        )
+
+    def get_indices(self) -> IndicesResponse:
+        return IndicesResponse(
+            asOfDate="2026-04-10",
+            stale=False,
+            cards=[
+                IndexCard(
+                    name="上证指数",
+                    code="000001",
+                    market="CN",
+                    description="mixed but stable session",
+                    value="3996.40",
+                    valueNumber=3996.40,
+                    changeValue=8.0,
+                    changePercent=0.2,
+                    tone="positive",
+                    trendSeries=[TrendPoint(date="2026-04-10", value=3996.40)],
+                ),
+                IndexCard(
+                    name="深证成指",
+                    code="399001",
+                    market="CN",
+                    description="mixed but stable session",
+                    value="14102.30",
+                    valueNumber=14102.30,
+                    changeValue=-13.6,
+                    changePercent=-0.1,
+                    tone="neutral",
+                    trendSeries=[TrendPoint(date="2026-04-10", value=14102.30)],
                 ),
             ],
         )
@@ -408,7 +549,87 @@ def _write_fixture_payload(
     return fixture_path
 
 
+def _build_live_market_data_source(*, risk_profile: RiskProfile) -> object:
+    if risk_profile == "conservative":
+        return _DefensiveMarketDataSource()
+    if risk_profile in {"stable", "balanced"}:
+        return _BalancedMarketDataSource()
+    return _OffensiveMarketDataSource()
+
+
+def _build_live_memory_store(*, risk_profile: RiskProfile) -> object:
+    entries_by_profile: dict[RiskProfile, list[str]] = {
+        "conservative": ["memory:capital_preservation", "memory:high_liquidity"],
+        "stable": ["memory:steady_income", "memory:moderate_volatility_tolerance"],
+        "balanced": ["memory:balanced_growth", "memory:selective_equity_participation"],
+        "growth": ["memory:accepts_equity_volatility", "memory:seeks_growth_upside"],
+        "aggressive": ["memory:tolerates_drawdown", "memory:targets_high_beta_upside"],
+    }
+    return _ConfiguredMemoryStore(entries_by_profile[risk_profile])
+
+
+def _build_live_rule_snapshot_source(*, risk_profile: RiskProfile) -> object:
+    if risk_profile == "conservative":
+        return _StaticRuleSnapshotSource()
+    if risk_profile == "stable":
+        return _StableRuleSnapshotSource()
+    if risk_profile == "balanced":
+        return _BalancedRuleSnapshotSource()
+    if risk_profile == "growth":
+        return _GrowthRuleSnapshotSource()
+    return _AggressiveRuleSnapshotSource()
+
+
 def _build_live_candidates(*, risk_profile: str = "balanced") -> list[CandidateProduct]:
+    if risk_profile == "aggressive":
+        return [
+            CandidateProduct(
+                id="fund-201",
+                category="fund",
+                code="005827",
+                liquidity="T+1",
+                lockup_days=14,
+                max_drawdown_percent=14.0,
+                name_zh="科技成长精选基金",
+                name_en="Technology Growth Focus Fund",
+                rationale_zh="作为高弹性权益底仓，承接更强的成长主题暴露。",
+                rationale_en="Acts as a high-beta equity core for growth-theme exposure.",
+                risk_level="R4",
+                tags_zh=["科技", "成长"],
+                tags_en=["technology", "growth"],
+            ),
+            CandidateProduct(
+                id="stock-201",
+                category="stock",
+                code="688041",
+                liquidity="T+1",
+                lockup_days=0,
+                max_drawdown_percent=20.5,
+                name_zh="海光信息",
+                name_en="Hygon",
+                rationale_zh="高景气算力主线标的，适合进取型进攻仓位。",
+                rationale_en="A high-conviction compute leader suited to an aggressive sleeve.",
+                risk_level="R5",
+                tags_zh=["算力", "高贝塔"],
+                tags_en=["compute", "high-beta"],
+            ),
+            CandidateProduct(
+                id="stock-202",
+                category="stock",
+                code="300308",
+                liquidity="T+1",
+                lockup_days=0,
+                max_drawdown_percent=22.0,
+                name_zh="中际旭创",
+                name_en="Zhongji Innolight",
+                rationale_zh="AI 光模块主线弹性更高，可提升进攻组合收益上限。",
+                rationale_en="Higher-beta AI optical exposure that lifts upside potential.",
+                risk_level="R5",
+                tags_zh=["AI", "高景气"],
+                tags_en=["AI", "high-momentum"],
+            ),
+        ]
+
     if risk_profile == "growth":
         return [
             CandidateProduct(
@@ -458,6 +679,123 @@ def _build_live_candidates(*, risk_profile: str = "balanced") -> list[CandidateP
             ),
         ]
 
+    if risk_profile == "balanced":
+        return [
+            CandidateProduct(
+                id="fund-301",
+                category="fund",
+                code="110003",
+                liquidity="T+1",
+                lockup_days=7,
+                max_drawdown_percent=5.5,
+                name_zh="均衡配置混合基金",
+                name_en="Balanced Allocation Fund",
+                rationale_zh="兼顾稳健与弹性，适合作为平衡型底仓。",
+                rationale_en="Blends resilience with upside as a balanced core holding.",
+                risk_level="R3",
+                tags_zh=["均衡", "混合"],
+                tags_en=["balanced", "hybrid"],
+            ),
+            CandidateProduct(
+                id="wm-301",
+                category="wealth_management",
+                code="WM301",
+                liquidity="T+1",
+                lockup_days=30,
+                max_drawdown_percent=1.5,
+                name_zh="稳健增利理财二号",
+                name_en="Steady Plus Wealth Two",
+                rationale_zh="提供组合缓冲和流动性，降低整体波动。",
+                rationale_en="Provides liquidity and ballast to reduce total portfolio volatility.",
+                risk_level="R2",
+                tags_zh=["稳健", "缓冲"],
+                tags_en=["steady", "ballast"],
+            ),
+            CandidateProduct(
+                id="stock-301",
+                category="stock",
+                code="600519",
+                liquidity="T+1",
+                lockup_days=0,
+                max_drawdown_percent=7.8,
+                name_zh="贵州茅台",
+                name_en="Kweichow Moutai",
+                rationale_zh="高质量龙头，适合作为平衡型权益增强仓位。",
+                rationale_en="A high-quality leader suited to a selective equity sleeve.",
+                risk_level="R3",
+                tags_zh=["龙头", "高质量"],
+                tags_en=["leader", "quality"],
+            ),
+        ]
+
+    if risk_profile == "stable":
+        return [
+            CandidateProduct(
+                id="fund-401",
+                category="fund",
+                code="000020",
+                liquidity="T+1",
+                lockup_days=7,
+                max_drawdown_percent=2.8,
+                name_zh="稳健收益债基",
+                name_en="Steady Income Bond Fund",
+                rationale_zh="追求稳健收益，适合作为稳健型核心资产。",
+                rationale_en="Targets steady income as a core holding for stable users.",
+                risk_level="R2",
+                tags_zh=["债基", "稳健收益"],
+                tags_en=["bond-fund", "steady-income"],
+            ),
+            CandidateProduct(
+                id="wm-401",
+                category="wealth_management",
+                code="WM401",
+                liquidity="T+1",
+                lockup_days=30,
+                max_drawdown_percent=1.0,
+                name_zh="稳健现金增强理财",
+                name_en="Stable Cash Plus Wealth",
+                rationale_zh="兼顾流动性与回撤控制，补充稳健底仓。",
+                rationale_en="Adds liquidity and drawdown control to the stable base.",
+                risk_level="R1",
+                tags_zh=["现金管理", "低回撤"],
+                tags_en=["cash-management", "low-drawdown"],
+            ),
+        ]
+
+    if risk_profile == "conservative":
+        return [
+            CandidateProduct(
+                id="fund-501",
+                category="fund",
+                code="000011",
+                liquidity="T+1",
+                lockup_days=7,
+                max_drawdown_percent=1.6,
+                name_zh="保本短债基金",
+                name_en="Capital Shield Short Bond Fund",
+                rationale_zh="短久期、低波动，适合保守型用户的固收底仓。",
+                rationale_en="Short duration and low volatility fit a conservative fixed-income core.",
+                risk_level="R1",
+                tags_zh=["保本优先", "低波动"],
+                tags_en=["capital-first", "low-volatility"],
+            ),
+            CandidateProduct(
+                id="wm-501",
+                category="wealth_management",
+                code="WM501",
+                liquidity="T+1",
+                lockup_days=30,
+                max_drawdown_percent=0.6,
+                name_zh="保守现金管理理财",
+                name_en="Conservative Cash Management Wealth",
+                rationale_zh="强调流动性与本金稳定，适合作为现金管理工具。",
+                rationale_en="Emphasizes liquidity and capital stability for cash management.",
+                risk_level="R1",
+                tags_zh=["现金管理", "本金稳定"],
+                tags_en=["cash-management", "capital-stability"],
+            ),
+        ]
+
     return [
         CandidateProduct(
             id="fund-001",
@@ -496,6 +834,49 @@ def _build_live_request(
     *,
     risk_profile: str = "balanced",
 ) -> RecommendationGenerationRequest:
+    if risk_profile == "aggressive":
+        return RecommendationGenerationRequest.model_validate(
+            {
+                "userIntentText": "我有30万资金，计划持有三到五年，可以承受较大波动，希望抓住高弹性的科技和成长机会。",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "如果趋势明确向上，我愿意把更多仓位放在高弹性股票上。",
+                        "occurredAt": "2026-04-10T08:00:00Z",
+                    }
+                ],
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "questionnaireAnswers": [
+                    {
+                        "questionId": "q1",
+                        "answerId": "a5",
+                        "dimension": "riskTolerance",
+                        "score": 5,
+                    }
+                ],
+                "riskAssessmentResult": {
+                    "baseProfile": risk_profile,
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "high",
+                        "investmentHorizon": "high",
+                        "returnObjective": "high",
+                        "riskTolerance": "high",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 9,
+                        "investmentExperience": 19,
+                        "investmentHorizon": 19,
+                        "returnObjective": 19,
+                        "riskTolerance": 19,
+                    },
+                    "finalProfile": risk_profile,
+                    "totalScore": 85,
+                },
+            }
+        )
+
     if risk_profile == "growth":
         return RecommendationGenerationRequest.model_validate(
             {
@@ -535,6 +916,135 @@ def _build_live_request(
                     },
                     "finalProfile": risk_profile,
                     "totalScore": 82,
+                },
+            }
+        )
+
+    if risk_profile == "balanced":
+        return RecommendationGenerationRequest.model_validate(
+            {
+                "userIntentText": "我计划投资两年左右，能接受适度波动，希望在稳健基础上争取一定成长收益。",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "如果有高质量蓝筹股票，我可以接受一部分权益仓位。",
+                        "occurredAt": "2026-04-10T08:00:00Z",
+                    }
+                ],
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "questionnaireAnswers": [
+                    {
+                        "questionId": "q1",
+                        "answerId": "a3",
+                        "dimension": "riskTolerance",
+                        "score": 3,
+                    }
+                ],
+                "riskAssessmentResult": {
+                    "baseProfile": risk_profile,
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "medium",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 14,
+                        "investmentHorizon": 14,
+                        "returnObjective": 14,
+                        "riskTolerance": 14,
+                    },
+                    "finalProfile": risk_profile,
+                    "totalScore": 68,
+                },
+            }
+        )
+
+    if risk_profile == "stable":
+        return RecommendationGenerationRequest.model_validate(
+            {
+                "userIntentText": "我计划持有一到两年，更看重稳健收益，可以接受很小幅度波动，但不希望出现明显回撤。",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "我更想要稳一点的产品，收益不需要太激进。",
+                        "occurredAt": "2026-04-10T08:00:00Z",
+                    }
+                ],
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "questionnaireAnswers": [
+                    {
+                        "questionId": "q1",
+                        "answerId": "a2",
+                        "dimension": "riskTolerance",
+                        "score": 2,
+                    }
+                ],
+                "riskAssessmentResult": {
+                    "baseProfile": risk_profile,
+                    "dimensionLevels": {
+                        "capitalStability": "high",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "medium",
+                        "returnObjective": "medium",
+                        "riskTolerance": "low",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 15,
+                        "investmentExperience": 12,
+                        "investmentHorizon": 12,
+                        "returnObjective": 12,
+                        "riskTolerance": 10,
+                    },
+                    "finalProfile": risk_profile,
+                    "totalScore": 61,
+                },
+            }
+        )
+
+    if risk_profile == "conservative":
+        return RecommendationGenerationRequest.model_validate(
+            {
+                "userIntentText": "我有10万闲钱，想存一年，不想亏本，最好随时能用。",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "最近市场波动大，我更在意保本和流动性。",
+                        "occurredAt": "2026-04-10T08:00:00Z",
+                    }
+                ],
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "questionnaireAnswers": [
+                    {
+                        "questionId": "q1",
+                        "answerId": "a1",
+                        "dimension": "riskTolerance",
+                        "score": 1,
+                    }
+                ],
+                "riskAssessmentResult": {
+                    "baseProfile": risk_profile,
+                    "dimensionLevels": {
+                        "capitalStability": "high",
+                        "investmentExperience": "low",
+                        "investmentHorizon": "low",
+                        "returnObjective": "low",
+                        "riskTolerance": "low",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 16,
+                        "investmentExperience": 8,
+                        "investmentHorizon": 8,
+                        "returnObjective": 8,
+                        "riskTolerance": 8,
+                    },
+                    "finalProfile": risk_profile,
+                    "totalScore": 48,
                 },
             }
         )
@@ -598,11 +1108,7 @@ def _run_core_stage_sequence(
 ) -> list[tuple[str, BaseModel, str]]:
     user_profile = map_user_profile(risk_profile)
     market_service = MarketIntelligenceService(
-        market_data_service=(
-            _OffensiveMarketDataSource()
-            if risk_profile == "growth"
-            else _DefensiveMarketDataSource()
-        )
+        market_data_service=_build_live_market_data_source(risk_profile=risk_profile)
     )
     market_snapshot = market_service.build_recommendation_snapshot()
     market_facts = {
@@ -616,11 +1122,7 @@ def _run_core_stage_sequence(
     }
     candidates = _build_live_candidates(risk_profile=risk_profile)
     compliance_facts = ComplianceFactsService(
-        rule_snapshot_source=(
-            _GrowthRuleSnapshotSource()
-            if risk_profile == "growth"
-            else _StaticRuleSnapshotSource()
-        )
+        rule_snapshot_source=_build_live_rule_snapshot_source(risk_profile=risk_profile)
     ).build_review_facts(
         request_payload=_build_live_request(risk_profile=risk_profile).model_dump(mode="json"),
         selected_candidates=candidates,
@@ -696,27 +1198,19 @@ def run_live_agent_e2e(*, risk_profile: str = "balanced") -> RecommendationRespo
         graph_runtime=RecommendationGraphRuntime(
             GraphServices(
                 market_intelligence=MarketIntelligenceService(
-                    market_data_service=(
-                        _OffensiveMarketDataSource()
-                        if risk_profile == "growth"
-                        else _DefensiveMarketDataSource()
+                    market_data_service=_build_live_market_data_source(
+                        risk_profile=risk_profile
                     )
                 ),
                 memory_recall=MemoryRecallService(
-                    store=(
-                        _GrowthMemoryStore()
-                        if risk_profile == "growth"
-                        else _SingleMemoryStore()
-                    )
+                    store=_build_live_memory_store(risk_profile=risk_profile)
                 ),
                 product_retrieval=ProductRetrievalService(
                     vector_store=_OrderedVectorStore(candidates)
                 ),
                 compliance_facts_service=ComplianceFactsService(
-                    rule_snapshot_source=(
-                        _GrowthRuleSnapshotSource()
-                        if risk_profile == "growth"
-                        else _StaticRuleSnapshotSource()
+                    rule_snapshot_source=_build_live_rule_snapshot_source(
+                        risk_profile=risk_profile
                     )
                 ),
                 product_candidates=candidates,
@@ -824,11 +1318,7 @@ def capture_all_agents(
 
     user_profile = map_user_profile(risk_profile)
     market_service = MarketIntelligenceService(
-        market_data_service=(
-            _OffensiveMarketDataSource()
-            if risk_profile == "growth"
-            else _DefensiveMarketDataSource()
-        )
+        market_data_service=_build_live_market_data_source(risk_profile=risk_profile)
     )
     market_snapshot = market_service.build_recommendation_snapshot()
     market_facts = {
@@ -842,11 +1332,7 @@ def capture_all_agents(
     }
     candidates = _build_live_candidates(risk_profile=risk_profile)
     compliance_facts = ComplianceFactsService(
-        rule_snapshot_source=(
-            _GrowthRuleSnapshotSource()
-            if risk_profile == "growth"
-            else _StaticRuleSnapshotSource()
-        )
+        rule_snapshot_source=_build_live_rule_snapshot_source(risk_profile=risk_profile)
     ).build_review_facts(
         request_payload=_build_live_request(risk_profile=risk_profile).model_dump(mode="json"),
         selected_candidates=candidates,
