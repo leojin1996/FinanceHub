@@ -37,6 +37,15 @@ AGENT_MODEL_ROUTE_ENV_NAMES = {
     "compliance_risk_officer": "COMPLIANCE_RISK_OFFICER",
     "manager_coordinator": "MANAGER_COORDINATOR",
 }
+LEGACY_AGENT_MODEL_ROUTE_ENV_NAMES = {
+    "user_profile_analyst": ("USER_PROFILE",),
+    "product_match_expert": (
+        "FUND_SELECTION",
+        "WEALTH_SELECTION",
+        "STOCK_SELECTION",
+    ),
+    "manager_coordinator": ("EXPLANATION",),
+}
 
 
 class LLMProviderError(RuntimeError):
@@ -239,12 +248,37 @@ def _load_agent_model_routes(env_values: Mapping[str, str]) -> dict[str, AgentMo
 
     for agent_name, env_name in AGENT_MODEL_ROUTE_ENV_NAMES.items():
         model_name = _clean_env_value(env_values.get(f"FINANCEHUB_LLM_AGENT_{env_name}_MODEL"))
+        if model_name is None:
+            model_name = _legacy_agent_model_override(env_values, agent_name)
         routes[agent_name] = AgentModelRoute(
             provider_name=ANTHROPIC_PROVIDER_NAME,
             model_name=model_name or default_model,
         )
 
     return routes
+
+
+def _legacy_agent_model_override(
+    env_values: Mapping[str, str],
+    agent_name: str,
+) -> str | None:
+    legacy_env_names = LEGACY_AGENT_MODEL_ROUTE_ENV_NAMES.get(agent_name, ())
+    if not legacy_env_names:
+        return None
+
+    legacy_models = [
+        model_name
+        for env_name in legacy_env_names
+        if (model_name := _clean_env_value(env_values.get(f"FINANCEHUB_LLM_AGENT_{env_name}_MODEL")))
+        is not None
+    ]
+    if not legacy_models:
+        return None
+
+    distinct_models = list(dict.fromkeys(legacy_models))
+    if agent_name == "product_match_expert" and len(distinct_models) > 1:
+        return None
+    return distinct_models[0]
 
 
 def _array_required_field_candidates_from_text(
@@ -296,6 +330,84 @@ def _array_required_field_candidates_from_text(
     return _dedupe_dict_candidates(candidates)
 
 
+def _decode_json_like_string(value: str) -> str:
+    return (
+        value.replace('\\"', '"')
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
+        .replace("\\/", "/")
+        .replace("\\\\", "\\")
+    )
+
+
+def _schema_field_candidates_from_text(
+    content: str,
+    *,
+    response_schema: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if response_schema is None:
+        return []
+
+    raw_properties = response_schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        return []
+
+    required_keys = _extract_required_schema_keys(response_schema)
+    if not required_keys:
+        return []
+
+    property_schemas = {
+        key: value for key, value in raw_properties.items() if isinstance(value, dict)
+    }
+    supported_required_field_types = {"array", "string"}
+    if any(
+        property_schemas.get(key, {}).get("type") not in supported_required_field_types
+        for key in required_keys
+    ):
+        return []
+
+    snippets = [content.strip()]
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
+    if fenced_match is not None:
+        snippets.insert(0, fenced_match.group(1).strip())
+
+    candidates: list[dict[str, object]] = []
+    for snippet in snippets:
+        candidate: dict[str, object] = {}
+        for key, property_schema in property_schemas.items():
+            field_type = property_schema.get("type")
+            if field_type == "array":
+                items_schema = property_schema.get("items")
+                if not isinstance(items_schema, dict) or items_schema.get("type") != "string":
+                    continue
+                match = re.search(
+                    rf'"{re.escape(key)}"\s*:\s*\[(?P<items>.*?)\]\s*(?=,\s*"|\s*\}})',
+                    snippet,
+                    re.DOTALL,
+                )
+                if match is None:
+                    continue
+                items = re.findall(
+                    r'"([^"\\]*(?:\\.[^"\\]*)*)"',
+                    match.group("items"),
+                    re.DOTALL,
+                )
+                candidate[key] = [_decode_json_like_string(item) for item in items]
+            elif field_type == "string":
+                match = re.search(
+                    rf'"{re.escape(key)}"\s*:\s*"(?P<value>.*?)(?="\s*(?:,\s*"|\s*\}}))',
+                    snippet,
+                    re.DOTALL,
+                )
+                if match is None:
+                    continue
+                candidate[key] = _decode_json_like_string(match.group("value"))
+        if required_keys.issubset(candidate.keys()):
+            candidates.append(candidate)
+    return _dedupe_dict_candidates(candidates)
+
+
 def _extract_json_candidates_from_text(
     content: str,
     *,
@@ -340,6 +452,13 @@ def _extract_json_candidates_from_text(
     )
     if relaxed_candidates:
         return relaxed_candidates
+
+    schema_field_candidates = _schema_field_candidates_from_text(
+        normalized_content,
+        response_schema=response_schema,
+    )
+    if schema_field_candidates:
+        return schema_field_candidates
 
     raise LLMInvalidResponseError("provider returned invalid JSON content") from last_error
 

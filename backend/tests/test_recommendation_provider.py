@@ -6,7 +6,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from financehub_market_api.recommendation.agents.contracts import ProductRankingAgentOutput
+from financehub_market_api.recommendation.agents.contracts import (
+    ProductMatchAgentOutput,
+    ProductRankingAgentOutput,
+)
 from financehub_market_api.recommendation.agents import provider as provider_module
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
@@ -759,6 +762,56 @@ def test_anthropic_provider_extracts_ranked_ids_from_json_like_text_with_invalid
     assert payload == {"ranked_ids": ["fund-001", "fund-002"]}
 
 
+def test_anthropic_provider_extracts_product_match_payload_from_json_like_text_with_invalid_quotes() -> (
+    None
+):
+    provider, _ = _build_anthropic_provider(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "```json\n"
+                        "{\n"
+                        '  "selected_product_ids": [\n'
+                        '    "fund-005",\n'
+                        '    "stock-600036",\n'
+                        '    "wm-001"\n'
+                        "  ],\n"
+                        '  "ranking_rationale_zh": "基于平衡型风险偏好，推荐组合采用"稳健底仓+成长配置+流动性储备"三层结构，兼顾长期收益与流动性。",\n'
+                        '  "ranking_rationale_en": "The portfolio uses a three-layer structure of \\"stable core + growth allocation + liquidity reserve\\" for balanced users.",\n'
+                        '  "filtered_out_reasons": [\n'
+                        '    "Excluded duplicate share classes",\n'
+                        '    "Excluded cyclical names with higher drawdown risk"\n'
+                        "  ]\n"
+                        "}\n"
+                        "```"
+                    ),
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="claude-sonnet-4-6",
+        messages=[
+            {"role": "system", "content": "Return strict product match JSON only."},
+            {"role": "user", "content": "Provide the product match result."},
+        ],
+        response_schema=ProductMatchAgentOutput.model_json_schema(),
+        timeout_seconds=5.0,
+    )
+
+    parsed = ProductMatchAgentOutput.model_validate(payload)
+
+    assert parsed.selected_product_ids == ["fund-005", "stock-600036", "wm-001"]
+    assert "稳健底仓+成长配置+流动性储备" in parsed.ranking_rationale_zh
+    assert parsed.filtered_out_reasons == [
+        "Excluded duplicate share classes",
+        "Excluded cyclical names with higher drawdown risk",
+    ]
+
+
 def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() -> None:
     provider, _ = _build_anthropic_provider(
         {
@@ -1377,6 +1430,44 @@ def test_runtime_config_applies_single_agent_override_without_replacing_default_
     assert config.agent_routes["product_match_expert"].model_name == "claude-sonnet-4-6"
     assert config.agent_routes["market_intelligence"].provider_name == ANTHROPIC_PROVIDER_NAME
     assert config.agent_routes["market_intelligence"].model_name == ANTHROPIC_DEFAULT_MODEL
+
+
+def test_runtime_config_accepts_legacy_agent_override_aliases_for_current_graph() -> None:
+    config = AgentRuntimeConfig.from_env(
+        environ={
+            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
+            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "claude-opus-4-6",
+            "FINANCEHUB_LLM_AGENT_FUND_SELECTION_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_WEALTH_SELECTION_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_STOCK_SELECTION_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "claude-opus-4-6",
+        },
+        env_files=[],
+    )
+
+    assert config.agent_routes["user_profile_analyst"].model_name == "claude-opus-4-6"
+    assert config.agent_routes["market_intelligence"].model_name == ANTHROPIC_DEFAULT_MODEL
+    assert config.agent_routes["product_match_expert"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["compliance_risk_officer"].model_name == ANTHROPIC_DEFAULT_MODEL
+    assert config.agent_routes["manager_coordinator"].model_name == "claude-opus-4-6"
+
+
+def test_runtime_config_prefers_current_agent_override_names_over_legacy_aliases() -> None:
+    config = AgentRuntimeConfig.from_env(
+        environ={
+            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
+            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "claude-opus-4-6",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_ANALYST_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "claude-opus-4-6",
+            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "claude-sonnet-4-6",
+        },
+        env_files=[],
+    )
+
+    assert config.agent_routes["user_profile_analyst"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["manager_coordinator"].model_name == "claude-sonnet-4-6"
 
 
 def test_runtime_config_reads_llm_timeout_seconds_from_env() -> None:
