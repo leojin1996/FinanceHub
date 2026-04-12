@@ -78,6 +78,14 @@ export interface AllocationDisplay {
   stock: number;
 }
 
+export interface RecommendationEvidenceReference {
+  excerptEn: string;
+  excerptZh: string;
+  publishedAt?: string | null;
+  sourceTitle: string;
+  sourceUri?: string | null;
+}
+
 export interface RecommendationProduct {
   id: string;
   category: "fund" | "wealth_management" | "stock";
@@ -92,6 +100,7 @@ export interface RecommendationProduct {
   riskLevel: string;
   tagsEn: string[];
   tagsZh: string[];
+  evidencePreview: RecommendationEvidenceReference[];
 }
 
 export interface RecommendationSection {
@@ -202,6 +211,7 @@ export interface RecommendationProductDetailResponse {
   fees: Record<string, string>;
   drawdownOrVolatility: Record<string, string>;
   fitForProfile: LocalizedText;
+  evidence: RecommendationEvidenceReference[];
 }
 
 async function readJson<T>(response: Response): Promise<T> {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -116,6 +116,15 @@ describe("RecommendationsPage", () => {
                     asOfDate: "2026-04-09",
                     category: "fund",
                     detailRoute: "/recommendations/products/fund-001",
+                    evidencePreview: [
+                      {
+                        excerptEn: "Holdings stay concentrated in high-grade bonds, with drawdown kept in a narrow band.",
+                        excerptZh: "持仓继续以高等级债券为主，回撤区间控制在较低水平。",
+                        publishedAt: "2026-04-08",
+                        sourceTitle: "基金季报（2026Q1）",
+                        sourceUri: "https://example.com/reports/fund-001-2026q1",
+                      },
+                    ],
                     id: "fund-001",
                     liquidity: "T+1",
                     nameEn: "Zhongou Steady Bond A",
@@ -137,6 +146,15 @@ describe("RecommendationsPage", () => {
                     category: "stock",
                     code: "600036",
                     detailRoute: "/recommendations/products/stock-001",
+                    evidencePreview: [
+                      {
+                        excerptEn: "Quarterly profit remained resilient while provisioning stayed conservative.",
+                        excerptZh: "季度利润保持韧性，同时拨备策略延续审慎。",
+                        publishedAt: "2026-04-07",
+                        sourceTitle: "公司公告摘要",
+                        sourceUri: null,
+                      },
+                    ],
                     id: "stock-001",
                     nameEn: "China Merchants Bank",
                     nameZh: "招商银行",
@@ -156,6 +174,7 @@ describe("RecommendationsPage", () => {
                     asOfDate: "2026-04-09",
                     category: "wealth_management",
                     detailRoute: "/recommendations/products/wm-001",
+                    evidencePreview: [],
                     id: "wm-001",
                     liquidity: "90天",
                     nameEn: "CMB Wealth Stable 90D",
@@ -285,6 +304,16 @@ describe("RecommendationsPage", () => {
       expect(screen.getByText("招银理财稳享90天")).toBeInTheDocument();
       expect(screen.getByText("招商银行")).toBeInTheDocument();
       expect(screen.getByText("45%")).toBeInTheDocument();
+
+      const fundCard = screen.getByText("中欧稳利债券A").closest("article");
+      expect(fundCard).not.toBeNull();
+      expect(within(fundCard as HTMLElement).getByText("持仓继续以高等级债券为主，回撤区间控制在较低水平。")).toBeInTheDocument();
+      expect(within(fundCard as HTMLElement).getByText("基金季报（2026Q1）")).toBeInTheDocument();
+
+      const stockCard = screen.getByText("招商银行").closest("article");
+      expect(stockCard).not.toBeNull();
+      expect(within(stockCard as HTMLElement).getByText("季度利润保持韧性，同时拨备策略延续审慎。")).toBeInTheDocument();
+      expect(within(stockCard as HTMLElement).getByText("公司公告摘要")).toBeInTheDocument();
     },
     15_000,
   );

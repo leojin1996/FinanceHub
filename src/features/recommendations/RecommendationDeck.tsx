@@ -8,6 +8,7 @@ import {
   fetchRecommendations,
   type RecommendationAgentTraceEvent,
   type RecommendationAgentTraceToolCall,
+  type RecommendationEvidenceReference,
   type RecommendationProduct,
   type RecommendationResponse,
 } from "../../services/chinaMarketApi";
@@ -106,6 +107,14 @@ function getTraceData(agentTrace: RecommendationResponse["agentTrace"]) {
   };
 }
 
+function getEvidencePreview(product: RecommendationProduct): RecommendationEvidenceReference[] {
+  return Array.isArray(product.evidencePreview) ? product.evidencePreview : [];
+}
+
+function getEvidenceExcerpt(locale: Locale, reference: RecommendationEvidenceReference) {
+  return locale === "en-US" ? reference.excerptEn : reference.excerptZh;
+}
+
 function AllocationBar({ label, value }: { label: string; value: number }) {
   return (
     <div className="recommendation-allocation__row">
@@ -122,6 +131,7 @@ function AllocationBar({ label, value }: { label: string; value: number }) {
 
 function ProductCard({ locale, product }: { locale: Locale; product: RecommendationProduct }) {
   const detailRoute = product.detailRoute ?? `/recommendations/products/${product.id}`;
+  const evidencePreview = getEvidencePreview(product);
 
   return (
     <article className="panel recommendation-product-card">
@@ -146,6 +156,35 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
       <p className="recommendation-product-card__body">
         {getLocalizedText(locale, product.rationaleZh, product.rationaleEn)}
       </p>
+      {evidencePreview.length > 0 ? (
+        <div
+          className="recommendation-evidence-list recommendation-evidence-list--preview"
+          data-testid={`recommendation-evidence-preview-${product.id}`}
+        >
+          {evidencePreview.map((reference, index) => (
+            <article className="recommendation-evidence-item" key={`${product.id}-${reference.sourceTitle}-${index}`}>
+              <p className="recommendation-evidence-item__excerpt">{getEvidenceExcerpt(locale, reference)}</p>
+              <p className="recommendation-evidence-item__meta">
+                {reference.sourceUri ? (
+                  <a
+                    className="recommendation-evidence-item__source-link"
+                    href={reference.sourceUri}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    {reference.sourceTitle}
+                  </a>
+                ) : (
+                  <span className="recommendation-evidence-item__source-title">{reference.sourceTitle}</span>
+                )}
+                {reference.publishedAt ? (
+                  <span className="recommendation-evidence-item__published-at">{reference.publishedAt}</span>
+                ) : null}
+              </p>
+            </article>
+          ))}
+        </div>
+      ) : null}
       <div className="recommendation-product-card__actions">
         <Link className="recommendation-product-card__link" to={detailRoute}>
           {locale === "en-US" ? "View details" : "查看详情"}

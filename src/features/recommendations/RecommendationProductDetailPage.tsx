@@ -19,6 +19,7 @@ function getCopy(locale: "zh-CN" | "en-US") {
       fitForProfile: "Who it fits",
       loading: "Loading product detail...",
       metrics: "Key metrics",
+      references: "References",
       rationale: "Why it was selected",
       summary: "Product summary",
       subtitle: "Review the latest profile, metrics, and trend snapshot before making a decision.",
@@ -33,6 +34,7 @@ function getCopy(locale: "zh-CN" | "en-US") {
     fitForProfile: "适合谁",
     loading: "正在加载产品详情...",
     metrics: "关键指标",
+    references: "参考资料",
     rationale: "为什么推荐它",
     summary: "产品概览",
     subtitle: "在做决定前，先看清产品画像、关键指标和近期走势。",
@@ -74,6 +76,10 @@ function buildMetricEntries(
     label: getMetricLabel(locale, key),
     value,
   }));
+}
+
+function getEvidence(detail: RecommendationProductDetailResponse) {
+  return Array.isArray(detail.evidence) ? detail.evidence : [];
 }
 
 export function RecommendationProductDetailPage() {
@@ -148,6 +154,7 @@ export function RecommendationProductDetailPage() {
     }
     return buildMetricEntries(locale, detail);
   }, [detail, locale]);
+  const evidence = useMemo(() => (detail ? getEvidence(detail) : []), [detail]);
 
   const pageTitle = detail ? getLocalizedText(locale, detail.nameZh, detail.nameEn) : copy.title;
 
@@ -278,6 +285,44 @@ export function RecommendationProductDetailPage() {
             </header>
             <p>{getLocalizedText(locale, detail.recommendationRationale.zh, detail.recommendationRationale.en)}</p>
           </article>
+
+          {evidence.length > 0 ? (
+            <article className="panel recommendation-detail-references">
+              <header className="panel__header">
+                <h2>{copy.references}</h2>
+              </header>
+              <div className="recommendation-evidence-list recommendation-evidence-list--detail">
+                {evidence.map((reference, index) => (
+                  <article className="recommendation-evidence-item" key={`${reference.sourceTitle}-${index}`}>
+                    <p className="recommendation-evidence-item__excerpt">
+                      {getLocalizedText(locale, reference.excerptZh, reference.excerptEn)}
+                    </p>
+                    <p className="recommendation-evidence-item__meta">
+                      {reference.sourceUri ? (
+                        <a
+                          className="recommendation-evidence-item__source-link"
+                          href={reference.sourceUri}
+                          rel="noopener noreferrer"
+                          target="_blank"
+                        >
+                          {reference.sourceTitle}
+                        </a>
+                      ) : (
+                        <span className="recommendation-evidence-item__source-title">
+                          {reference.sourceTitle}
+                        </span>
+                      )}
+                      {reference.publishedAt ? (
+                        <span className="recommendation-evidence-item__published-at">
+                          {reference.publishedAt}
+                        </span>
+                      ) : null}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </article>
+          ) : null}
         </section>
       ) : null}
     </AppShell>
