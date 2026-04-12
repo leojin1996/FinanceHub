@@ -79,11 +79,15 @@ export interface AllocationDisplay {
 }
 
 export interface RecommendationEvidenceReference {
-  excerptEn: string;
-  excerptZh: string;
-  publishedAt?: string | null;
+  evidenceId: string;
+  excerpt: string;
+  excerptLanguage: string;
   sourceTitle: string;
-  sourceUri?: string | null;
+  docType: string;
+  asOfDate: string | null;
+  pageNumber: number | null;
+  sectionTitle: string | null;
+  sourceUri: string | null;
 }
 
 export interface RecommendationProduct {

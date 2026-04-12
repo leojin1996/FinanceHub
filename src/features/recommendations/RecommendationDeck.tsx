@@ -111,10 +111,6 @@ function getEvidencePreview(product: RecommendationProduct): RecommendationEvide
   return Array.isArray(product.evidencePreview) ? product.evidencePreview : [];
 }
 
-function getEvidenceExcerpt(locale: Locale, reference: RecommendationEvidenceReference) {
-  return locale === "en-US" ? reference.excerptEn : reference.excerptZh;
-}
-
 function AllocationBar({ label, value }: { label: string; value: number }) {
   return (
     <div className="recommendation-allocation__row">
@@ -163,7 +159,7 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
         >
           {evidencePreview.map((reference, index) => (
             <article className="recommendation-evidence-item" key={`${product.id}-${reference.sourceTitle}-${index}`}>
-              <p className="recommendation-evidence-item__excerpt">{getEvidenceExcerpt(locale, reference)}</p>
+              <p className="recommendation-evidence-item__excerpt">{reference.excerpt}</p>
               <p className="recommendation-evidence-item__meta">
                 {reference.sourceUri ? (
                   <a
@@ -177,8 +173,8 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
                 ) : (
                   <span className="recommendation-evidence-item__source-title">{reference.sourceTitle}</span>
                 )}
-                {reference.publishedAt ? (
-                  <span className="recommendation-evidence-item__published-at">{reference.publishedAt}</span>
+                {reference.asOfDate ? (
+                  <span className="recommendation-evidence-item__as-of-date">{reference.asOfDate}</span>
                 ) : null}
               </p>
             </article>

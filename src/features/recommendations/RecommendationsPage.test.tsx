@@ -118,9 +118,13 @@ describe("RecommendationsPage", () => {
                     detailRoute: "/recommendations/products/fund-001",
                     evidencePreview: [
                       {
-                        excerptEn: "Holdings stay concentrated in high-grade bonds, with drawdown kept in a narrow band.",
-                        excerptZh: "持仓继续以高等级债券为主，回撤区间控制在较低水平。",
-                        publishedAt: "2026-04-08",
+                        asOfDate: "2026-04-08",
+                        docType: "fund_quarterly_report",
+                        evidenceId: "ev-fund-001",
+                        excerpt: "持仓继续以高等级债券为主，回撤区间控制在较低水平。",
+                        excerptLanguage: "zh-CN",
+                        pageNumber: 3,
+                        sectionTitle: "资产组合分析",
                         sourceTitle: "基金季报（2026Q1）",
                         sourceUri: "https://example.com/reports/fund-001-2026q1",
                       },
@@ -148,9 +152,13 @@ describe("RecommendationsPage", () => {
                     detailRoute: "/recommendations/products/stock-001",
                     evidencePreview: [
                       {
-                        excerptEn: "Quarterly profit remained resilient while provisioning stayed conservative.",
-                        excerptZh: "季度利润保持韧性，同时拨备策略延续审慎。",
-                        publishedAt: "2026-04-07",
+                        asOfDate: "2026-04-07",
+                        docType: "company_announcement",
+                        evidenceId: "ev-stock-001",
+                        excerpt: "季度利润保持韧性，同时拨备策略延续审慎。",
+                        excerptLanguage: "zh-CN",
+                        pageNumber: null,
+                        sectionTitle: "经营情况摘要",
                         sourceTitle: "公司公告摘要",
                         sourceUri: null,
                       },

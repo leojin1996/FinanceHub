@@ -294,9 +294,7 @@ export function RecommendationProductDetailPage() {
               <div className="recommendation-evidence-list recommendation-evidence-list--detail">
                 {evidence.map((reference, index) => (
                   <article className="recommendation-evidence-item" key={`${reference.sourceTitle}-${index}`}>
-                    <p className="recommendation-evidence-item__excerpt">
-                      {getLocalizedText(locale, reference.excerptZh, reference.excerptEn)}
-                    </p>
+                    <p className="recommendation-evidence-item__excerpt">{reference.excerpt}</p>
                     <p className="recommendation-evidence-item__meta">
                       {reference.sourceUri ? (
                         <a
@@ -312,9 +310,9 @@ export function RecommendationProductDetailPage() {
                           {reference.sourceTitle}
                         </span>
                       )}
-                      {reference.publishedAt ? (
-                        <span className="recommendation-evidence-item__published-at">
-                          {reference.publishedAt}
+                      {reference.asOfDate ? (
+                        <span className="recommendation-evidence-item__as-of-date">
+                          {reference.asOfDate}
                         </span>
                       ) : null}
                     </p>

@@ -977,7 +977,7 @@ a {
   overflow-wrap: anywhere;
 }
 
-.recommendation-evidence-item__published-at::before {
+.recommendation-evidence-item__as-of-date::before {
   content: "·";
   margin-right: 0.3rem;
 }
