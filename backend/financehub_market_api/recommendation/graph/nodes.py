@@ -390,10 +390,7 @@ def product_match_expert_node(
             )
             for index, candidate in enumerate(ordered_candidates)
         ],
-        product_evidences=_select_product_evidence_bundles_for_candidates(
-            product_evidences=product_evidences,
-            candidate_ids=[candidate.id for candidate in ordered_candidates],
-        ),
+        product_evidences=list(product_evidences),
         filtered_out_reasons=[
             *list(retrieval_plan.filtered_out_reasons),
             *list(product_match.filtered_out_reasons),
@@ -578,14 +575,7 @@ def compliance_risk_officer_node(
                     for item in retrieval_context.candidates
                     if item.product_id in approved_ids
                 ],
-                product_evidences=_select_product_evidence_bundles_for_candidates(
-                    product_evidences=retrieval_context.product_evidences,
-                    candidate_ids=[
-                        item.product_id
-                        for item in retrieval_context.candidates
-                        if item.product_id in approved_ids
-                    ],
-                ),
+                product_evidences=list(retrieval_context.product_evidences),
                 filtered_out_reasons=[
                     *list(retrieval_context.filtered_out_reasons),
                     *[
@@ -867,23 +857,6 @@ def _retrieve_product_evidence_bundles(
         query_text=query_text,
         product_ids=candidate_ids,
     )
-
-
-def _select_product_evidence_bundles_for_candidates(
-    *,
-    product_evidences: list[ProductEvidenceBundle],
-    candidate_ids: list[str],
-) -> list[ProductEvidenceBundle]:
-    if not product_evidences or not candidate_ids:
-        return []
-    evidence_by_product_id = {
-        bundle.product_id: bundle for bundle in product_evidences
-    }
-    return [
-        evidence_by_product_id[candidate_id]
-        for candidate_id in candidate_ids
-        if candidate_id in evidence_by_product_id
-    ]
 
 
 def _build_compliance_prompt_context(

@@ -797,6 +797,124 @@ class _FailingMarketDataService:
         raise RuntimeError("market data unavailable")
 
 
+class _SubsetSelectionRuntime(_CurrentAgentRuntime):
+    def match_products(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ProductMatchAgentOutput, AgentInvocationMetadata]:
+        del user_profile, user_profile_insights, market_intelligence, prompt_context
+        selected = [candidate.id for candidate in candidates][:2]
+        recommended_categories = list(
+            dict.fromkeys(
+                candidate.category
+                for candidate in candidates
+                if candidate.id in selected
+            )
+        )
+        return (
+            ProductMatchAgentOutput(
+                recommended_categories=recommended_categories,
+                selected_product_ids=selected,
+                ranking_rationale_zh="测试仅选择部分候选。",
+                ranking_rationale_en="Test runtime selects a subset of candidates.",
+                filtered_out_reasons=[],
+            ),
+            self._metadata("product_match_expert"),
+        )
+
+
+class _ComplianceFilteringRuntime(_CurrentAgentRuntime):
+    def analyze_user_profile(
+        self,
+        user_profile: UserProfile,
+        *,
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[UserProfileAgentOutput, AgentInvocationMetadata]:
+        del user_profile, prompt_context
+        return (
+            UserProfileAgentOutput(
+                risk_tier="R2",
+                liquidity_preference="medium",
+                investment_horizon="medium",
+                return_objective="capital_preservation",
+                drawdown_sensitivity="high",
+                profile_focus_zh="测试画像：更保守风险等级。",
+                profile_focus_en="Test profile: conservative risk tier.",
+                derived_signals=["test:compliance_filter"],
+            ),
+            self._metadata("user_profile_analyst"),
+        )
+
+    def match_products(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        market_intelligence: MarketIntelligenceAgentOutput,
+        candidates: list[CandidateProduct],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ProductMatchAgentOutput, AgentInvocationMetadata]:
+        del user_profile, user_profile_insights, market_intelligence, prompt_context
+        by_category = {candidate.category: candidate.id for candidate in candidates}
+        selected_ids = [
+            by_category[category]
+            for category in ("wealth_management", "fund", "stock")
+            if category in by_category
+        ]
+        recommended_categories = ["wealth_management", "fund", "stock"]
+        return (
+            ProductMatchAgentOutput(
+                recommended_categories=recommended_categories,
+                selected_product_ids=selected_ids,
+                ranking_rationale_zh="测试要求纳入股票后由合规过滤。",
+                ranking_rationale_en="Test includes stock so compliance must filter it.",
+                filtered_out_reasons=[],
+            ),
+            self._metadata("product_match_expert"),
+        )
+
+    def review_compliance(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ComplianceReviewAgentOutput, AgentInvocationMetadata]:
+        del user_profile, user_profile_insights, compliance_facts, prompt_context
+        approved_ids = [
+            candidate.id
+            for candidate in selected_candidates
+            if candidate.category != "stock"
+        ]
+        rejected_ids = [
+            candidate.id for candidate in selected_candidates if candidate.id not in approved_ids
+        ]
+        verdict = "revise_conservative" if approved_ids else "block"
+        return (
+            ComplianceReviewAgentOutput(
+                verdict=verdict,
+                approved_ids=approved_ids,
+                rejected_ids=rejected_ids,
+                reason_summary_zh="测试合规：移除股票候选。",
+                reason_summary_en="Test compliance: removed stock candidates.",
+                required_disclosures_zh=["测试披露。"],
+                required_disclosures_en=["Test disclosure."],
+                suitability_notes_zh=["测试适当性说明。"],
+                suitability_notes_en=["Test suitability note."],
+                applied_rule_ids=["test:remove_stock"],
+                blocking_reason_codes=[],
+            ),
+            self._metadata("compliance_risk_officer"),
+        )
+
+
 class _StubProductKnowledgeService:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -1297,7 +1415,7 @@ def test_graph_runtime_marks_manager_coordinator_trace_as_error_on_manager_failu
 def test_graph_runtime_stores_product_evidence_bundles_in_retrieval_context() -> None:
     knowledge_service = _StubProductKnowledgeService()
     runtime = _build_runtime(
-        agent_runtime=_CurrentAgentRuntime(),
+        agent_runtime=_SubsetSelectionRuntime(),
         product_retrieval_service=ProductRetrievalService(
             vector_store=_MultiCandidateVectorStore()
         ),
@@ -1309,15 +1427,10 @@ def test_graph_runtime_stores_product_evidence_bundles_in_retrieval_context() ->
     retrieval_context = final_state["retrieval_context"]
     assert retrieval_context is not None
     assert retrieval_context.product_evidences
-    assert {bundle.product_id for bundle in retrieval_context.product_evidences} == {
-        "wm-001",
-        "fund-001",
-        "stock-001",
-    }
     assert knowledge_service.calls
     assert knowledge_service.calls[0]["query_text"] == "我希望获得稳健配置建议"
-    assert {"wm-001", "fund-001", "stock-001"}.issubset(
-        set(knowledge_service.calls[0]["product_ids"])
+    assert {bundle.product_id for bundle in retrieval_context.product_evidences} == set(
+        knowledge_service.calls[0]["product_ids"]
     )
 
 
@@ -1338,6 +1451,32 @@ def test_graph_runtime_injects_product_evidence_into_product_match_prompt_contex
     assert "wm-001 evidence snippet" in product_prompt
     assert "fund-001 evidence snippet" in product_prompt
     assert "stock-001 evidence snippet" in product_prompt
+
+
+def test_graph_runtime_preserves_product_evidence_after_compliance_filtering() -> None:
+    knowledge_service = _StubProductKnowledgeService()
+    runtime = _build_runtime(
+        agent_runtime=_ComplianceFilteringRuntime(),
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        product_knowledge_service=knowledge_service,
+    )
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    compliance_review = final_state["compliance_review"]
+    retrieval_context = final_state["retrieval_context"]
+    assert compliance_review is not None
+    assert compliance_review.verdict == "revise_conservative"
+    assert retrieval_context is not None
+    shortlist_ids = set(knowledge_service.calls[0]["product_ids"])
+    approved_candidate_ids = {
+        item.product_id for item in retrieval_context.candidates
+    }
+    evidence_ids = {bundle.product_id for bundle in retrieval_context.product_evidences}
+    assert shortlist_ids - approved_candidate_ids
+    assert evidence_ids == shortlist_ids
 
 
 def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:
