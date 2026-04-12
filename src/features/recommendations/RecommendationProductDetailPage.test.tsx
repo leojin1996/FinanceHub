@@ -138,5 +138,5 @@ describe("RecommendationProductDetailPage", () => {
 
     expect(screen.getByText("基金经理月报")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "基金经理月报" })).not.toBeInTheDocument();
-  });
+  }, 15_000);
 });

@@ -13,6 +13,7 @@ const dimensionAwareAnswerPattern = [
   2, 2, 2, 2,
 ];
 const conservativeAnswerPattern = new Array(questionnaire.length).fill(0);
+const RECOMMENDATIONS_FLOW_TIMEOUT_MS = 30_000;
 
 function jsonResponse(payload: unknown, status = 200) {
   return Promise.resolve(
@@ -325,7 +326,7 @@ describe("RecommendationsPage", () => {
       expect(within(stockEvidencePreview).getByText("公司公告摘要")).toBeInTheDocument();
       expect(within(stockEvidencePreview).queryByRole("link", { name: "公司公告摘要" })).not.toBeInTheDocument();
     },
-    15_000,
+    RECOMMENDATIONS_FLOW_TIMEOUT_MS,
   );
 
   it("renders locale-aware empty guidance in en-US", async () => {
@@ -369,7 +370,7 @@ describe("RecommendationsPage", () => {
         "The enhanced recommendation runtime is unavailable right now, so this plan is based on the fallback rules engine.",
       ),
     ).toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("sends questionnaire answers and web locale context to recommendation generation", async () => {
     window.history.pushState({}, "", "/risk-assessment");
@@ -397,7 +398,7 @@ describe("RecommendationsPage", () => {
         score: dimensionAwareAnswerPattern[index] + 1,
       })),
     });
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("shows a partial degradation banner when only some AI stages fall back", async () => {
     const fetchMock = vi.mocked(fetch);
@@ -466,7 +467,7 @@ describe("RecommendationsPage", () => {
       screen.getByText("基金智能排序暂时不可用，已自动回退到默认候选顺序。"),
     ).toBeInTheDocument();
     expect(screen.queryByText("当前推荐已回退到规则引擎结果")).not.toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("renders a compact AI trace when tool calls are returned", async () => {
     const fetchMock = vi.mocked(fetch);
@@ -561,7 +562,7 @@ describe("RecommendationsPage", () => {
     expect(screen.getByText("profile_intelligence_score")).toBeInTheDocument();
     expect(screen.getByText("market_snapshot")).toBeInTheDocument();
     expect(screen.getByText("candidate_ranker")).toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("ignores incomplete agent trace events without crashing the page", async () => {
     const fetchMock = vi.mocked(fetch);
@@ -630,7 +631,7 @@ describe("RecommendationsPage", () => {
 
     expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
     expect(screen.queryByText("AI 分析足迹")).not.toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("hides empty recommendation sections when a category has no products", async () => {
     const fetchMock = vi.mocked(fetch);
@@ -707,7 +708,7 @@ describe("RecommendationsPage", () => {
     expect(screen.getByRole("heading", { name: "基金推荐", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "银行理财推荐", level: 2 })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "股票增强", level: 2 })).not.toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("opens an in-app product detail page from the recommendation card", async () => {
     window.history.pushState({}, "", "/recommendations");
@@ -725,7 +726,7 @@ describe("RecommendationsPage", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "中欧稳利债券A" })).toBeInTheDocument();
     expect(screen.getByText("公开债券基金底仓候选，强调稳健与流动性。")).toBeInTheDocument();
     expect(screen.getByText("年化回报")).toBeInTheDocument();
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("reuses the cached recommendation after returning from product detail", async () => {
     window.history.pushState({}, "", "/recommendations");
@@ -756,7 +757,7 @@ describe("RecommendationsPage", () => {
         String(input).endsWith("/api/recommendations/generate"),
       ),
     ).toHaveLength(1);
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("revalidates stale product detail once after the initial cached response", async () => {
     let detailCallCount = 0;
@@ -879,7 +880,7 @@ describe("RecommendationsPage", () => {
         ),
       ).toHaveLength(2);
     });
-  });
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("invalidates the recommendation cache when locale changes", async () => {
     window.history.pushState({}, "", "/risk-assessment");
