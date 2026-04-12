@@ -160,7 +160,7 @@ describe("RecommendationsPage", () => {
                         pageNumber: null,
                         sectionTitle: "经营情况摘要",
                         sourceTitle: "公司公告摘要",
-                        sourceUri: null,
+                        sourceUri: "javascript:alert('xss')",
                       },
                     ],
                     id: "stock-001",
@@ -313,15 +313,17 @@ describe("RecommendationsPage", () => {
       expect(screen.getByText("招商银行")).toBeInTheDocument();
       expect(screen.getByText("45%")).toBeInTheDocument();
 
-      const fundCard = screen.getByText("中欧稳利债券A").closest("article");
-      expect(fundCard).not.toBeNull();
-      expect(within(fundCard as HTMLElement).getByText("持仓继续以高等级债券为主，回撤区间控制在较低水平。")).toBeInTheDocument();
-      expect(within(fundCard as HTMLElement).getByText("基金季报（2026Q1）")).toBeInTheDocument();
+      const fundEvidencePreview = screen.getByTestId("recommendation-evidence-preview-fund-001");
+      expect(within(fundEvidencePreview).getByText("持仓继续以高等级债券为主，回撤区间控制在较低水平。")).toBeInTheDocument();
+      expect(within(fundEvidencePreview).getByRole("link", { name: "基金季报（2026Q1）" })).toHaveAttribute(
+        "href",
+        "https://example.com/reports/fund-001-2026q1",
+      );
 
-      const stockCard = screen.getByText("招商银行").closest("article");
-      expect(stockCard).not.toBeNull();
-      expect(within(stockCard as HTMLElement).getByText("季度利润保持韧性，同时拨备策略延续审慎。")).toBeInTheDocument();
-      expect(within(stockCard as HTMLElement).getByText("公司公告摘要")).toBeInTheDocument();
+      const stockEvidencePreview = screen.getByTestId("recommendation-evidence-preview-stock-001");
+      expect(within(stockEvidencePreview).getByText("季度利润保持韧性，同时拨备策略延续审慎。")).toBeInTheDocument();
+      expect(within(stockEvidencePreview).getByText("公司公告摘要")).toBeInTheDocument();
+      expect(within(stockEvidencePreview).queryByRole("link", { name: "公司公告摘要" })).not.toBeInTheDocument();
     },
     15_000,
   );

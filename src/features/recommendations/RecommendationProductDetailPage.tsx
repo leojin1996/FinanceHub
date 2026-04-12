@@ -82,6 +82,23 @@ function getEvidence(detail: RecommendationProductDetailResponse) {
   return Array.isArray(detail.evidence) ? detail.evidence : [];
 }
 
+function getSafeExternalLink(sourceUri: string | null): string | null {
+  if (!sourceUri) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(sourceUri);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch (_error) {
+    return null;
+  }
+
+  return null;
+}
+
 export function RecommendationProductDetailPage() {
   const { locale } = useAppState();
   const { productId } = useParams<{ productId: string }>();
@@ -292,32 +309,38 @@ export function RecommendationProductDetailPage() {
                 <h2>{copy.references}</h2>
               </header>
               <div className="recommendation-evidence-list recommendation-evidence-list--detail">
-                {evidence.map((reference, index) => (
-                  <article className="recommendation-evidence-item" key={`${reference.sourceTitle}-${index}`}>
-                    <p className="recommendation-evidence-item__excerpt">{reference.excerpt}</p>
-                    <p className="recommendation-evidence-item__meta">
-                      {reference.sourceUri ? (
-                        <a
-                          className="recommendation-evidence-item__source-link"
-                          href={reference.sourceUri}
-                          rel="noopener noreferrer"
-                          target="_blank"
-                        >
-                          {reference.sourceTitle}
-                        </a>
-                      ) : (
-                        <span className="recommendation-evidence-item__source-title">
-                          {reference.sourceTitle}
-                        </span>
-                      )}
-                      {reference.asOfDate ? (
-                        <span className="recommendation-evidence-item__as-of-date">
-                          {reference.asOfDate}
-                        </span>
-                      ) : null}
-                    </p>
-                  </article>
-                ))}
+                {evidence.map((reference) => {
+                  const safeSourceUri = getSafeExternalLink(reference.sourceUri);
+
+                  return (
+                    <article className="recommendation-evidence-item" key={reference.evidenceId}>
+                      <p className="recommendation-evidence-item__excerpt" lang={reference.excerptLanguage}>
+                        {reference.excerpt}
+                      </p>
+                      <p className="recommendation-evidence-item__meta">
+                        {safeSourceUri ? (
+                          <a
+                            className="recommendation-evidence-item__source-link"
+                            href={safeSourceUri}
+                            rel="noopener noreferrer"
+                            target="_blank"
+                          >
+                            {reference.sourceTitle}
+                          </a>
+                        ) : (
+                          <span className="recommendation-evidence-item__source-title">
+                            {reference.sourceTitle}
+                          </span>
+                        )}
+                        {reference.asOfDate ? (
+                          <span className="recommendation-evidence-item__as-of-date">
+                            {reference.asOfDate}
+                          </span>
+                        ) : null}
+                      </p>
+                    </article>
+                  );
+                })}
               </div>
             </article>
           ) : null}

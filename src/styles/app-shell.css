@@ -942,10 +942,6 @@ a {
   padding-top: 0.6rem;
 }
 
-.recommendation-evidence-item:first-child {
-  margin-top: 0;
-}
-
 .recommendation-evidence-item__excerpt {
   color: var(--fh-text-muted);
   font-size: 0.92rem;

@@ -104,7 +104,7 @@ export interface RecommendationProduct {
   riskLevel: string;
   tagsEn: string[];
   tagsZh: string[];
-  evidencePreview: RecommendationEvidenceReference[];
+  evidencePreview?: RecommendationEvidenceReference[] | null;
 }
 
 export interface RecommendationSection {
@@ -215,7 +215,7 @@ export interface RecommendationProductDetailResponse {
   fees: Record<string, string>;
   drawdownOrVolatility: Record<string, string>;
   fitForProfile: LocalizedText;
-  evidence: RecommendationEvidenceReference[];
+  evidence?: RecommendationEvidenceReference[] | null;
 }
 
 async function readJson<T>(response: Response): Promise<T> {

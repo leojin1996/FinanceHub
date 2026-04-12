@@ -46,7 +46,7 @@ describe("RecommendationProductDetailPage", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
-        const url = String(input);
+        const url = input instanceof Request ? input.url : String(input);
         if (url.endsWith("/api/recommendations/products/fund-001")) {
           return jsonResponse({
             asOfDate: "2026-04-09",
@@ -81,7 +81,7 @@ describe("RecommendationProductDetailPage", () => {
                 pageNumber: null,
                 sectionTitle: "策略回顾",
                 sourceTitle: "基金经理月报",
-                sourceUri: null,
+                sourceUri: "javascript:alert('xss')",
               },
             ],
             fees: {
