@@ -4,7 +4,12 @@ import logging
 from datetime import date, datetime
 
 from financehub_market_api.cache import SnapshotCache, build_snapshot_cache
-from financehub_market_api.models import LocalizedText, RecommendationProductDetailResponse, TrendPoint
+from financehub_market_api.models import (
+    LocalizedText,
+    RecommendationEvidenceReference,
+    RecommendationProductDetailResponse,
+    TrendPoint,
+)
 from financehub_market_api.recommendation.candidate_pool.cache import (
     CandidatePoolSnapshotCache,
     ProductDetailSnapshotCache,
@@ -13,6 +18,7 @@ from financehub_market_api.recommendation.candidate_pool.refresh import (
     RecommendationCandidatePoolRefresher,
 )
 from financehub_market_api.recommendation.candidate_pool.schemas import ProductChartPoint, ProductDetailSnapshot
+from financehub_market_api.recommendation.product_knowledge import ProductKnowledgeRetrievalService
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
@@ -30,9 +36,11 @@ class ProductDetailService:
         *,
         cache: ProductDetailSnapshotCache,
         refresher: RecommendationCandidatePoolRefresher | None = None,
+        product_knowledge_service: ProductKnowledgeRetrievalService | None = None,
     ) -> None:
         self._cache = cache
         self._refresher = refresher
+        self._product_knowledge_service = product_knowledge_service
 
     @classmethod
     def with_default_cache(
@@ -51,16 +59,27 @@ class ProductDetailService:
     def get_product_detail(self, product_id: str) -> RecommendationProductDetailResponse | None:
         snapshot = self._cache.get_product_detail(product_id)
         if snapshot is not None:
-            return _snapshot_to_response(snapshot)
+            return self._attach_public_evidence(
+                _snapshot_to_response(snapshot),
+                snapshot=snapshot,
+            )
 
         stale_snapshot = self._cache.peek_product_detail(product_id)
         if stale_snapshot is not None:
-            return _snapshot_to_response(stale_snapshot.model_copy(update={"stale": True}))
+            stale_response = _snapshot_to_response(stale_snapshot.model_copy(update={"stale": True}))
+            return self._attach_public_evidence(
+                stale_response,
+                snapshot=stale_snapshot,
+            )
 
         fallback_product = _PRODUCT_LOOKUP.get(product_id)
         if fallback_product is None:
             return None
-        return _snapshot_to_response(_catalog_product_to_snapshot(fallback_product))
+        fallback_snapshot = _catalog_product_to_snapshot(fallback_product)
+        return self._attach_public_evidence(
+            _snapshot_to_response(fallback_snapshot),
+            snapshot=fallback_snapshot,
+        )
 
     def refresh_product_detail(self, product_id: str) -> None:
         category = _category_for_product_id(product_id)
@@ -75,6 +94,79 @@ class ProductDetailService:
                 category,
                 exc,
             )
+
+    def _attach_public_evidence(
+        self,
+        response: RecommendationProductDetailResponse,
+        *,
+        snapshot: ProductDetailSnapshot,
+    ) -> RecommendationProductDetailResponse:
+        return response.model_copy(
+            update={
+                "evidence": _public_evidence_for_product(
+                    product_knowledge_service=self._product_knowledge_service,
+                    query_text=_detail_evidence_query_text(snapshot),
+                    product_id=snapshot.id,
+                )
+            }
+        )
+
+
+def _detail_evidence_query_text(snapshot: ProductDetailSnapshot) -> str:
+    return " ".join(
+        part
+        for part in (
+            snapshot.name_zh,
+            snapshot.name_en,
+            snapshot.recommendation_rationale_zh,
+            snapshot.recommendation_rationale_en,
+        )
+        if part
+    )
+
+
+def _public_evidence_for_product(
+    *,
+    product_knowledge_service: ProductKnowledgeRetrievalService | None,
+    query_text: str,
+    product_id: str,
+) -> list[RecommendationEvidenceReference]:
+    if product_knowledge_service is None:
+        return []
+
+    try:
+        bundles = product_knowledge_service.retrieve_evidence(
+            query_text=query_text or product_id,
+            product_ids=[product_id],
+            include_internal=True,
+            limit_per_product=6,
+            total_limit=6,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to retrieve product evidence for %s: %s", product_id, exc)
+        return []
+
+    references: list[RecommendationEvidenceReference] = []
+    for bundle in bundles:
+        if bundle.product_id != product_id:
+            continue
+        for evidence in bundle.evidences:
+            if evidence.visibility != "public" or not evidence.user_displayable:
+                continue
+            references.append(
+                RecommendationEvidenceReference(
+                    evidenceId=evidence.evidence_id,
+                    excerpt=evidence.snippet,
+                    excerptLanguage=evidence.language,
+                    sourceTitle=evidence.source_title,
+                    docType=evidence.doc_type,
+                    asOfDate=evidence.as_of_date,
+                    pageNumber=evidence.page_number,
+                    sectionTitle=evidence.section_title,
+                    sourceUri=evidence.source_uri,
+                )
+            )
+    return references
 
 
 def _catalog_product_to_snapshot(product: CandidateProduct) -> ProductDetailSnapshot:

@@ -175,6 +175,18 @@ class AllocationDisplay(BaseModel):
     stock: int
 
 
+class RecommendationEvidenceReference(BaseModel):
+    evidenceId: str
+    excerpt: str
+    excerptLanguage: str
+    sourceTitle: str
+    docType: str
+    asOfDate: str | None = None
+    pageNumber: int | None = None
+    sectionTitle: str | None = None
+    sourceUri: str | None = None
+
+
 class RecommendationProduct(BaseModel):
     id: str
     category: RecommendationCategory
@@ -189,6 +201,7 @@ class RecommendationProduct(BaseModel):
     riskLevel: str
     tagsEn: list[str]
     tagsZh: list[str]
+    evidencePreview: list[RecommendationEvidenceReference] = Field(default_factory=list)
 
 
 class RecommendationSection(BaseModel):
@@ -326,3 +339,4 @@ class RecommendationProductDetailResponse(BaseModel):
     fees: dict[str, str] = Field(default_factory=dict)
     drawdownOrVolatility: dict[str, str] = Field(default_factory=dict)
     fitForProfile: LocalizedText
+    evidence: list[RecommendationEvidenceReference] = Field(default_factory=list)

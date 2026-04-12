@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -90,6 +91,34 @@ class FakeProductDetailService:
 
     def refresh_product_detail(self, product_id: str) -> None:
         self.refreshed_product_ids.append(product_id)
+
+
+class FakeProductKnowledgeService:
+    def __init__(self, bundles: list[object]) -> None:
+        self._bundles = bundles
+
+    def retrieve_evidence(
+        self,
+        *,
+        query_text: str,
+        product_ids: list[str],
+        include_internal: bool = True,
+        limit_per_product: int = 2,
+        total_limit: int = 12,
+    ) -> list[object]:
+        del query_text, include_internal, limit_per_product, total_limit
+        return [bundle for bundle in self._bundles if bundle.product_id in product_ids]
+
+
+class FakeProductDetailSnapshotCache:
+    def __init__(self, snapshot_by_product_id: dict[str, object]) -> None:
+        self._snapshot_by_product_id = snapshot_by_product_id
+
+    def get_product_detail(self, product_id: str) -> object | None:
+        return self._snapshot_by_product_id.get(product_id)
+
+    def peek_product_detail(self, product_id: str) -> object | None:
+        return self._snapshot_by_product_id.get(product_id)
 
 
 def _build_overview() -> MarketOverviewResponse:
@@ -242,6 +271,115 @@ def _build_recommendation_response() -> RecommendationResponse:
     ).get_recommendation("balanced")
 
 
+def _build_recommendation_service_with_mixed_product_evidence() -> object:
+    from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
+    from financehub_market_api.recommendation.product_knowledge.schemas import (
+        ProductEvidenceBundle,
+        RetrievedProductEvidence,
+    )
+    from financehub_market_api.recommendations import RecommendationService
+
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    product_knowledge_service = FakeProductKnowledgeService(
+        [
+            ProductEvidenceBundle(
+                product_id="fund-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-1",
+                        product_id="fund-001",
+                        score=0.97,
+                        snippet="基金主要投资高等级信用债，兼顾流动性与回撤控制。",
+                        source_title="基金招募说明书",
+                        source_uri="https://example.com/fund-001/prospectus",
+                        doc_type="prospectus",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-10",
+                        section_title="投资范围",
+                        page_number=12,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-internal-1",
+                        product_id="fund-001",
+                        score=0.95,
+                        snippet="内部评审：建议仅在高净值客户场景下重点推介。",
+                        source_title="投顾内部备注",
+                        source_uri=None,
+                        doc_type="advisor_note",
+                        source_type="internal_curated",
+                        visibility="internal",
+                        user_displayable=False,
+                        as_of_date="2026-04-09",
+                        section_title="审阅结论",
+                        page_number=None,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-2",
+                        product_id="fund-001",
+                        score=0.93,
+                        snippet="近一年最大回撤控制在同类中低位。",
+                        source_title="基金定期报告",
+                        source_uri="https://example.com/fund-001/report",
+                        doc_type="periodic_report",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-08",
+                        section_title="风险指标",
+                        page_number=5,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-3",
+                        product_id="fund-001",
+                        score=0.90,
+                        snippet="管理人对久期和信用分散做了明确约束。",
+                        source_title="基金合同",
+                        source_uri="https://example.com/fund-001/contract",
+                        doc_type="contract",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-07",
+                        section_title="投资限制",
+                        page_number=3,
+                        language="zh-CN",
+                    ),
+                ],
+            ),
+            ProductEvidenceBundle(
+                product_id="wm-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="wm-001-public-1",
+                        product_id="wm-001",
+                        score=0.88,
+                        snippet="理财说明书披露了净值波动区间和开放日安排。",
+                        source_title="理财产品说明书",
+                        source_uri="https://example.com/wm-001/spec",
+                        doc_type="product_spec",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-06",
+                        section_title="申赎规则",
+                        page_number=9,
+                        language="zh-CN",
+                    )
+                ],
+            ),
+        ]
+    )
+    runtime_with_evidence = RecommendationGraphRuntime(
+        replace(runtime._services, product_knowledge=product_knowledge_service)
+    )
+    return RecommendationService(graph_runtime=runtime_with_evidence)
+
+
 def _build_product_detail_response(*, stale: bool) -> RecommendationProductDetailResponse:
     return RecommendationProductDetailResponse(
         id="fund-001",
@@ -277,6 +415,40 @@ def _build_product_detail_response(*, stale: bool) -> RecommendationProductDetai
             zh="适合稳健型用户。",
             en="Fits stable users.",
         ),
+    )
+
+
+def _build_product_detail_snapshot() -> object:
+    from financehub_market_api.recommendation.candidate_pool.schemas import ProductDetailSnapshot
+
+    return ProductDetailSnapshot(
+        id="fund-001",
+        category="fund",
+        code="000001",
+        provider_name="Test provider",
+        name_zh="稳健债券A",
+        name_en="Stable Bond A",
+        as_of_date="2026-04-09",
+        generated_at="2026-04-09T10:00:00+08:00",
+        fresh_until="2026-04-10T10:00:00+08:00",
+        source="test_detail_source",
+        stale=False,
+        risk_level="R2",
+        liquidity="T+1",
+        tags_zh=["低回撤"],
+        tags_en=["Low drawdown"],
+        summary_zh="测试详情摘要。",
+        summary_en="Test detail summary.",
+        recommendation_rationale_zh="测试推荐理由。",
+        recommendation_rationale_en="Test recommendation rationale.",
+        chart_label_zh="近期净值",
+        chart_label_en="Recent NAV",
+        chart=[],
+        yield_metrics={"annualizedReturn": "3.42%"},
+        fees={"managementFee": "0.30%"},
+        drawdown_or_volatility={"maxDrawdown": "-0.80%"},
+        fit_for_profile_zh="适合稳健型用户。",
+        fit_for_profile_en="Fits stable users.",
     )
 
 
@@ -483,6 +655,51 @@ def test_generate_recommendations_accepts_extended_request_payload() -> None:
     assert recommendation_service.last_generation_request.userIntentText == "稳健理财"
 
 
+def test_generate_recommendations_exposes_only_public_evidence_preview() -> None:
+    recommendation_service = _build_recommendation_service_with_mixed_product_evidence()
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    first_fund = response.json()["sections"]["funds"]["items"][0]
+    assert len(first_fund["evidencePreview"]) == 2
+    assert all(item["sourceTitle"] != "投顾内部备注" for item in first_fund["evidencePreview"])
+    assert all("visibility" not in item for item in first_fund["evidencePreview"])
+
+
 def test_post_recommendations_alias_accepts_legacy_payload() -> None:
     recommendation_service = FakeRecommendationService(_build_recommendation_response())
     client, clear = _install_override(
@@ -562,6 +779,97 @@ def test_get_recommendation_product_detail_returns_standard_detail_payload() -> 
     assert payload["recommendationRationale"]["zh"]
     assert isinstance(payload["chart"], list)
     assert payload["fitForProfile"]["zh"]
+
+
+def test_get_recommendation_product_detail_exposes_only_public_evidence() -> None:
+    from financehub_market_api.recommendation.product_knowledge.schemas import (
+        ProductEvidenceBundle,
+        RetrievedProductEvidence,
+    )
+    from financehub_market_api.recommendation.services.product_detail_service import ProductDetailService
+
+    product_detail_service = ProductDetailService(
+        cache=FakeProductDetailSnapshotCache(
+            snapshot_by_product_id={"fund-001": _build_product_detail_snapshot()}
+        )
+    )
+    product_detail_service._product_knowledge_service = FakeProductKnowledgeService(
+        [
+            ProductEvidenceBundle(
+                product_id="fund-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-1",
+                        product_id="fund-001",
+                        score=0.96,
+                        snippet="基金招募说明书披露了投资范围与久期约束。",
+                        source_title="基金招募说明书",
+                        source_uri="https://example.com/fund-001/prospectus",
+                        doc_type="prospectus",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-10",
+                        section_title="投资策略",
+                        page_number=8,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-internal-1",
+                        product_id="fund-001",
+                        score=0.95,
+                        snippet="内部评审建议保守销售。",
+                        source_title="投顾内部备注",
+                        source_uri=None,
+                        doc_type="advisor_note",
+                        source_type="internal_curated",
+                        visibility="internal",
+                        user_displayable=False,
+                        as_of_date="2026-04-09",
+                        section_title="内部审阅",
+                        page_number=None,
+                        language="zh-CN",
+                    ),
+                ],
+            ),
+            ProductEvidenceBundle(
+                product_id="wm-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="wm-001-public-1",
+                        product_id="wm-001",
+                        score=0.90,
+                        snippet="不应出现在 fund-001 详情中。",
+                        source_title="理财产品说明书",
+                        source_uri="https://example.com/wm-001/spec",
+                        doc_type="product_spec",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-08",
+                        section_title="申赎规则",
+                        page_number=6,
+                        language="zh-CN",
+                    )
+                ],
+            ),
+        ]
+    )
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        product_detail_service=product_detail_service,
+    )
+    try:
+        response = client.get("/api/recommendations/products/fund-001")
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["evidence"]
+    assert all(item["sourceTitle"] != "投顾内部备注" for item in payload["evidence"])
+    assert all(item["sourceTitle"] != "理财产品说明书" for item in payload["evidence"])
+    assert all("visibility" not in item for item in payload["evidence"])
 
 
 def test_get_recommendation_product_detail_schedules_background_refresh_for_stale_detail() -> None:
