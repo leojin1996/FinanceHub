@@ -190,6 +190,32 @@ def _response_summary(payload: Mapping[str, object]) -> str:
     return json.dumps(_trim_trace_value(payload), ensure_ascii=False, sort_keys=True)
 
 
+def _validation_feedback_suffix(exc: ValidationError) -> str:
+    error_text = str(exc)
+    if "at least one selected product id" in error_text:
+        return (
+            "\nCandidate pool is not empty when candidates were supplied. "
+            "Do not claim it is empty; choose at least one valid supplied id "
+            "or call list_candidate_products for grounding."
+        )
+    return ""
+
+
+def _product_match_validation_feedback_suffix(
+    exc: ValidationError,
+    *,
+    candidates: list[CandidateProduct],
+) -> str:
+    error_text = str(exc)
+    if "at least one selected product id" not in error_text or not candidates:
+        return ""
+    valid_ids = ", ".join(candidate.id for candidate in candidates)
+    return (
+        f"\nValid supplied candidate ids: {valid_ids}.\n"
+        "Treat the candidate_pool_facts section as authoritative when choosing ids."
+    )
+
+
 def _emit_trace_log(message: str, *args: object) -> None:
     LOGGER.info(message, *args)
     if not logging.getLogger().handlers:
@@ -218,6 +244,18 @@ def _render_candidates(candidates: list[CandidateProduct]) -> str:
         parts.append(f"rationale_en={candidate.rationale_en}")
         lines.append(f"- {'; '.join(parts)}")
     return "\n".join(lines)
+
+
+def _candidate_pool_facts(candidates: list[CandidateProduct]) -> dict[str, object]:
+    candidate_ids_by_category: dict[str, list[str]] = {}
+    for candidate in candidates:
+        candidate_ids_by_category.setdefault(candidate.category, []).append(candidate.id)
+    return {
+        "candidate_count": len(candidates),
+        "candidate_ids": [candidate.id for candidate in candidates],
+        "candidate_ids_by_category": candidate_ids_by_category,
+        "candidates": [_serialize_candidate(candidate) for candidate in candidates],
+    }
 
 
 def _serialize_mapping(value: Mapping[str, object]) -> str:
@@ -416,6 +454,8 @@ class _BaseStructuredOutputAgent:
         tool_definitions: Mapping[str, _ToolDefinition],
         output_schema: dict[str, object],
         output_validator: Callable[[dict[str, object]], _ValidatedOutputT],
+        validation_feedback_builder: Callable[[ValidationError], str] | None = None,
+        prefilled_tool_calls: Sequence[AgentToolCallRecord] = (),
     ) -> tuple[_ValidatedOutputT, tuple[AgentToolCallRecord, ...]]:
         tool_calls: list[AgentToolCallRecord] = []
         tool_descriptions = _build_tool_descriptions(tool_definitions)
@@ -428,7 +468,9 @@ class _BaseStructuredOutputAgent:
             user_prompt = prompt_context.render_user_prompt(
                 tool_descriptions=tool_descriptions
             )
-            tool_history = self._render_tool_history(tool_calls)
+            tool_history = self._render_tool_history(
+                (*prefilled_tool_calls, *tool_calls)
+            )
             if tool_history:
                 user_prompt = f"{user_prompt}\n\n{tool_history}"
             if validation_feedback:
@@ -459,6 +501,8 @@ class _BaseStructuredOutputAgent:
                             "The payload did not satisfy the required schema. "
                             f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
                             f"Validation error: {exc}"
+                            f"{_validation_feedback_suffix(exc)}"
+                            f"{validation_feedback_builder(exc) if validation_feedback_builder is not None else ''}"
                         )
                         continue
                     error_message = (
@@ -489,6 +533,8 @@ class _BaseStructuredOutputAgent:
                             "The final payload did not satisfy the required schema. "
                             f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
                             f"Validation error: {exc}"
+                            f"{_validation_feedback_suffix(exc)}"
+                            f"{validation_feedback_builder(exc) if validation_feedback_builder is not None else ''}"
                         )
                         continue
                     raise
@@ -740,12 +786,17 @@ class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
                     ),
                 ),
                 AgentPromptSection(
+                    "Candidate pool facts",
+                    _serialize_mapping(_candidate_pool_facts(candidates)),
+                ),
+                AgentPromptSection(
                     "Candidate list context",
                     _render_candidates(candidates) or "(empty)",
                 ),
             ),
             instructions=(
                 "Use tools before finalizing if candidate detail or the full candidate list is needed.",
+                "The candidate pool facts section is authoritative. If candidate_count > 0, never describe the candidate pool as empty.",
                 "Only return IDs that exist in the supplied candidate list.",
                 "Choose the final recommendation set; do not ask the caller to filter candidates after you decide.",
                 "Return selected_product_ids as the final chosen ids, ranking_rationale_zh and ranking_rationale_en as the bilingual rationale, and filtered_out_reasons as a string list.",
@@ -771,6 +822,17 @@ class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
                 },
             ),
         }
+        prefilled_tool_calls = (
+            AgentToolCallRecord(
+                tool_name="list_candidate_products",
+                arguments={},
+                result={
+                    "candidates": [
+                        _serialize_candidate(candidate) for candidate in candidates
+                    ]
+                },
+            ),
+        )
         return self._run_tool_loop(
             system_prompt=(
                 "You are ProductMatchExpertAgent. Use the available tools when you "
@@ -780,6 +842,11 @@ class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
             tool_definitions=tool_definitions,
             output_schema=ProductMatchAgentOutput.model_json_schema(),
             output_validator=ProductMatchAgentOutput.model_validate,
+            validation_feedback_builder=lambda exc: _product_match_validation_feedback_suffix(
+                exc,
+                candidates=candidates,
+            ),
+            prefilled_tool_calls=prefilled_tool_calls,
         )
 
 

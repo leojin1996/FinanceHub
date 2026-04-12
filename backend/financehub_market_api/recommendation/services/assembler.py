@@ -226,7 +226,9 @@ def assemble_graph_recommendation_response(
     recommendation_status = "ready" if final_response is None else final_response.recommendation_status
 
     compliance_payload = None
-    if compliance_review is not None and compliance_review.verdict != "approve":
+    if compliance_review is not None and (
+        compliance_review.verdict != "approve" or recommendation_status != "ready"
+    ):
         compliance_payload = ComplianceReviewPayload(
             verdict=compliance_review.verdict,
             reasonSummary=LocalizedText(

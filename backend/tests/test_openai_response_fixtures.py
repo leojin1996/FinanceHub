@@ -13,19 +13,19 @@ from financehub_market_api.recommendation.agents.contracts import (
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.provider import (
-    ANTHROPIC_PROVIDER_NAME,
-    AnthropicChatProvider,
+    OPENAI_PROVIDER_NAME,
+    OpenAIChatProvider,
     ProviderConfig,
 )
 
-_FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "anthropic_responses"
+_FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "openai_responses"
 
 
-def _provider() -> AnthropicChatProvider:
-    return AnthropicChatProvider(
+def _provider() -> OpenAIChatProvider:
+    return OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
             api_key="test-key",
             base_url="https://example.com/v1",
         )

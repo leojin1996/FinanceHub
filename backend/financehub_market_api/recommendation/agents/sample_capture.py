@@ -26,10 +26,10 @@ from financehub_market_api.recommendation.agents.contracts import (
 )
 from financehub_market_api.recommendation.agents.interfaces import StructuredOutputProvider
 from financehub_market_api.recommendation.agents.live_runtime import (
-    AnthropicRecommendationAgentRuntime,
+    RecommendationAgentRuntime,
 )
 from financehub_market_api.recommendation.agents.provider import (
-    ANTHROPIC_PROVIDER_NAME,
+    OPENAI_PROVIDER_NAME,
     AgentModelRoute,
     AgentRuntimeConfig,
     LLM_CAPTURE_RAW_RESPONSES_ENV,
@@ -456,21 +456,21 @@ def build_fixture_payload(
     }
 
 
-def _build_anthropic_provider_from_env() -> tuple[StructuredOutputProvider, AgentRuntimeConfig]:
+def _build_openai_provider_from_env() -> tuple[StructuredOutputProvider, AgentRuntimeConfig]:
     runtime_config = AgentRuntimeConfig.from_env()
-    provider_config = runtime_config.providers.get(ANTHROPIC_PROVIDER_NAME)
+    provider_config = runtime_config.providers.get(OPENAI_PROVIDER_NAME)
     if provider_config is None:
         raise RuntimeError(
-            "Anthropic provider config is missing. Set FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY "
-            "and FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL (or compatible aliases)."
+            "OpenAI provider config is missing. Set FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY "
+            "and FINANCEHUB_LLM_PROVIDER_OPENAI_BASE_URL if you need a custom endpoint."
         )
     provider = build_provider(provider_config)
     return cast(StructuredOutputProvider, provider), runtime_config
 
 
-def _build_runtime_or_raise() -> AnthropicRecommendationAgentRuntime:
-    provider, runtime_config = _build_anthropic_provider_from_env()
-    return AnthropicRecommendationAgentRuntime(
+def _build_runtime_or_raise() -> RecommendationAgentRuntime:
+    provider, runtime_config = _build_openai_provider_from_env()
+    return RecommendationAgentRuntime(
         provider=provider,
         runtime_config=runtime_config,
     )
@@ -483,10 +483,10 @@ def _agent_route_or_raise(
     route = routes.get(request_name)
     if route is None:
         raise RuntimeError(f"Missing model route for request_name={request_name}.")
-    if route.provider_name != ANTHROPIC_PROVIDER_NAME:
+    if route.provider_name != OPENAI_PROVIDER_NAME:
         raise RuntimeError(
             f"Invalid provider for request_name={request_name}: {route.provider_name}. "
-            f"Expected {ANTHROPIC_PROVIDER_NAME}."
+            f"Expected {OPENAI_PROVIDER_NAME}."
         )
     if not route.model_name.strip():
         raise RuntimeError(f"Missing model_name for request_name={request_name}.")
@@ -1102,7 +1102,7 @@ def _build_output_summary(output: BaseModel) -> str:
 
 
 def _run_core_stage_sequence(
-    runtime: AnthropicRecommendationAgentRuntime,
+    runtime: RecommendationAgentRuntime,
     *,
     risk_profile: str,
 ) -> list[tuple[str, BaseModel, str]]:
@@ -1189,9 +1189,9 @@ def run_live_agent_smoke(
 
 
 def run_live_agent_e2e(*, risk_profile: str = "balanced") -> RecommendationResponse:
-    runtime = AnthropicRecommendationAgentRuntime.from_env()
+    runtime = RecommendationAgentRuntime.from_env()
     if runtime is None:
-        raise RuntimeError("No live Anthropic runtime configuration is available.")
+        raise RuntimeError("No live OpenAI runtime configuration is available.")
 
     candidates = _build_live_candidates(risk_profile=risk_profile)
     service = RecommendationService(
@@ -1227,13 +1227,13 @@ def capture_all_agents(
     fixtures_dir: str | Path | None = None,
 ) -> list[CaptureSummary]:
     env_values = provider_module._build_env_values()
-    provider, runtime_config = _build_anthropic_provider_from_env()
+    provider, runtime_config = _build_openai_provider_from_env()
     if not provider_module._is_raw_capture_enabled(env_values):
         raise RuntimeError(
             f"{LLM_CAPTURE_RAW_RESPONSES_ENV} must be set to a truthy value to capture raw responses."
         )
 
-    runtime = AnthropicRecommendationAgentRuntime(
+    runtime = RecommendationAgentRuntime(
         provider=provider,
         runtime_config=runtime_config,
     )

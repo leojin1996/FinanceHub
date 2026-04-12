@@ -7,11 +7,11 @@ from financehub_market_api.recommendation.agents.sample_capture import CaptureRu
 
 
 def _default_fixtures_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "anthropic_responses"
+    return Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "openai_responses"
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Capture Anthropic responses for all recommendation agents.")
+    parser = argparse.ArgumentParser(description="Capture OpenAI responses for all recommendation agents.")
     parser.add_argument(
         "--risk-profile",
         default="balanced",

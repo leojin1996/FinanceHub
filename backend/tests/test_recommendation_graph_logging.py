@@ -43,8 +43,8 @@ def test_structured_executor_logs_start_and_finish_with_summaries(
     caplog.set_level(logging.INFO)
     executor = StructuredAgentExecutor(
         provider=_FakeProvider({"summary_zh": "稳健", "summary_en": "steady"}),
-        provider_name="anthropic",
-        model_name="claude-opus-4-6",
+        provider_name="openai",
+        model_name="gpt-5.4",
         request_name="market_intelligence",
         timeout_seconds=5.0,
     )
@@ -61,16 +61,16 @@ def test_structured_executor_logs_start_and_finish_with_summaries(
     assert any(
         "agent_request_start" in record.message
         and "request_name=market_intelligence" in record.message
-        and "provider_name=anthropic" in record.message
-        and "model_name=claude-opus-4-6" in record.message
+        and "provider_name=openai" in record.message
+        and "model_name=gpt-5.4" in record.message
         and "request_summary=" in record.message
         for record in caplog.records
     )
     assert any(
         "agent_request_finish" in record.message
         and "request_name=market_intelligence" in record.message
-        and "provider_name=anthropic" in record.message
-        and "model_name=claude-opus-4-6" in record.message
+        and "provider_name=openai" in record.message
+        and "model_name=gpt-5.4" in record.message
         and "response_summary=" in record.message
         for record in caplog.records
     )
@@ -82,8 +82,8 @@ def test_structured_executor_logs_error_with_fallback_action(
     caplog.set_level(logging.INFO)
     executor = StructuredAgentExecutor(
         provider=_ExplodingProvider(),
-        provider_name="anthropic",
-        model_name="claude-opus-4-6",
+        provider_name="openai",
+        model_name="gpt-5.4",
         request_name="user_profile_analyst",
         timeout_seconds=5.0,
     )
@@ -100,8 +100,8 @@ def test_structured_executor_logs_error_with_fallback_action(
     assert any(
         "agent_request_error" in record.message
         and "request_name=user_profile_analyst" in record.message
-        and "provider_name=anthropic" in record.message
-        and "model_name=claude-opus-4-6" in record.message
+        and "provider_name=openai" in record.message
+        and "model_name=gpt-5.4" in record.message
         and "fallback_action=use deterministic profile inference" in record.message
         for record in caplog.records
     )

@@ -31,8 +31,8 @@ class StructuredOutputProvider(Protocol):
         """Execute one structured-output chat request and parse JSON content."""
 
 
-class AnthropicProvider(StructuredOutputProvider, Protocol):
-    """Anthropic structured-output provider interface."""
+class OpenAIProvider(StructuredOutputProvider, Protocol):
+    """OpenAI structured-output provider interface."""
 
 
 class UserProfileAgent(Protocol):

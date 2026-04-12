@@ -29,10 +29,10 @@ from financehub_market_api.recommendation.agents.sample_capture import (
 
 def _load_capture_cli_module() -> object:
     script_path = (
-        Path(__file__).resolve().parents[1] / "scripts" / "capture_anthropic_agent_responses.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "capture_openai_agent_responses.py"
     )
     spec = importlib.util.spec_from_file_location(
-        "capture_anthropic_agent_responses_cli",
+        "capture_openai_agent_responses_cli",
         script_path,
     )
     assert spec is not None
@@ -47,8 +47,8 @@ def _runtime_config() -> AgentRuntimeConfig:
         providers={},
         agent_routes={
             request_name: AgentModelRoute(
-                provider_name="anthropic",
-                model_name="claude-test",
+                provider_name="openai",
+                model_name="gpt-5.4-test",
             )
             for request_name in capture_request_names()
         },
@@ -75,7 +75,7 @@ class _FakeRuntime:
                 profile_focus_en="steady",
                 derived_signals=[],
             ),
-            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+            type("Metadata", (), {"provider_name": "openai", "model_name": "gpt-5.4-test"})(),
         )
 
     def analyze_market_intelligence(
@@ -100,7 +100,7 @@ class _FakeRuntime:
                 summary_en="Market is steady",
                 evidence_refs=["market_overview"],
             ),
-            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+            type("Metadata", (), {"provider_name": "openai", "model_name": "gpt-5.4-test"})(),
         )
 
     def match_products(
@@ -122,7 +122,7 @@ class _FakeRuntime:
                 ranking_rationale_en="Prefer resilient candidates.",
                 filtered_out_reasons=[],
             ),
-            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+            type("Metadata", (), {"provider_name": "openai", "model_name": "gpt-5.4-test"})(),
         )
 
     def review_compliance(
@@ -150,7 +150,7 @@ class _FakeRuntime:
                 applied_rule_ids=["test-rule"],
                 blocking_reason_codes=[],
             ),
-            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+            type("Metadata", (), {"provider_name": "openai", "model_name": "gpt-5.4-test"})(),
         )
 
     def coordinate_manager(
@@ -180,7 +180,7 @@ class _FakeRuntime:
                 why_this_plan_zh=["理由一"],
                 why_this_plan_en=["Reason one"],
             ),
-            type("Metadata", (), {"provider_name": "anthropic", "model_name": "claude-test"})(),
+            type("Metadata", (), {"provider_name": "openai", "model_name": "gpt-5.4-test"})(),
         )
 
 
@@ -303,7 +303,7 @@ def test_capture_all_agents_returns_ordered_summary_and_writes_sanitized_fixture
     fake_runtime = _FakeRuntime()
     monkeypatch.setattr(
         sample_capture_module,
-        "_build_anthropic_provider_from_env",
+        "_build_openai_provider_from_env",
         lambda: (object(), _runtime_config()),
     )
     monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
@@ -311,7 +311,7 @@ def test_capture_all_agents_returns_ordered_summary_and_writes_sanitized_fixture
     monkeypatch.setattr(sample_capture_module.provider_module, "_resolve_capture_dir", lambda _: capture_dir)
     monkeypatch.setattr(
         sample_capture_module,
-        "AnthropicRecommendationAgentRuntime",
+        "RecommendationAgentRuntime",
         lambda provider, runtime_config: fake_runtime,
     )
 
@@ -340,7 +340,7 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
         Path(cli_module.__file__).resolve().parents[1]
         / "tests"
         / "fixtures"
-        / "anthropic_responses"
+        / "openai_responses"
     )
 
     def _fake_capture_all_agents(*, risk_profile: str, fixtures_dir: Path) -> list[dict[str, str]]:
@@ -362,7 +362,7 @@ def test_capture_cli_main_prints_summary_lines_with_default_fixtures_dir(
         ]
 
     monkeypatch.setattr(cli_module, "capture_all_agents", _fake_capture_all_agents)
-    monkeypatch.setattr(sys, "argv", ["capture_anthropic_agent_responses.py"])
+    monkeypatch.setattr(sys, "argv", ["capture_openai_agent_responses.py"])
 
     result = cli_module.main()
 
@@ -393,7 +393,7 @@ def test_run_live_agent_smoke_uses_core_stage_sequence_summary(
                     profile_focus_en="steady",
                     derived_signals=[],
                 ),
-                "claude-test",
+                "gpt-5.4-test",
             ),
             (
                 "manager_coordinator",
@@ -404,7 +404,7 @@ def test_run_live_agent_smoke_uses_core_stage_sequence_summary(
                     why_this_plan_zh=["理由一"],
                     why_this_plan_en=["Reason one"],
                 ),
-                "claude-test",
+                "gpt-5.4-test",
             ),
         ],
     )
@@ -415,7 +415,7 @@ def test_run_live_agent_smoke_uses_core_stage_sequence_summary(
         "user_profile_analyst",
         "manager_coordinator",
     ]
-    assert [item["model_name"] for item in summary] == ["claude-test", "claude-test"]
+    assert [item["model_name"] for item in summary] == ["gpt-5.4-test", "gpt-5.4-test"]
     assert summary[0]["output_summary"].startswith("{\"derived_signals\":")
 
 
@@ -457,7 +457,7 @@ def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(
     fake_runtime = _FakeRuntime(fail_market=True)
     monkeypatch.setattr(
         sample_capture_module,
-        "_build_anthropic_provider_from_env",
+        "_build_openai_provider_from_env",
         lambda: (object(), _runtime_config()),
     )
     monkeypatch.setattr(sample_capture_module.provider_module, "_build_env_values", lambda: {"x": "y"})
@@ -465,7 +465,7 @@ def test_capture_all_agents_continues_after_stage_failure_and_reports_summary(
     monkeypatch.setattr(sample_capture_module.provider_module, "_resolve_capture_dir", lambda _: capture_dir)
     monkeypatch.setattr(
         sample_capture_module,
-        "AnthropicRecommendationAgentRuntime",
+        "RecommendationAgentRuntime",
         lambda provider, runtime_config: fake_runtime,
     )
 

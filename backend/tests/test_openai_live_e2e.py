@@ -19,11 +19,11 @@ def _live_agent_e2e_enabled() -> bool:
 
 def _assert_live_provider_available() -> None:
     if not _live_agent_e2e_enabled():
-        pytest.skip(f"Set {LIVE_AGENT_E2E_ENV}=true to run live Anthropic end-to-end coverage.")
+        pytest.skip(f"Set {LIVE_AGENT_E2E_ENV}=true to run live OpenAI end-to-end coverage.")
 
     runtime_config = AgentRuntimeConfig.from_env()
     if not runtime_config.providers:
-        pytest.skip("No live LLM provider configured for Anthropic end-to-end coverage.")
+        pytest.skip("No live LLM provider configured for OpenAI end-to-end coverage.")
 
 
 def _live_failure_context(response) -> str:

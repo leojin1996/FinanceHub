@@ -13,14 +13,15 @@ from financehub_market_api.recommendation.agents.contracts import (
 from financehub_market_api.recommendation.agents import provider as provider_module
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
-    ANTHROPIC_DEFAULT_MODEL,
-    ANTHROPIC_PROVIDER_NAME,
+    OPENAI_DEFAULT_MODEL,
+    OPENAI_PROVIDER_NAME,
     AgentRuntimeConfig,
-    AnthropicChatProvider,
     LLMInvalidResponseError,
     LLMProviderError,
+    OpenAIChatProvider,
     ProviderConfig,
 )
+
 class _FakeResponse:
     def __init__(self, payload: object, *, json_error: Exception | None = None) -> None:
         self._payload = payload
@@ -105,26 +106,44 @@ class _SequentialFakeHttpClient:
         return _FakeResponse(response_payload)
 
 
-def _build_anthropic_provider(
+def _build_openai_fixture_provider(
     response_payload: object,
     *,
     json_error: Exception | None = None,
-) -> tuple[AnthropicChatProvider, _FakeHttpClient]:
+) -> tuple[OpenAIChatProvider, _FakeHttpClient]:
     http_client = _FakeHttpClient(response_payload, json_error=json_error)
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
-            base_url="https://oneapi.hk/v1",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
+            base_url="https://api.openai.com/v1",
         ),
         http_client=http_client,
     )
     return provider, http_client
 
 
-def test_anthropic_provider_uses_messages_api_and_parses_text_json() -> None:
-    provider, http_client = _build_anthropic_provider(
+def _build_openai_provider(
+    response_payload: object,
+    *,
+    json_error: Exception | None = None,
+) -> tuple[OpenAIChatProvider, _FakeHttpClient]:
+    http_client = _FakeHttpClient(response_payload, json_error=json_error)
+    provider = OpenAIChatProvider(
+        ProviderConfig(
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
+            base_url="https://api.openai.com/v1",
+        ),
+        http_client=http_client,
+    )
+    return provider, http_client
+
+
+def test_openai_provider_uses_messages_api_and_parses_text_json() -> None:
+    provider, http_client = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -146,14 +165,14 @@ def test_anthropic_provider_uses_messages_api_and_parses_text_json() -> None:
     )
 
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
-    assert http_client.calls[0]["url"] == "https://oneapi.hk/v1/messages"
-    assert http_client.calls[0]["headers"]["x-api-key"] == "anthropic-test-key"
+    assert http_client.calls[0]["url"] == "https://api.openai.com/v1/chat/completions"
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer openai-test-key"
     assert http_client.calls[0]["json"]["model"] == "claude-opus-4-6"
-    assert http_client.calls[0]["json"]["system"] == "You are MarketIntelligenceAgent."
-    assert http_client.calls[0]["json"]["output_config"]["format"]["type"] == "json_schema"
+    assert http_client.calls[0]["json"]["messages"][0]["content"] == "You are MarketIntelligenceAgent."
+    assert http_client.calls[0]["json"]["response_format"]["type"] == "json_schema"
 
 
-def test_anthropic_provider_retries_structured_request_when_response_content_is_empty() -> None:
+def test_openai_provider_retries_structured_request_when_response_content_is_empty() -> None:
     http_client = _SequentialFakeHttpClient(
         [
             {"content": []},
@@ -167,11 +186,11 @@ def test_anthropic_provider_retries_structured_request_when_response_content_is_
             },
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -188,11 +207,11 @@ def test_anthropic_provider_retries_structured_request_when_response_content_is_
     )
 
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
-    assert "output_config" in http_client.calls[0]["json"]
-    assert "output_config" in http_client.calls[1]["json"]
+    assert "response_format" in http_client.calls[0]["json"]
+    assert "response_format" in http_client.calls[1]["json"]
 
 
-def test_anthropic_provider_captures_raw_response_when_enabled(
+def test_openai_provider_captures_raw_response_when_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -204,7 +223,7 @@ def test_anthropic_provider_captures_raw_response_when_enabled(
             }
         ]
     }
-    provider, _ = _build_anthropic_provider(response_body)
+    provider, _ = _build_openai_fixture_provider(response_body)
     capture_dir = tmp_path / "llm-captures"
     monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES", "true")
     monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_DIR", str(capture_dir))
@@ -230,7 +249,7 @@ def test_anthropic_provider_captures_raw_response_when_enabled(
     assert capture_payload["body"] == response_body
 
 
-def test_anthropic_provider_capture_reads_env_file_candidates(
+def test_openai_provider_capture_reads_env_file_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -242,7 +261,7 @@ def test_anthropic_provider_capture_reads_env_file_candidates(
             }
         ]
     }
-    provider, _ = _build_anthropic_provider(response_body)
+    provider, _ = _build_openai_fixture_provider(response_body)
     capture_dir = tmp_path / "llm-captures"
     env_path = tmp_path / ".env.local"
     env_path.write_text(
@@ -276,7 +295,7 @@ def test_anthropic_provider_capture_reads_env_file_candidates(
     assert capture_payload["model_name"] == "claude-sonnet-4-6"
 
 
-def test_anthropic_provider_capture_write_failure_raises_error(
+def test_openai_provider_capture_write_failure_raises_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -288,7 +307,7 @@ def test_anthropic_provider_capture_write_failure_raises_error(
             }
         ]
     }
-    provider, _ = _build_anthropic_provider(response_body)
+    provider, _ = _build_openai_fixture_provider(response_body)
     capture_dir = tmp_path / "not-a-directory"
     capture_dir.write_text("occupied", encoding="utf-8")
     monkeypatch.setenv("FINANCEHUB_LLM_CAPTURE_RAW_RESPONSES", "true")
@@ -338,7 +357,7 @@ def test_is_agent_trace_logging_enabled_parses_truthy_and_falsey_values(
     )
 
 
-def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
+def test_openai_provider_logs_structured_invalid_then_fallback_success(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -356,11 +375,11 @@ def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
             },
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -395,7 +414,7 @@ def test_anthropic_provider_logs_structured_invalid_then_fallback_success(
     )
 
 
-def test_anthropic_provider_logs_fallback_invalid(
+def test_openai_provider_logs_fallback_invalid(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -407,11 +426,11 @@ def test_anthropic_provider_logs_fallback_invalid(
             {"content": []},
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -467,11 +486,11 @@ def test_provider_trace_logs_reach_root_handler_when_root_logger_is_warning(
             },
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -525,11 +544,11 @@ def test_provider_trace_logs_reach_uvicorn_logger_when_root_has_no_handlers(
             },
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -578,8 +597,8 @@ def test_product_ranking_output_rejects_empty_ranked_ids() -> None:
         ProductRankingAgentOutput.model_validate({"ranked_ids": []})
 
 
-def test_anthropic_provider_accepts_json_wrapped_in_markdown_fence() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_accepts_json_wrapped_in_markdown_fence() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -613,8 +632,8 @@ def test_anthropic_provider_accepts_json_wrapped_in_markdown_fence() -> None:
     }
 
 
-def test_anthropic_provider_accepts_json_fence_with_intro_text() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_accepts_json_fence_with_intro_text() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -649,8 +668,8 @@ def test_anthropic_provider_accepts_json_fence_with_intro_text() -> None:
     }
 
 
-def test_anthropic_provider_accepts_embedded_json_with_trailing_text() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_accepts_embedded_json_with_trailing_text() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -684,8 +703,8 @@ def test_anthropic_provider_accepts_embedded_json_with_trailing_text() -> None:
     }
 
 
-def test_anthropic_provider_ignores_non_json_braces_before_object() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_ignores_non_json_braces_before_object() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -718,10 +737,10 @@ def test_anthropic_provider_ignores_non_json_braces_before_object() -> None:
     }
 
 
-def test_anthropic_provider_extracts_ranked_ids_from_json_like_text_with_invalid_string_quotes() -> (
+def test_openai_provider_extracts_ranked_ids_from_json_like_text_with_invalid_string_quotes() -> (
     None
 ):
-    provider, _ = _build_anthropic_provider(
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -762,10 +781,10 @@ def test_anthropic_provider_extracts_ranked_ids_from_json_like_text_with_invalid
     assert payload == {"ranked_ids": ["fund-001", "fund-002"]}
 
 
-def test_anthropic_provider_extracts_product_match_payload_from_json_like_text_with_invalid_quotes() -> (
+def test_openai_provider_extracts_product_match_payload_from_json_like_text_with_invalid_quotes() -> (
     None
 ):
-    provider, _ = _build_anthropic_provider(
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -812,8 +831,8 @@ def test_anthropic_provider_extracts_product_match_payload_from_json_like_text_w
     ]
 
 
-def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_extracts_schema_object_from_nested_non_text_block() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -851,8 +870,8 @@ def test_anthropic_provider_extracts_schema_object_from_nested_non_text_block() 
     }
 
 
-def test_anthropic_provider_ignores_usage_metadata_when_schema_is_permissive() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_ignores_usage_metadata_when_schema_is_permissive() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -887,10 +906,10 @@ def test_anthropic_provider_ignores_usage_metadata_when_schema_is_permissive() -
     }
 
 
-def test_anthropic_provider_prefers_top_level_non_metadata_object_when_schema_is_permissive() -> (
+def test_openai_provider_prefers_top_level_non_metadata_object_when_schema_is_permissive() -> (
     None
 ):
-    provider, _ = _build_anthropic_provider(
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -927,8 +946,8 @@ def test_anthropic_provider_prefers_top_level_non_metadata_object_when_schema_is
     }
 
 
-def test_anthropic_provider_rejects_usage_metadata_without_structured_payload() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_rejects_usage_metadata_without_structured_payload() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -958,8 +977,8 @@ def test_anthropic_provider_rejects_usage_metadata_without_structured_payload() 
         )
 
 
-def test_anthropic_provider_rejects_nested_object_not_matching_schema() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_rejects_nested_object_not_matching_schema() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -993,8 +1012,8 @@ def test_anthropic_provider_rejects_nested_object_not_matching_schema() -> None:
         )
 
 
-def test_anthropic_provider_rejects_ambiguous_multiple_schema_matches() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_rejects_ambiguous_multiple_schema_matches() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1039,8 +1058,55 @@ def test_anthropic_provider_rejects_ambiguous_multiple_schema_matches() -> None:
         )
 
 
-def test_anthropic_provider_skips_non_json_text_and_extracts_nested_schema_object() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_prefers_richer_schema_aligned_object_from_concatenated_json() -> None:
+    provider, _ = _build_openai_fixture_provider(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"action":"list_candidate_products"}'
+                            '{"selected_product_ids":["fund-101","stock-101"],'
+                            '"ranking_rationale_zh":"候选兼顾成长底仓与权益增强。",'
+                            '"ranking_rationale_en":"The picks balance a growth core with equity upside.",'
+                            '"filtered_out_reasons":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="gpt-5.4",
+        messages=[
+            {"role": "system", "content": "Return product match JSON only."},
+            {"role": "user", "content": "Choose the final products."},
+        ],
+        response_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "tool_name": {"type": ["string", "null"]},
+                "tool_arguments": {"type": "object"},
+                "final_payload": {"type": "object"},
+                **ProductMatchAgentOutput.model_json_schema()["properties"],
+            },
+            "additionalProperties": True,
+        },
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {
+        "selected_product_ids": ["fund-101", "stock-101"],
+        "ranking_rationale_zh": "候选兼顾成长底仓与权益增强。",
+        "ranking_rationale_en": "The picks balance a growth core with equity upside.",
+        "filtered_out_reasons": [],
+    }
+
+
+def test_openai_provider_skips_non_json_text_and_extracts_nested_schema_object() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1082,8 +1148,8 @@ def test_anthropic_provider_skips_non_json_text_and_extracts_nested_schema_objec
     }
 
 
-def test_anthropic_provider_ignores_incidental_braces_in_text_preamble() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_ignores_incidental_braces_in_text_preamble() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1125,8 +1191,8 @@ def test_anthropic_provider_ignores_incidental_braces_in_text_preamble() -> None
     }
 
 
-def test_anthropic_provider_ignores_non_json_fenced_text_preamble() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_ignores_non_json_fenced_text_preamble() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1174,8 +1240,8 @@ def test_anthropic_provider_ignores_non_json_fenced_text_preamble() -> None:
     }
 
 
-def test_anthropic_provider_ignores_malformed_json_preamble_when_later_nested_schema_matches() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_ignores_malformed_json_preamble_when_later_nested_schema_matches() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1217,8 +1283,8 @@ def test_anthropic_provider_ignores_malformed_json_preamble_when_later_nested_sc
     }
 
 
-def test_anthropic_provider_rejects_malformed_json_preamble_without_later_structured_object() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_rejects_malformed_json_preamble_without_later_structured_object() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1248,8 +1314,8 @@ def test_anthropic_provider_rejects_malformed_json_preamble_without_later_struct
         )
 
 
-def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_bare_object_schema_prefers_nested_non_text_object() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1280,8 +1346,8 @@ def test_anthropic_provider_bare_object_schema_prefers_nested_non_text_object() 
     }
 
 
-def test_anthropic_provider_rejects_non_object_json_text_for_bare_object_schema() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_rejects_non_object_json_text_for_bare_object_schema() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1304,8 +1370,8 @@ def test_anthropic_provider_rejects_non_object_json_text_for_bare_object_schema(
         )
 
 
-def test_anthropic_provider_bare_object_schema_prefers_nested_object_with_list_values() -> None:
-    provider, _ = _build_anthropic_provider(
+def test_openai_provider_bare_object_schema_prefers_nested_object_with_list_values() -> None:
+    provider, _ = _build_openai_fixture_provider(
         {
             "content": [
                 {
@@ -1336,7 +1402,7 @@ def test_anthropic_provider_bare_object_schema_prefers_nested_object_with_list_v
     }
 
 
-def test_anthropic_provider_retries_after_read_timeout() -> None:
+def test_openai_provider_retries_after_read_timeout() -> None:
     http_client = _SequentialFakeHttpClient(
         [
             httpx.ReadTimeout("timed out"),
@@ -1350,11 +1416,11 @@ def test_anthropic_provider_retries_after_read_timeout() -> None:
             },
         ]
     )
-    provider = AnthropicChatProvider(
+    provider = OpenAIChatProvider(
         ProviderConfig(
-            name=ANTHROPIC_PROVIDER_NAME,
-            kind="anthropic",
-            api_key="anthropic-test-key",
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
             base_url="https://oneapi.hk/v1",
         ),
         http_client=http_client,
@@ -1374,14 +1440,15 @@ def test_anthropic_provider_retries_after_read_timeout() -> None:
     assert len(http_client.calls) == 2
 
 
-def test_runtime_config_reads_anthropic_values_from_explicit_env_file(tmp_path) -> None:
+def test_runtime_config_reads_openai_values_from_explicit_env_file(tmp_path) -> None:
     env_path = tmp_path / ".env.local"
     env_path.write_text(
         "\n".join(
             [
-                "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY=test-key",
-                "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL=https://example.invalid",
-                "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_MODEL_DEFAULT=claude-sonnet-4-6",
+                "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY=test-key",
+                "FINANCEHUB_LLM_PROVIDER_OPENAI_BASE_URL=https://example.invalid",
+                "FINANCEHUB_LLM_PROVIDER_OPENAI_WIRE_API=responses",
+                "FINANCEHUB_LLM_PROVIDER_OPENAI_MODEL_DEFAULT=gpt-5.4-mini",
             ]
         ),
         encoding="utf-8",
@@ -1389,95 +1456,173 @@ def test_runtime_config_reads_anthropic_values_from_explicit_env_file(tmp_path) 
 
     config = AgentRuntimeConfig.from_env(environ={}, env_files=[env_path])
 
-    assert config.providers[ANTHROPIC_PROVIDER_NAME].api_key == "test-key"
-    assert config.providers[ANTHROPIC_PROVIDER_NAME].base_url == "https://example.invalid/v1"
-    assert config.agent_routes["user_profile_analyst"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["user_profile_analyst"].model_name == "claude-sonnet-4-6"
+    assert config.providers[OPENAI_PROVIDER_NAME].api_key == "test-key"
+    assert config.providers[OPENAI_PROVIDER_NAME].base_url == "https://example.invalid/v1"
+    assert config.providers[OPENAI_PROVIDER_NAME].wire_api == "responses"
+    assert config.agent_routes["user_profile_analyst"].provider_name == OPENAI_PROVIDER_NAME
+    assert config.agent_routes["user_profile_analyst"].model_name == "gpt-5.4-mini"
 
 
-def test_runtime_config_loads_anthropic_provider_and_agent_overrides() -> None:
+def test_runtime_config_loads_openai_provider_and_agent_overrides() -> None:
     config = AgentRuntimeConfig.from_env(
         environ={
-            "ANTHROPIC_AUTH_TOKEN": "anthropic-key",
-            "ANTHROPIC_BASE_URL": "https://oneapi.hk",
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_MODEL_DEFAULT": "claude-opus-4-6",
-            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "openai-key",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_BASE_URL": "https://example.invalid",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_MODEL_DEFAULT": "gpt-5.4",
+            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "gpt-5.4-mini",
         },
         env_files=[],
     )
 
-    assert config.providers[ANTHROPIC_PROVIDER_NAME].api_key == "anthropic-key"
-    assert config.providers[ANTHROPIC_PROVIDER_NAME].base_url == "https://oneapi.hk/v1"
-    assert config.providers[ANTHROPIC_PROVIDER_NAME].kind == "anthropic"
-    assert config.agent_routes["market_intelligence"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["market_intelligence"].model_name == "claude-opus-4-6"
-    assert config.agent_routes["manager_coordinator"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["manager_coordinator"].model_name == "claude-sonnet-4-6"
+    assert config.providers[OPENAI_PROVIDER_NAME].api_key == "openai-key"
+    assert config.providers[OPENAI_PROVIDER_NAME].base_url == "https://example.invalid/v1"
+    assert config.providers[OPENAI_PROVIDER_NAME].kind == "openai"
+    assert config.agent_routes["market_intelligence"].provider_name == OPENAI_PROVIDER_NAME
+    assert config.agent_routes["market_intelligence"].model_name == "gpt-5.4"
+    assert config.agent_routes["manager_coordinator"].provider_name == OPENAI_PROVIDER_NAME
+    assert config.agent_routes["manager_coordinator"].model_name == "gpt-5.4-mini"
 
 
 def test_runtime_config_applies_single_agent_override_without_replacing_default_map() -> None:
     config = AgentRuntimeConfig.from_env(
         environ={
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
-            "FINANCEHUB_LLM_AGENT_PRODUCT_MATCH_EXPERT_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "openai-key",
+            "FINANCEHUB_LLM_AGENT_PRODUCT_MATCH_EXPERT_MODEL": "gpt-5.4-mini",
         },
         env_files=[],
     )
 
     assert AGENT_MODEL_ROUTE_ENV_NAMES["product_match_expert"] == "PRODUCT_MATCH_EXPERT"
-    assert config.agent_routes["product_match_expert"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["product_match_expert"].model_name == "claude-sonnet-4-6"
-    assert config.agent_routes["market_intelligence"].provider_name == ANTHROPIC_PROVIDER_NAME
-    assert config.agent_routes["market_intelligence"].model_name == ANTHROPIC_DEFAULT_MODEL
+    assert config.agent_routes["product_match_expert"].provider_name == OPENAI_PROVIDER_NAME
+    assert config.agent_routes["product_match_expert"].model_name == "gpt-5.4-mini"
+    assert config.agent_routes["market_intelligence"].provider_name == OPENAI_PROVIDER_NAME
+    assert config.agent_routes["market_intelligence"].model_name == OPENAI_DEFAULT_MODEL
 
 
 def test_runtime_config_accepts_legacy_agent_override_aliases_for_current_graph() -> None:
     config = AgentRuntimeConfig.from_env(
         environ={
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
-            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "claude-opus-4-6",
-            "FINANCEHUB_LLM_AGENT_FUND_SELECTION_MODEL": "claude-sonnet-4-6",
-            "FINANCEHUB_LLM_AGENT_WEALTH_SELECTION_MODEL": "claude-sonnet-4-6",
-            "FINANCEHUB_LLM_AGENT_STOCK_SELECTION_MODEL": "claude-sonnet-4-6",
-            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "claude-opus-4-6",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "openai-key",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "gpt-5.4",
+            "FINANCEHUB_LLM_AGENT_FUND_SELECTION_MODEL": "gpt-5.4-mini",
+            "FINANCEHUB_LLM_AGENT_WEALTH_SELECTION_MODEL": "gpt-5.4-mini",
+            "FINANCEHUB_LLM_AGENT_STOCK_SELECTION_MODEL": "gpt-5.4-mini",
+            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "gpt-5.4",
         },
         env_files=[],
     )
 
-    assert config.agent_routes["user_profile_analyst"].model_name == "claude-opus-4-6"
-    assert config.agent_routes["market_intelligence"].model_name == ANTHROPIC_DEFAULT_MODEL
-    assert config.agent_routes["product_match_expert"].model_name == "claude-sonnet-4-6"
-    assert config.agent_routes["compliance_risk_officer"].model_name == ANTHROPIC_DEFAULT_MODEL
-    assert config.agent_routes["manager_coordinator"].model_name == "claude-opus-4-6"
+    assert config.agent_routes["user_profile_analyst"].model_name == "gpt-5.4"
+    assert config.agent_routes["market_intelligence"].model_name == OPENAI_DEFAULT_MODEL
+    assert config.agent_routes["product_match_expert"].model_name == "gpt-5.4-mini"
+    assert config.agent_routes["compliance_risk_officer"].model_name == OPENAI_DEFAULT_MODEL
+    assert config.agent_routes["manager_coordinator"].model_name == "gpt-5.4"
 
 
 def test_runtime_config_prefers_current_agent_override_names_over_legacy_aliases() -> None:
     config = AgentRuntimeConfig.from_env(
         environ={
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
-            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "claude-opus-4-6",
-            "FINANCEHUB_LLM_AGENT_USER_PROFILE_ANALYST_MODEL": "claude-sonnet-4-6",
-            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "claude-opus-4-6",
-            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "claude-sonnet-4-6",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "openai-key",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_MODEL": "gpt-5.4",
+            "FINANCEHUB_LLM_AGENT_USER_PROFILE_ANALYST_MODEL": "gpt-5.4-mini",
+            "FINANCEHUB_LLM_AGENT_EXPLANATION_MODEL": "gpt-5.4",
+            "FINANCEHUB_LLM_AGENT_MANAGER_COORDINATOR_MODEL": "gpt-5.4-mini",
         },
         env_files=[],
     )
 
-    assert config.agent_routes["user_profile_analyst"].model_name == "claude-sonnet-4-6"
-    assert config.agent_routes["manager_coordinator"].model_name == "claude-sonnet-4-6"
+    assert config.agent_routes["user_profile_analyst"].model_name == "gpt-5.4-mini"
+    assert config.agent_routes["manager_coordinator"].model_name == "gpt-5.4-mini"
 
 
 def test_runtime_config_reads_llm_timeout_seconds_from_env() -> None:
     config = AgentRuntimeConfig.from_env(
         environ={
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_API_KEY": "anthropic-key",
-            "FINANCEHUB_LLM_PROVIDER_ANTHROPIC_BASE_URL": "https://oneapi.hk/v1",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "openai-key",
             "FINANCEHUB_LLM_TIMEOUT_SECONDS": "30",
         },
         env_files=[],
     )
 
     assert config.request_timeout_seconds == 30.0
+
+
+def test_openai_provider_uses_chat_completions_and_parses_message_content() -> None:
+    provider, http_client = _build_openai_provider(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                    }
+                }
+            ]
+        }
+    )
+
+    payload = provider.chat_json(
+        model_name="gpt-4.1",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    assert http_client.calls[0]["url"] == "https://api.openai.com/v1/chat/completions"
+    assert http_client.calls[0]["headers"]["Authorization"] == "Bearer openai-test-key"
+    assert http_client.calls[0]["json"]["model"] == "gpt-4.1"
+    assert http_client.calls[0]["json"]["response_format"]["type"] == "json_schema"
+
+
+def test_openai_provider_uses_responses_api_when_configured() -> None:
+    http_client = _FakeHttpClient(
+        {
+            "output": [
+                {
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+    provider = OpenAIChatProvider(
+        ProviderConfig(
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
+            base_url="https://api.openai.com/v1",
+            wire_api="responses",
+        ),
+        http_client=http_client,
+    )
+
+    payload = provider.chat_json(
+        model_name="gpt-5.4",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+        request_name="market_intelligence",
+    )
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    assert http_client.calls[0]["url"] == "https://api.openai.com/v1/responses"
+    assert http_client.calls[0]["json"]["model"] == "gpt-5.4"
+    assert http_client.calls[0]["json"]["input"] == [
+        {"role": "system", "content": "You are MarketIntelligenceAgent."},
+        {"role": "user", "content": "Return summary_zh and summary_en."},
+    ]
+    assert http_client.calls[0]["json"]["text"]["format"]["type"] == "json_schema"
+    assert (
+        http_client.calls[0]["json"]["text"]["format"]["name"]
+        == "market_intelligence"
+    )

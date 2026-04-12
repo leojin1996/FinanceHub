@@ -118,9 +118,9 @@ def test_graph_runtime_prefilters_high_risk_candidate_for_conservative_users() -
 
     response = service.generate_recommendation(_build_generation_request("conservative"))
 
-    assert response.recommendationStatus == "ready"
-    assert response.reviewStatus == "pass"
-    assert response.complianceReview is None
+    assert response.recommendationStatus == "limited"
+    assert response.reviewStatus == "partial_pass"
+    assert response.complianceReview is not None
     assert response.sections.stocks.items == []
 
 
@@ -317,16 +317,16 @@ def _risk_tier_for_profile(risk_profile: str) -> str:
 
 class _CurrentAgentRuntime:
     _MODELS = {
-        "user_profile_analyst": "claude-user-profile",
-        "market_intelligence": "claude-market",
-        "product_match_expert": "claude-product-match",
-        "compliance_risk_officer": "claude-compliance",
-        "manager_coordinator": "claude-manager",
+        "user_profile_analyst": "gpt-5.4-user-profile",
+        "market_intelligence": "gpt-5.4-market",
+        "product_match_expert": "gpt-5.4-product-match",
+        "compliance_risk_officer": "gpt-5.4-compliance",
+        "manager_coordinator": "gpt-5.4-manager",
     }
 
     def _metadata(self, request_name: str, *, tool_calls=()) -> AgentInvocationMetadata:
         return AgentInvocationMetadata(
-            provider_name="anthropic",
+            provider_name="openai",
             model_name=self._MODELS[request_name],
             tool_calls=tool_calls,
         )
@@ -1102,27 +1102,25 @@ def test_graph_runtime_applies_ai_agent_outputs_when_runtime_is_available() -> N
         "AI理由：优先配置稳健底仓以降低回撤风险。",
     ]
     trace_by_request = {event.requestName: event for event in response.agentTrace}
-    assert trace_by_request["user_profile_analyst"].providerName == "anthropic"
-    assert trace_by_request["market_intelligence"].providerName == "anthropic"
-    assert trace_by_request["product_match_expert"].providerName == "anthropic"
-    assert trace_by_request["compliance_risk_officer"].providerName == "anthropic"
-    assert trace_by_request["manager_coordinator"].providerName == "anthropic"
+    assert trace_by_request["user_profile_analyst"].providerName == "openai"
+    assert trace_by_request["market_intelligence"].providerName == "openai"
+    assert trace_by_request["product_match_expert"].providerName == "openai"
+    assert trace_by_request["compliance_risk_officer"].providerName == "openai"
+    assert trace_by_request["manager_coordinator"].providerName == "openai"
 
 
-def test_graph_runtime_blocks_when_agent_stage_fails() -> None:
+def test_graph_runtime_falls_back_when_user_profile_agent_stage_fails() -> None:
     response = RecommendationService(
         graph_runtime=_build_runtime(agent_runtime=_FailingUserProfileRuntime())
     ).generate_recommendation(_build_generation_request("balanced"))
 
-    assert response.recommendationStatus == "blocked"
-    assert any(
-        warning.stage == "user_profile_analyst"
-        and warning.code == "agent_user_profile_failed"
-        and "agent unavailable" in warning.message
-        for warning in response.warnings
-    )
+    assert response.recommendationStatus == "ready"
+    assert response.profileInsights is not None
+    assert response.profileInsights.riskTier == "R3"
+    assert response.warnings == []
     trace_by_request = {event.requestName: event for event in response.agentTrace}
     assert trace_by_request["user_profile_analyst"].status == "error"
+    assert trace_by_request["market_intelligence"].status == "finish"
 
 
 def test_graph_runtime_blocks_when_product_match_fails() -> None:

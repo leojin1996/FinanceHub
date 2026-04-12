@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from financehub_market_api.recommendation.agents.anthropic_runtime import (
+from financehub_market_api.recommendation.agents.runtime_agents import (
     ComplianceReviewRuntimeAgent,
     ManagerCoordinatorRuntimeAgent,
     MarketIntelligenceRuntimeAgent,
@@ -20,7 +20,7 @@ from financehub_market_api.recommendation.agents.interfaces import (
     StructuredOutputProvider,
 )
 from financehub_market_api.recommendation.agents.provider import (
-    ANTHROPIC_PROVIDER_NAME,
+    OPENAI_PROVIDER_NAME,
     AgentModelRoute,
     AgentRuntimeConfig,
     build_provider,
@@ -42,7 +42,7 @@ class AgentInvocationMetadata:
     tool_calls: tuple[AgentToolCallRecord, ...] = ()
 
 
-class AnthropicRecommendationAgentRuntime:
+class RecommendationAgentRuntime:
     def __init__(
         self,
         *,
@@ -57,9 +57,9 @@ class AnthropicRecommendationAgentRuntime:
         return self._runtime_config.request_timeout_seconds
 
     @classmethod
-    def from_env(cls) -> AnthropicRecommendationAgentRuntime | None:
+    def from_env(cls) -> RecommendationAgentRuntime | None:
         runtime_config = AgentRuntimeConfig.from_env()
-        provider_config = runtime_config.providers.get(ANTHROPIC_PROVIDER_NAME)
+        provider_config = runtime_config.providers.get(OPENAI_PROVIDER_NAME)
         if provider_config is None:
             return None
         provider = build_provider(provider_config)
@@ -183,7 +183,7 @@ class AnthropicRecommendationAgentRuntime:
         route = self._runtime_config.agent_routes.get(request_name)
         if route is None:
             raise RuntimeError(f"missing model route for request_name={request_name}")
-        if route.provider_name != ANTHROPIC_PROVIDER_NAME:
+        if route.provider_name != OPENAI_PROVIDER_NAME:
             raise RuntimeError(
                 f"unsupported provider={route.provider_name} for request_name={request_name}"
             )

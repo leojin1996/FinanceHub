@@ -16,7 +16,7 @@ from financehub_market_api.recommendation.agents.contracts import (
 )
 from financehub_market_api.recommendation.agents.live_runtime import (
     AgentInvocationMetadata,
-    AnthropicRecommendationAgentRuntime,
+    RecommendationAgentRuntime,
 )
 from financehub_market_api.recommendation.compliance import (
     ComplianceFactsService,
@@ -120,7 +120,7 @@ class _DeterministicAgentRuntime:
 
     def route_metadata(self, request_name: str) -> AgentInvocationMetadata:
         return AgentInvocationMetadata(
-            provider_name="anthropic",
+            provider_name="openai",
             model_name=self._MODEL_BY_REQUEST[request_name],
         )
 
@@ -327,7 +327,10 @@ class _DeterministicAgentRuntime:
         del user_profile, prompt_context
         if compliance_review.verdict == "block":
             status = "blocked"
-        elif compliance_review.verdict == "revise_conservative":
+        elif (
+            compliance_review.verdict == "revise_conservative"
+            or "stock" not in product_match.recommended_categories
+        ):
             status = "limited"
         else:
             status = "ready"
@@ -488,7 +491,7 @@ class RecommendationGraphRuntime:
             repository or PrefetchedCandidateRepository.with_default_cache()
         )
         agent_runtime = (
-            AnthropicRecommendationAgentRuntime.from_env() if use_ai_agents else None
+            RecommendationAgentRuntime.from_env() if use_ai_agents else None
         )
         return cls(
             GraphServices(

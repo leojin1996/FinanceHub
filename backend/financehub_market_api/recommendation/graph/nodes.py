@@ -47,6 +47,17 @@ _BLOCKED_REASON_EN = "The AI multi-agent review did not complete, so the recomme
 _BLOCKED_DISCLOSURES_ZH = ["理财非存款，投资需谨慎。"]
 _BLOCKED_DISCLOSURES_EN = ["Investing involves risk. Proceed prudently."]
 _RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
+_FALLBACK_RISK_TIER_BY_PROFILE = {
+    "conservative": "R2",
+    "stable": "R2",
+    "balanced": "R3",
+    "growth": "R4",
+    "aggressive": "R5",
+}
+
+
+def _fallback_risk_tier_for_profile(risk_profile: str) -> str:
+    return _FALLBACK_RISK_TIER_BY_PROFILE.get(risk_profile, "R3")
 
 
 def user_profile_analyst_node(
@@ -88,15 +99,44 @@ def user_profile_analyst_node(
             prompt_context=_build_user_profile_prompt_context(state=state),
         )
     except Exception as exc:  # noqa: BLE001
-        return _block_state_due_to_agent_failure(
-            state,
+        fallback_output = UserProfileAgentOutput(
+            risk_tier=_fallback_risk_tier_for_profile(user_profile.risk_profile),
+            liquidity_preference="medium",
+            investment_horizon="medium",
+            return_objective="balanced_growth",
+            drawdown_sensitivity="medium",
+            profile_focus_zh=f"按问卷画像回退为{user_profile.label_zh}配置。",
+            profile_focus_en=(
+                f"Fell back to the questionnaire-derived {user_profile.label_en} profile."
+            ),
+            derived_signals=[f"profile:{user_profile.risk_profile}", "fallback:user_profile"],
+        )
+        next_state = {
+            **state,
+            "user_intelligence": UserIntelligence(
+                risk_tier=fallback_output.risk_tier,
+                liquidity_preference=fallback_output.liquidity_preference,
+                investment_horizon=fallback_output.investment_horizon,
+                return_objective=fallback_output.return_objective,
+                drawdown_sensitivity=fallback_output.drawdown_sensitivity,
+                profile_summary_zh=fallback_output.profile_focus_zh,
+                profile_summary_en=fallback_output.profile_focus_en,
+                derived_signals=list(fallback_output.derived_signals),
+            ),
+            "agent_profile_focus": AgentProfileFocusState(
+                profile_focus_zh=fallback_output.profile_focus_zh,
+                profile_focus_en=fallback_output.profile_focus_en,
+            ),
+        }
+        return append_agent_trace_event(
+            next_state,
             node_name="user_profile_analyst",
             request_name="user_profile_analyst",
-            request_summary=f"risk_profile={user_profile.risk_profile}",
-            code="agent_user_profile_failed",
-            message=_format_runtime_error(exc),
+            status="error",
             provider_name=provider_name,
             model_name=model_name,
+            request_summary=f"risk_profile={user_profile.risk_profile}",
+            response_summary=_format_runtime_error(exc),
         )
 
     next_state = {

@@ -8,11 +8,11 @@ from financehub_market_api.recommendation.agents.contracts import (
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.live_runtime import (
-    AnthropicRecommendationAgentRuntime,
+    RecommendationAgentRuntime,
 )
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
-    ANTHROPIC_PROVIDER_NAME,
+    OPENAI_PROVIDER_NAME,
     AgentModelRoute,
     AgentRuntimeConfig,
 )
@@ -48,14 +48,14 @@ class _QueuedProvider:
         return response
 
 
-def _build_runtime(provider: _QueuedProvider) -> AnthropicRecommendationAgentRuntime:
-    return AnthropicRecommendationAgentRuntime(
+def _build_runtime(provider: _QueuedProvider) -> RecommendationAgentRuntime:
+    return RecommendationAgentRuntime(
         provider=provider,
         runtime_config=AgentRuntimeConfig(
             providers={},
             agent_routes={
                 request_name: AgentModelRoute(
-                    provider_name=ANTHROPIC_PROVIDER_NAME,
+                    provider_name=OPENAI_PROVIDER_NAME,
                     model_name=f"test-model-{request_name}",
                 )
                 for request_name in AGENT_MODEL_ROUTE_ENV_NAMES
@@ -160,6 +160,15 @@ def test_match_products_supports_tool_grounded_structured_output() -> None:
         filtered_out_reasons=["stock-001 filtered by AI suitability analysis"],
     )
     assert [call.tool_name for call in metadata.tool_calls] == ["list_candidate_products"]
+    initial_prompt = provider.calls[0]["messages"][-1]["content"]
+    assert "Candidate pool facts" in initial_prompt
+    assert '"candidate_count": 2' in initial_prompt
+    assert '"candidate_ids": [' in initial_prompt
+    assert '"fund-001"' in initial_prompt
+    assert '"wm-001"' in initial_prompt
+    assert "Tool outputs so far" in initial_prompt
+    assert "1. list_candidate_products" in initial_prompt
+    assert '"candidates": [' in initial_prompt
 
 
 def test_match_products_retries_when_model_returns_empty_selection() -> None:
@@ -224,6 +233,10 @@ def test_match_products_retries_when_model_returns_empty_selection() -> None:
     assert output.wealth_management_ids == ["wm-001"]
     assert len(provider.calls) == 2
     assert "Previous response was invalid" in provider.calls[-1]["messages"][-1]["content"]
+    assert "Candidate pool is not empty" in provider.calls[-1]["messages"][-1]["content"]
+    assert "Valid supplied candidate ids" in provider.calls[-1]["messages"][-1]["content"]
+    assert "fund-001" in provider.calls[-1]["messages"][-1]["content"]
+    assert "wm-001" in provider.calls[-1]["messages"][-1]["content"]
 
 
 def test_match_products_accepts_return_decision_with_top_level_selected_product_ids() -> None:
@@ -395,6 +408,55 @@ def test_product_match_output_normalizes_dict_filtered_out_reasons() -> None:
     assert output.filtered_out_reasons == []
 
 
+def test_product_match_output_normalizes_grouped_selected_product_ids_shape() -> None:
+    output = ProductMatchAgentOutput.model_validate(
+        {
+            "recommended_categories": ["fund", "stock"],
+            "selected_product_ids": {
+                "fund": ["fund-301"],
+                "stock": ["stock-301"],
+            },
+            "ranking_rationale_zh": "候选兼顾底仓与权益增强。",
+            "ranking_rationale_en": "The picks balance a core holding with equity upside.",
+            "filtered_out_reasons": ["wm-301 was filtered out."],
+        }
+    )
+
+    assert output == ProductMatchAgentOutput(
+        recommended_categories=["fund", "stock"],
+        selected_product_ids=["fund-301", "stock-301"],
+        fund_ids=["fund-301"],
+        wealth_management_ids=[],
+        stock_ids=["stock-301"],
+        ranking_rationale_zh="候选兼顾底仓与权益增强。",
+        ranking_rationale_en="The picks balance a core holding with equity upside.",
+        filtered_out_reasons=["wm-301 was filtered out."],
+    )
+
+
+def test_product_match_output_normalizes_rationale_lists_into_strings() -> None:
+    output = ProductMatchAgentOutput.model_validate(
+        {
+            "selected_product_ids": ["fund-301", "stock-301"],
+            "ranking_rationale_zh": [
+                "fund-301：适合作为底仓。",
+                "stock-301：适合作为增强收益配置。",
+            ],
+            "ranking_rationale_en": [
+                "fund-301: suitable as the core position.",
+                "stock-301: suitable as the equity enhancer.",
+            ],
+            "filtered_out_reasons": [],
+        }
+    )
+
+    assert output.ranking_rationale_zh == "fund-301：适合作为底仓。\nstock-301：适合作为增强收益配置。"
+    assert (
+        output.ranking_rationale_en
+        == "fund-301: suitable as the core position.\nstock-301: suitable as the equity enhancer."
+    )
+
+
 def test_user_profile_output_normalizes_object_derived_signals() -> None:
     output = UserProfileAgentOutput.model_validate(
         {
@@ -466,7 +528,18 @@ def test_user_profile_output_normalizes_profile_alias_risk_tier() -> None:
     assert output.risk_tier == "R2"
 
 
-@pytest.mark.parametrize("raw_stance", ["bullish", "opportunistic"])
+@pytest.mark.parametrize(
+    "raw_stance",
+    [
+        "bullish",
+        "opportunistic",
+        "pro-growth risk-on",
+        "pro-risk growth",
+        "aggressive_growth",
+        "lean_growth",
+        "lean_growth_risk_on",
+    ],
+)
 def test_market_intelligence_output_normalizes_stance_aliases(raw_stance: str) -> None:
     output = MarketIntelligenceAgentOutput.model_validate(
         {

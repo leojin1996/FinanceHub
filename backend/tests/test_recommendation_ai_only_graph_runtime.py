@@ -46,7 +46,7 @@ class _AIOnlyRuntimeDouble:
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-user-profile", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-user-profile", "tool_calls": ()},
             )(),
         )
 
@@ -72,7 +72,7 @@ class _AIOnlyRuntimeDouble:
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-market", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-market", "tool_calls": ()},
             )(),
         )
 
@@ -99,7 +99,7 @@ class _AIOnlyRuntimeDouble:
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-product-match", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-product-match", "tool_calls": ()},
             )(),
         )
 
@@ -130,7 +130,7 @@ class _AIOnlyRuntimeDouble:
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-compliance", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-compliance", "tool_calls": ()},
             )(),
         )
 
@@ -163,7 +163,7 @@ class _AIOnlyRuntimeDouble:
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-manager", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-manager", "tool_calls": ()},
             )(),
         )
 
@@ -193,7 +193,7 @@ class _FlatSelectionRuntimeDouble(_AIOnlyRuntimeDouble):
             type(
                 "Metadata",
                 (),
-                {"provider_name": "anthropic", "model_name": "claude-product-match", "tool_calls": ()},
+                {"provider_name": "openai", "model_name": "gpt-5.4-product-match", "tool_calls": ()},
             )(),
         )
 

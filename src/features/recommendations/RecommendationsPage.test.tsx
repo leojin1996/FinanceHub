@@ -440,7 +440,7 @@ describe("RecommendationsPage", () => {
           agentTrace: [
             {
               nodeName: "profile_analysis",
-              providerName: "anthropic",
+              providerName: "openai",
               requestName: "user_profile_analyst",
               status: "finish",
               toolCalls: [
@@ -453,7 +453,7 @@ describe("RecommendationsPage", () => {
             },
             {
               nodeName: "market_analysis",
-              providerName: "anthropic",
+              providerName: "openai",
               requestName: "market_intelligence",
               status: "finish",
               toolCalls: [

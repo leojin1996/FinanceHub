@@ -20,11 +20,11 @@ def _live_agent_smoke_enabled() -> bool:
 
 def test_run_live_agent_smoke_against_configured_provider() -> None:
     if not _live_agent_smoke_enabled():
-        pytest.skip(f"Set {LIVE_AGENT_SMOKE_ENV}=true to run live Anthropic smoke coverage.")
+        pytest.skip(f"Set {LIVE_AGENT_SMOKE_ENV}=true to run live OpenAI smoke coverage.")
 
     runtime_config = AgentRuntimeConfig.from_env()
     if not runtime_config.providers:
-        pytest.skip("No live LLM provider configured for Anthropic smoke coverage.")
+        pytest.skip("No live LLM provider configured for OpenAI smoke coverage.")
 
     summary = run_live_agent_smoke()
 

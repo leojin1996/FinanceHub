@@ -370,7 +370,7 @@ def test_default_graph_runtime_uses_market_data_service_for_market_intelligence(
                     profile_focus_en="Test profile.",
                     derived_signals=["questionnaire:test"],
                 ),
-                AgentInvocationMetadata(provider_name="anthropic", model_name="test-user"),
+                AgentInvocationMetadata(provider_name="openai", model_name="test-user"),
             )
 
         def analyze_market_intelligence(
@@ -395,7 +395,7 @@ def test_default_graph_runtime_uses_market_data_service_for_market_intelligence(
                     summary_en=market_facts["summary_en"],
                     evidence_refs=["market_overview", "indices", "market_leadership"],
                 ),
-                AgentInvocationMetadata(provider_name="anthropic", model_name="test-market"),
+                AgentInvocationMetadata(provider_name="openai", model_name="test-market"),
             )
 
         def match_products(
@@ -421,7 +421,7 @@ def test_default_graph_runtime_uses_market_data_service_for_market_intelligence(
                     ranking_rationale_en="Test match.",
                     filtered_out_reasons=[],
                 ),
-                AgentInvocationMetadata(provider_name="anthropic", model_name="test-match"),
+                AgentInvocationMetadata(provider_name="openai", model_name="test-match"),
             )
 
         def review_compliance(
@@ -451,7 +451,7 @@ def test_default_graph_runtime_uses_market_data_service_for_market_intelligence(
                     applied_rule_ids=["test-rule"],
                     blocking_reason_codes=[],
                 ),
-                AgentInvocationMetadata(provider_name="anthropic", model_name="test-compliance"),
+                AgentInvocationMetadata(provider_name="openai", model_name="test-compliance"),
             )
 
         def coordinate_manager(
@@ -476,7 +476,7 @@ def test_default_graph_runtime_uses_market_data_service_for_market_intelligence(
                     why_this_plan_zh=["测试理由。"],
                     why_this_plan_en=["Test reason."],
                 ),
-                AgentInvocationMetadata(provider_name="anthropic", model_name="test-manager"),
+                AgentInvocationMetadata(provider_name="openai", model_name="test-manager"),
             )
 
     repository = StaticCandidateRepository()

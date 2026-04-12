@@ -178,16 +178,29 @@ class MarketIntelligenceAgentOutput(BaseModel):
                 "constructive": "offensive",
                 "opportunistic": "offensive",
                 "aggressive": "offensive",
+                "aggressive_growth": "offensive",
+                "lean_growth": "offensive",
                 "risk_on": "offensive",
                 "bearish": "defensive",
                 "cautious": "defensive",
                 "neutral": "balanced",
                 "mixed": "balanced",
             }
-            normalized["stance"] = stance_aliases.get(
-                raw_stance.strip().lower(),
-                raw_stance,
-            )
+            stance_key = raw_stance.strip().lower()
+            normalized_stance = stance_aliases.get(stance_key)
+            if normalized_stance is None:
+                stance_tokens = {
+                    token
+                    for token in stance_key.replace("-", " ").replace("_", " ").split()
+                    if token
+                }
+                if "risk" in stance_tokens and "on" in stance_tokens:
+                    normalized_stance = "offensive"
+                elif "risk" in stance_tokens and "off" in stance_tokens:
+                    normalized_stance = "defensive"
+                elif "pro" in stance_tokens and "risk" in stance_tokens:
+                    normalized_stance = "offensive"
+            normalized["stance"] = normalized_stance or raw_stance
 
         return normalized
 
@@ -213,6 +226,13 @@ class ProductMatchAgentOutput(BaseModel):
             return value
 
         normalized = dict(value)
+        grouped_selected_product_ids = normalized.get("selected_product_ids")
+        if isinstance(grouped_selected_product_ids, dict):
+            selected_groups = grouped_selected_product_ids
+            if "selected_product_ids" in normalized:
+                del normalized["selected_product_ids"]
+        else:
+            selected_groups = normalized.get("selected_ids")
         alias_selected_product_ids = normalized.get("selected_candidate_ids")
         if "selected_product_ids" not in normalized and isinstance(
             alias_selected_product_ids, list
@@ -221,7 +241,6 @@ class ProductMatchAgentOutput(BaseModel):
                 str(item) for item in alias_selected_product_ids
             ]
 
-        selected_groups = normalized.get("selected_ids")
         if not isinstance(selected_groups, dict):
             alias_selected_groups = normalized.get("selected_products")
             if isinstance(alias_selected_groups, dict):
@@ -286,6 +305,18 @@ class ProductMatchAgentOutput(BaseModel):
             normalized.get("selection_rationale_en"), str
         ):
             normalized["ranking_rationale_en"] = normalized["selection_rationale_en"]
+        normalized_rationale_zh = _normalize_text_list(
+            normalized.get("ranking_rationale_zh"),
+            preferred_keys=("zh", "text", "reason"),
+        )
+        if normalized_rationale_zh:
+            normalized["ranking_rationale_zh"] = "\n".join(normalized_rationale_zh)
+        normalized_rationale_en = _normalize_text_list(
+            normalized.get("ranking_rationale_en"),
+            preferred_keys=("en", "text", "reason"),
+        )
+        if normalized_rationale_en:
+            normalized["ranking_rationale_en"] = "\n".join(normalized_rationale_en)
 
         filtered_out = normalized.get("filtered_out")
         filtered_out_reasons = normalized.get("filtered_out_reasons")

@@ -8,11 +8,11 @@ from financehub_market_api.recommendation.agents.contracts import (
     UserProfileAgentOutput,
 )
 from financehub_market_api.recommendation.agents.live_runtime import (
-    AnthropicRecommendationAgentRuntime,
+    RecommendationAgentRuntime,
 )
 from financehub_market_api.recommendation.agents.provider import (
     AGENT_MODEL_ROUTE_ENV_NAMES,
-    ANTHROPIC_PROVIDER_NAME,
+    OPENAI_PROVIDER_NAME,
     AgentModelRoute,
     AgentRuntimeConfig,
 )
@@ -52,14 +52,14 @@ class _QueuedProvider:
         return response
 
 
-def _build_runtime(provider: _QueuedProvider) -> AnthropicRecommendationAgentRuntime:
-    return AnthropicRecommendationAgentRuntime(
+def _build_runtime(provider: _QueuedProvider) -> RecommendationAgentRuntime:
+    return RecommendationAgentRuntime(
         provider=provider,
         runtime_config=AgentRuntimeConfig(
             providers={},
             agent_routes={
                 request_name: AgentModelRoute(
-                    provider_name=ANTHROPIC_PROVIDER_NAME,
+                    provider_name=OPENAI_PROVIDER_NAME,
                     model_name=f"test-model-{request_name}",
                 )
                 for request_name in AGENT_MODEL_ROUTE_ENV_NAMES
@@ -162,7 +162,7 @@ def test_analyze_user_profile_accepts_direct_structured_output() -> None:
         profile_focus_en="Prioritize principal protection and liquidity.",
         derived_signals=["intent:保本"],
     )
-    assert metadata.provider_name == "anthropic"
+    assert metadata.provider_name == "openai"
     assert metadata.model_name == "test-model-user_profile_analyst"
 
 
