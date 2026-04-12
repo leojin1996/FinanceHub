@@ -3,6 +3,7 @@ from financehub_market_api.recommendation.product_knowledge.service import (
     ProductKnowledgeRetrievalService,
     build_product_knowledge_retrieval_service_from_env,
 )
+import financehub_market_api.recommendation.product_knowledge.service as product_knowledge_service_module
 
 
 class _FakeEmbeddingClient:
@@ -277,3 +278,7 @@ def test_build_product_knowledge_retrieval_service_from_env_supports_openai_key_
         == "financehub_product_knowledge"
     )
     assert service._knowledge_store._api_key == "qdrant-key"
+
+
+def test_product_knowledge_service_module_does_not_expose_api_projection_helper() -> None:
+    assert not hasattr(product_knowledge_service_module, "project_public_evidence_references")

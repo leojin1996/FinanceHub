@@ -25,14 +25,14 @@ class OpenAIEmbeddingClient:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
-        self._http_client = http_client or httpx.Client()
+        self._http_client = http_client
         self._timeout_seconds = timeout_seconds
 
     def embed_query(self, text: str) -> list[float]:
         if not text.strip():
             raise ValueError("query text must not be empty")
 
-        response = self._http_client.post(
+        response = self._get_http_client().post(
             f"{self._base_url}/embeddings",
             headers={
                 "Authorization": f"Bearer {self._api_key}",
@@ -60,3 +60,8 @@ class OpenAIEmbeddingClient:
             raise ValueError("embedding response missing vector")
 
         return [float(value) for value in embedding]
+
+    def _get_http_client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client()
+        return self._http_client

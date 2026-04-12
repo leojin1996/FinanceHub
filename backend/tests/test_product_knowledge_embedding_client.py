@@ -1,5 +1,6 @@
 import pytest
 
+import financehub_market_api.recommendation.product_knowledge.embedding_client as embedding_client_module
 from financehub_market_api.recommendation.product_knowledge.embedding_client import OpenAIEmbeddingClient
 
 
@@ -92,3 +93,16 @@ def test_embed_query_raises_for_missing_data_shape() -> None:
 
     with pytest.raises(ValueError, match="embedding response missing data"):
         client.embed_query("steady income")
+
+
+def test_openai_embedding_client_does_not_create_default_http_client_eagerly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_client_creation() -> object:
+        raise AssertionError("httpx.Client should not be created at __init__ time")
+
+    monkeypatch.setattr(embedding_client_module.httpx, "Client", _unexpected_client_creation)
+
+    client = OpenAIEmbeddingClient(api_key="test-key")
+
+    assert client is not None

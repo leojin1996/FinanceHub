@@ -22,6 +22,33 @@ from financehub_market_api.models import (
 )
 from financehub_market_api.service import DataUnavailableError
 
+_PRODUCT_KNOWLEDGE_ENV_KEYS = [
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_API_KEY",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+    "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY",
+]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_product_knowledge_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from financehub_market_api.main import (
+        get_product_detail_service,
+        get_recommendation_service,
+    )
+
+    for env_key in _PRODUCT_KNOWLEDGE_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+
+    get_recommendation_service.cache_clear()
+    get_product_detail_service.cache_clear()
+    yield
+    get_recommendation_service.cache_clear()
+    get_product_detail_service.cache_clear()
+
 
 class FakeMarketDataService:
     def __init__(
@@ -940,17 +967,32 @@ def test_data_unavailable_error_is_translated_to_http_503(path: str) -> None:
 def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -> None:
     from financehub_market_api.main import get_recommendation_service
 
-    get_recommendation_service.cache_clear()
     service = get_recommendation_service()
 
     assert getattr(service, "_orchestrator", None) is None
-    assert getattr(service, "_graph_runtime", None) is not None
+    runtime = getattr(service, "_graph_runtime", None)
+    assert runtime is not None
+    assert getattr(runtime._services, "product_knowledge", None) is None
+
+
+def test_default_product_detail_dependency_is_inert_when_product_knowledge_env_absent() -> None:
+    from financehub_market_api.main import get_product_detail_service
+
+    service = get_product_detail_service()
+
+    assert getattr(service, "_product_knowledge_service", None) is None
 
 
 def test_default_recommendation_dependency_wires_product_knowledge_when_env_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from financehub_market_api.main import get_recommendation_service
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
 
     monkeypatch.setenv(
         "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
@@ -964,19 +1006,42 @@ def test_default_recommendation_dependency_wires_product_knowledge_when_env_conf
         "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
         "sk-test-product-knowledge",
     )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+        "https://openai.example.com/v1",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+        "text-embedding-3-large",
+    )
 
-    get_recommendation_service.cache_clear()
     service = get_recommendation_service()
     runtime = getattr(service, "_graph_runtime", None)
     assert runtime is not None
-    assert getattr(runtime._services, "product_knowledge", None) is not None
-    get_recommendation_service.cache_clear()
+    retrieval_service = getattr(runtime._services, "product_knowledge", None)
+    assert retrieval_service is not None
+    assert isinstance(retrieval_service._embedding_client, OpenAIEmbeddingClient)
+    assert retrieval_service._embedding_client._api_key == "sk-test-product-knowledge"
+    assert retrieval_service._embedding_client._base_url == "https://openai.example.com/v1"
+    assert retrieval_service._embedding_client._model_name == "text-embedding-3-large"
+    assert isinstance(retrieval_service._knowledge_store, QdrantProductKnowledgeStore)
+    assert retrieval_service._knowledge_store._base_url == "https://qdrant.example.com"
+    assert (
+        retrieval_service._knowledge_store._collection_name
+        == "financehub_product_knowledge"
+    )
 
 
 def test_default_product_detail_dependency_wires_product_knowledge_when_env_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from financehub_market_api.main import get_product_detail_service
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
 
     monkeypatch.setenv(
         "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
@@ -990,12 +1055,28 @@ def test_default_product_detail_dependency_wires_product_knowledge_when_env_conf
         "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
         "sk-test-product-knowledge",
     )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+        "https://openai.example.com/v1",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+        "text-embedding-3-large",
+    )
 
-    get_product_detail_service.cache_clear()
     service = get_product_detail_service()
-
-    assert getattr(service, "_product_knowledge_service", None) is not None
-    get_product_detail_service.cache_clear()
+    retrieval_service = getattr(service, "_product_knowledge_service", None)
+    assert retrieval_service is not None
+    assert isinstance(retrieval_service._embedding_client, OpenAIEmbeddingClient)
+    assert retrieval_service._embedding_client._api_key == "sk-test-product-knowledge"
+    assert retrieval_service._embedding_client._base_url == "https://openai.example.com/v1"
+    assert retrieval_service._embedding_client._model_name == "text-embedding-3-large"
+    assert isinstance(retrieval_service._knowledge_store, QdrantProductKnowledgeStore)
+    assert retrieval_service._knowledge_store._base_url == "https://qdrant.example.com"
+    assert (
+        retrieval_service._knowledge_store._collection_name
+        == "financehub_product_knowledge"
+    )
 
 
 def test_generate_recommendations_raises_when_graph_runtime_fails() -> None:

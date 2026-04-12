@@ -1,5 +1,6 @@
 import pytest
 
+import financehub_market_api.recommendation.product_knowledge.qdrant_store as qdrant_store_module
 from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
     QdrantProductKnowledgeStore,
 )
@@ -174,3 +175,19 @@ def test_search_applies_total_limit_after_merging_products() -> None:
     )
 
     assert [hit["evidence_id"] for hit in hits] == ["fund-002-public-1"]
+
+
+def test_qdrant_store_does_not_create_default_http_client_eagerly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_client_creation() -> object:
+        raise AssertionError("httpx.Client should not be created at __init__ time")
+
+    monkeypatch.setattr(qdrant_store_module.httpx, "Client", _unexpected_client_creation)
+
+    store = QdrantProductKnowledgeStore(
+        base_url="http://qdrant.local",
+        collection_name="product_knowledge",
+    )
+
+    assert store is not None

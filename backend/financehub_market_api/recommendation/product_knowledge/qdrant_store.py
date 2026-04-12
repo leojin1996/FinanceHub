@@ -31,7 +31,7 @@ class QdrantProductKnowledgeStore:
         self._base_url = base_url.rstrip("/")
         self._collection_name = collection_name
         self._api_key = api_key
-        self._http_client = http_client or httpx.Client()
+        self._http_client = http_client
         self._timeout_seconds = timeout_seconds
 
     def search(
@@ -47,7 +47,7 @@ class QdrantProductKnowledgeStore:
             return []
         ranked_hits: list[tuple[float, dict[str, object]]] = []
         for product_id in product_ids:
-            response = self._http_client.post(
+            response = self._get_http_client().post(
                 f"{self._base_url}/collections/{self._collection_name}/points/query",
                 headers=self._headers(),
                 json={
@@ -132,3 +132,8 @@ class QdrantProductKnowledgeStore:
                 if isinstance(points, list):
                     return points
         raise ValueError("malformed qdrant query response: missing result points list")
+
+    def _get_http_client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client()
+        return self._http_client

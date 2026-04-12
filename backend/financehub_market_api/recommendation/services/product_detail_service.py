@@ -21,10 +21,12 @@ from financehub_market_api.recommendation.candidate_pool.schemas import ProductC
 from financehub_market_api.recommendation.product_knowledge import (
     ProductKnowledgeRetrievalService,
     build_product_knowledge_retrieval_service_from_env,
-    project_public_evidence_references,
 )
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.schemas import CandidateProduct
+from financehub_market_api.recommendation.services.evidence_projection import (
+    project_public_evidence_references,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -17,10 +17,7 @@ from financehub_market_api.models import (
     RecommendationWarning,
 )
 from financehub_market_api.recommendation.graph.state import RecommendationGraphState
-from financehub_market_api.recommendation.product_knowledge import (
-    ProductEvidenceBundle,
-    project_public_evidence_references,
-)
+from financehub_market_api.recommendation.product_knowledge import ProductEvidenceBundle
 from financehub_market_api.recommendation.rules import (
     AGGRESSIVE_ALLOCATIONS,
     AGGRESSIVE_OPTION_SUBTITLES,
@@ -35,6 +32,9 @@ from financehub_market_api.recommendation.rules import (
 )
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.schemas import FinalRecommendation
+from financehub_market_api.recommendation.services.evidence_projection import (
+    project_public_evidence_references,
+)
 
 _PRODUCT_LOOKUP = {
     product.id: product
