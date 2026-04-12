@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
@@ -74,10 +75,36 @@ class _FakeEmbeddingClient:
 class _FakeQdrantClient:
     def __init__(self) -> None:
         self.upserts: list[dict[str, object]] = []
+        self.payload_indexes: list[dict[str, object]] = []
 
     def collection_exists(self, collection_name: str) -> bool:
         assert collection_name == "financehub_product_knowledge"
         return True
+
+    def create_payload_index(
+        self,
+        *,
+        collection_name: str,
+        field_name: str,
+        field_schema: object = None,
+        field_type: object = None,
+        wait: bool = True,
+        ordering: object = None,
+        timeout: int | None = None,
+        **kwargs: object,
+    ) -> None:
+        self.payload_indexes.append(
+            {
+                "collection_name": collection_name,
+                "field_name": field_name,
+                "field_schema": field_schema,
+                "field_type": field_type,
+                "wait": wait,
+                "ordering": ordering,
+                "timeout": timeout,
+                "kwargs": kwargs,
+            }
+        )
 
     def upsert(self, *, collection_name: str, points: list[object]) -> None:
         self.upserts.append(
@@ -189,4 +216,20 @@ def test_seed_product_knowledge_collection_embeds_fixture_documents_and_upserts_
     upsert_call = fake_qdrant_client.upserts[0]
     assert upsert_call["collection_name"] == "financehub_product_knowledge"
     assert len(upsert_call["points"]) == len(_load_seed_documents())
+    assert [index["field_name"] for index in fake_qdrant_client.payload_indexes] == [
+        "product_id",
+        "visibility",
+    ]
     assert "seeded" in output.getvalue()
+
+
+def test_seed_product_knowledge_collection_uses_deterministic_uuid_point_ids() -> None:
+    from scripts.seed_product_knowledge_collection import _qdrant_point_id
+
+    first = _qdrant_point_id("fund-001-public-1")
+    second = _qdrant_point_id("fund-001-public-1")
+    third = _qdrant_point_id("fund-001-public-2")
+
+    assert first == second
+    assert first != third
+    assert str(uuid.UUID(first)) == first

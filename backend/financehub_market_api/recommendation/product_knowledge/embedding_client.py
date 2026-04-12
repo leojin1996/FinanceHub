@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -63,5 +64,13 @@ class OpenAIEmbeddingClient:
 
     def _get_http_client(self) -> httpx.Client:
         if self._http_client is None:
-            self._http_client = httpx.Client()
+            client_kwargs: dict[str, bool] = {}
+            if _is_loopback_base_url(self._base_url):
+                client_kwargs["trust_env"] = False
+            self._http_client = httpx.Client(**client_kwargs)
         return self._http_client
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    hostname = urlparse(base_url).hostname
+    return hostname in {"127.0.0.1", "localhost", "::1"}

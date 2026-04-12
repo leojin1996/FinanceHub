@@ -106,3 +106,26 @@ def test_openai_embedding_client_does_not_create_default_http_client_eagerly(
     client = OpenAIEmbeddingClient(api_key="test-key")
 
     assert client is not None
+
+
+def test_openai_embedding_client_disables_env_proxy_for_localhost_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def _build_client(*args: object, **kwargs: object) -> _FakeHttpClient:
+        del args
+        captured_kwargs.update(kwargs)
+        return _FakeHttpClient({"data": [{"embedding": [0.11, 0.22, 0.33]}]})
+
+    monkeypatch.setattr(embedding_client_module.httpx, "Client", _build_client)
+
+    client = OpenAIEmbeddingClient(
+        api_key="ollama",
+        base_url="http://127.0.0.1:11434/v1",
+    )
+
+    vector = client.embed_query("steady income")
+
+    assert vector == [0.11, 0.22, 0.33]
+    assert captured_kwargs == {"trust_env": False}

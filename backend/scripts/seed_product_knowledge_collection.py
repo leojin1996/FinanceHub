@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
-from financehub_market_api.recommendation.product_knowledge.embedding_client import (
-    OpenAIEmbeddingClient,
-)
+from financehub_market_api.recommendation.product_knowledge.embedding_client import OpenAIEmbeddingClient
+from financehub_market_api.recommendation.product_knowledge.service import _build_env_values
 
 DEFAULT_FIXTURE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -20,6 +19,8 @@ DEFAULT_FIXTURE_PATH = (
     / "product_knowledge"
     / "seed_documents.json"
 )
+_QDRANT_POINT_ID_NAMESPACE = uuid.UUID("4c2ef0dc-bf41-4eb1-a614-47ed8fb07daf")
+_QDRANT_FILTER_INDEX_FIELDS = ("product_id", "visibility")
 
 
 class _EmbeddingClient(Protocol):
@@ -127,7 +128,15 @@ def _default_point_factory(
             "qdrant-client is required to build Qdrant point payloads."
         ) from exc
 
-    return models.PointStruct(id=chunk_id, vector=vector, payload=payload)
+    return models.PointStruct(
+        id=_qdrant_point_id(chunk_id),
+        vector=vector,
+        payload=payload,
+    )
+
+
+def _qdrant_point_id(chunk_id: str) -> str:
+    return str(uuid.uuid5(_QDRANT_POINT_ID_NAMESPACE, chunk_id))
 
 
 def _ensure_collection(
@@ -136,23 +145,41 @@ def _ensure_collection(
     collection_name: str,
     vector_size: int,
 ) -> None:
-    if not hasattr(client, "collection_exists"):
-        return
-    if client.collection_exists(collection_name):
-        return
     try:
         from qdrant_client import models
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in real env
         raise RuntimeError(
             "qdrant-client is required to create the product knowledge collection."
         ) from exc
-    client.create_collection(
+    if hasattr(client, "collection_exists") and not client.collection_exists(collection_name):
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=vector_size,
+                distance=models.Distance.COSINE,
+            ),
+        )
+    _ensure_payload_indexes(
+        client,
         collection_name=collection_name,
-        vectors_config=models.VectorParams(
-            size=vector_size,
-            distance=models.Distance.COSINE,
-        ),
+        models_module=models,
     )
+
+
+def _ensure_payload_indexes(
+    client: Any,
+    *,
+    collection_name: str,
+    models_module: Any,
+) -> None:
+    if not hasattr(client, "create_payload_index"):
+        return
+    for field_name in _QDRANT_FILTER_INDEX_FIELDS:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field_name,
+            field_schema=models_module.PayloadSchemaType.KEYWORD,
+        )
 
 
 def _build_points(
@@ -190,7 +217,7 @@ def main(
     args = _parse_args(argv)
     target = out or sys.stdout
     config = ProductKnowledgeSeedConfig.from_env(
-        env=env or os.environ,
+        env=env if env is not None else _build_env_values(),
         fixture_path=Path(args.fixture_path),
     )
     documents = _load_documents(config.fixture_path)

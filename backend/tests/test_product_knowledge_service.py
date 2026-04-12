@@ -1,3 +1,5 @@
+import pytest
+
 from financehub_market_api.recommendation.product_knowledge.schemas import ProductEvidenceBundle
 from financehub_market_api.recommendation.product_knowledge.service import (
     ProductKnowledgeRetrievalService,
@@ -278,6 +280,58 @@ def test_build_product_knowledge_retrieval_service_from_env_supports_openai_key_
         == "financehub_product_knowledge"
     )
     assert service._knowledge_store._api_key == "qdrant-key"
+
+
+def test_build_product_knowledge_retrieval_service_from_env_reads_env_local_file(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
+
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL=https://qdrant.from-file",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION=file_collection",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY=file-openai-key",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL=http://127.0.0.1:11434/v1",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL=bge-m3",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        product_knowledge_service_module,
+        "_iter_env_file_candidates",
+        lambda: [env_file],
+    )
+    for key in (
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+        "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    service = build_product_knowledge_retrieval_service_from_env()
+
+    assert isinstance(service, ProductKnowledgeRetrievalService)
+    assert isinstance(service._embedding_client, OpenAIEmbeddingClient)
+    assert service._embedding_client._api_key == "file-openai-key"
+    assert service._embedding_client._base_url == "http://127.0.0.1:11434/v1"
+    assert service._embedding_client._model_name == "bge-m3"
+    assert isinstance(service._knowledge_store, QdrantProductKnowledgeStore)
+    assert service._knowledge_store._base_url == "https://qdrant.from-file"
+    assert service._knowledge_store._collection_name == "file_collection"
 
 
 def test_product_knowledge_service_module_does_not_expose_api_projection_helper() -> None:
