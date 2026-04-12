@@ -1003,6 +1003,52 @@ def test_graph_runtime_filters_high_risk_candidates_before_product_match() -> No
     assert response.sections.stocks.items == []
 
 
+def test_graph_runtime_rebalances_allocation_when_only_stock_recommendations_remain() -> None:
+    stock_only_candidate = CandidateProduct(
+        id="stock-only-001",
+        category="stock",
+        code="600001",
+        name_zh="高弹性股票",
+        name_en="High Beta Equity",
+        risk_level="R5",
+        tags_zh=["测试"],
+        tags_en=["test"],
+        rationale_zh="仅保留股票候选。",
+        rationale_en="Only stock candidate survives.",
+        liquidity="T+1",
+    )
+    graph_runtime = RecommendationGraphRuntime(
+        GraphServices(
+            market_intelligence=MarketIntelligenceService(),
+            memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
+            product_retrieval=ProductRetrievalService(vector_store=_SingleVectorStore()),
+            compliance_facts_service=ComplianceFactsService(),
+            product_candidates=[stock_only_candidate],
+            agent_runtime=_CandidatePassthroughRuntime(),
+        )
+    )
+
+    response = RecommendationService(graph_runtime=graph_runtime).generate_recommendation(
+        _build_generation_request("aggressive")
+    )
+
+    assert response.recommendationStatus == "ready"
+    assert response.sections.funds.items == []
+    assert response.sections.wealthManagement.items == []
+    assert [item.id for item in response.sections.stocks.items] == ["stock-only-001"]
+    assert response.allocationDisplay.model_dump() == {
+        "fund": 0,
+        "wealthManagement": 0,
+        "stock": 100,
+    }
+    assert response.aggressiveOption is not None
+    assert response.aggressiveOption.allocation.model_dump() == {
+        "fund": 0,
+        "wealthManagement": 0,
+        "stock": 100,
+    }
+
+
 def test_graph_runtime_uses_runtime_candidate_metadata_over_static_catalog() -> None:
     runtime_candidate = CandidateProduct(
         id="fund-001",
@@ -1129,6 +1175,20 @@ def test_graph_runtime_blocks_when_product_match_fails() -> None:
     ).generate_recommendation(_build_generation_request("balanced"))
 
     assert response.recommendationStatus == "blocked"
+    assert response.sections.funds.items == []
+    assert response.sections.wealthManagement.items == []
+    assert response.sections.stocks.items == []
+    assert response.allocationDisplay.model_dump() == {
+        "fund": 0,
+        "wealthManagement": 0,
+        "stock": 0,
+    }
+    assert response.aggressiveOption is not None
+    assert response.aggressiveOption.allocation.model_dump() == {
+        "fund": 0,
+        "wealthManagement": 0,
+        "stock": 0,
+    }
     assert any(
         warning.stage == "product_match_expert"
         and warning.code == "agent_product_match_failed"

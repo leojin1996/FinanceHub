@@ -219,7 +219,9 @@ export function RecommendationDeck({
       return [];
     }
 
-    return [data.sections.funds, data.sections.wealthManagement, data.sections.stocks];
+    return [data.sections.funds, data.sections.wealthManagement, data.sections.stocks].filter(
+      (section) => section.items.length > 0,
+    );
   }, [data]);
   const traceData = useMemo(() => getTraceData(data?.agentTrace), [data?.agentTrace]);
 

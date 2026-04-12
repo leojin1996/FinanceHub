@@ -191,19 +191,58 @@ def _assemble_graph_sections(graph_state: RecommendationGraphState) -> Recommend
 
 def _graph_allocation_display(
     *,
+    allocation: AllocationDisplay,
+    sections: RecommendationSections,
+) -> AllocationDisplay:
+    display = {
+        "fund": allocation.fund,
+        "wealthManagement": allocation.wealthManagement,
+        "stock": allocation.stock,
+    }
+    available_categories = {
+        "fund": bool(sections.funds.items),
+        "wealthManagement": bool(sections.wealthManagement.items),
+        "stock": bool(sections.stocks.items),
+    }
+    rebalance_order = {
+        "fund": ("wealthManagement", "stock"),
+        "wealthManagement": ("fund", "stock"),
+        "stock": ("wealthManagement", "fund"),
+    }
+
+    for category, is_available in available_categories.items():
+        if is_available:
+            continue
+        amount = display[category]
+        display[category] = 0
+        target = next(
+            (
+                fallback_category
+                for fallback_category in rebalance_order[category]
+                if available_categories[fallback_category]
+            ),
+            None,
+        )
+        if target is not None:
+            display[target] += amount
+
+    return AllocationDisplay(
+        fund=display["fund"],
+        wealthManagement=display["wealthManagement"],
+        stock=display["stock"],
+    )
+
+
+def _recommendation_allocation_display(
+    *,
     risk_profile: str,
     recommendation_status: str,
     sections: RecommendationSections,
 ) -> AllocationDisplay:
     del recommendation_status
-    base_allocation = BASE_ALLOCATIONS[risk_profile].to_display()
-    if sections.stocks.items:
-        return base_allocation
-
-    return AllocationDisplay(
-        fund=base_allocation.fund,
-        wealthManagement=base_allocation.wealthManagement + base_allocation.stock,
-        stock=0,
+    return _graph_allocation_display(
+        allocation=BASE_ALLOCATIONS[risk_profile].to_display(),
+        sections=sections,
     )
 
 
@@ -345,7 +384,7 @@ def assemble_graph_recommendation_response(
             ),
         ),
         marketIntelligence=market_intelligence_payload,
-        allocationDisplay=_graph_allocation_display(
+        allocationDisplay=_recommendation_allocation_display(
             risk_profile=risk_profile,
             recommendation_status=recommendation_status,
             sections=sections,
@@ -357,7 +396,10 @@ def assemble_graph_recommendation_response(
                 titleEn=AGGRESSIVE_OPTION_TITLES[1],
                 subtitleZh=AGGRESSIVE_OPTION_SUBTITLES[0],
                 subtitleEn=AGGRESSIVE_OPTION_SUBTITLES[1],
-                allocation=AGGRESSIVE_ALLOCATIONS[risk_profile].to_display(),
+                allocation=_graph_allocation_display(
+                    allocation=AGGRESSIVE_ALLOCATIONS[risk_profile].to_display(),
+                    sections=sections,
+                ),
             )
             if include_aggressive_option
             else None

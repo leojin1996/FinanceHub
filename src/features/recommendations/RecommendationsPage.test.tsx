@@ -593,6 +593,83 @@ describe("RecommendationsPage", () => {
     expect(screen.queryByText("AI 分析足迹")).not.toBeInTheDocument();
   });
 
+  it("hides empty recommendation sections when a category has no products", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/recommendations/generate")) {
+        return jsonResponse({
+          aggressiveOption: null,
+          allocationDisplay: { fund: 100, stock: 0, wealthManagement: 0 },
+          executionMode: "agent_assisted",
+          marketSummary: {
+            en: "Market summary",
+            zh: "市场摘要",
+          },
+          profileSummary: {
+            en: "Profile summary",
+            zh: "画像摘要",
+          },
+          reviewStatus: "pass",
+          riskNotice: { en: [], zh: [] },
+          sections: {
+            funds: {
+              items: [
+                {
+                  asOfDate: "2026-04-09",
+                  category: "fund",
+                  detailRoute: "/recommendations/products/fund-001",
+                  id: "fund-001",
+                  liquidity: "T+1",
+                  nameEn: "Zhongou Steady Bond A",
+                  nameZh: "中欧稳利债券A",
+                  rationaleEn: "Reason",
+                  rationaleZh: "理由",
+                  riskLevel: "R2",
+                  tagsEn: ["Low drawdown"],
+                  tagsZh: ["低回撤"],
+                },
+              ],
+              titleEn: "Fund ideas",
+              titleZh: "基金推荐",
+            },
+            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            wealthManagement: {
+              items: [],
+              titleEn: "Wealth management ideas",
+              titleZh: "银行理财推荐",
+            },
+          },
+          summary: {
+            subtitleEn: "Subtitle",
+            subtitleZh: "副标题",
+            titleEn: "Title",
+            titleZh: "标题",
+          },
+          warnings: [],
+          whyThisPlan: { en: [], zh: [] },
+        });
+      }
+
+      throw new Error(`Unhandled fetch for ${url}`);
+    });
+
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+
+    expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "基金推荐", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "银行理财推荐", level: 2 })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "股票增强", level: 2 })).not.toBeInTheDocument();
+  });
+
   it("opens an in-app product detail page from the recommendation card", async () => {
     window.history.pushState({}, "", "/recommendations");
     const user = userEvent.setup();

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -99,6 +101,60 @@ def _stringify_signal_entry(
     if fallback_key is None:
         return str(item)
     return f"{fallback_key}: {item}"
+
+
+_INTERNAL_DETAIL_FALLBACK_ZH = (
+    "当前方案主要依据风险测评结果、市场信息与已筛选候选生成，并保留必要的审慎约束。"
+)
+_INTERNAL_DETAIL_KEYWORDS_ZH = ("规则快照", "历史持仓", "交易行为")
+_INTERNAL_DETAIL_KEYWORDS_EN = (
+    "rule snapshot",
+    "rule_snapshot",
+    "historical holdings",
+    "historical_holdings",
+    "historical transactions",
+    "historical_transactions",
+)
+_ZH_TOKEN_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"\brevise_conservative\b", "偏谨慎调整"),
+    (r"\bapproved_with_revisions\b", "偏谨慎调整"),
+    (r"\bdefensive\b", "防守"),
+    (r"\boffensive\b", "进取"),
+    (r"\bbalanced\b", "均衡"),
+    (r"\brisk_on\b", "偏进取"),
+    (r"\brisk_off\b", "偏防守"),
+    (r"\bwealth_management\b", "银行理财"),
+    (r"\bwealth management\b", "银行理财"),
+    (r"\bfunds\b", "基金"),
+    (r"\bfund\b", "基金"),
+    (r"\bstocks\b", "股票"),
+    (r"\bstock\b", "股票"),
+)
+
+
+def _sanitize_user_facing_zh_text(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+
+    normalized = re.sub(r"\s+", " ", value).strip()
+    lower_normalized = normalized.lower()
+    if any(keyword in normalized for keyword in _INTERNAL_DETAIL_KEYWORDS_ZH) or any(
+        keyword in lower_normalized for keyword in _INTERNAL_DETAIL_KEYWORDS_EN
+    ):
+        return _INTERNAL_DETAIL_FALLBACK_ZH
+
+    sanitized = normalized
+    for pattern, replacement in _ZH_TOKEN_REPLACEMENTS:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", sanitized)
+    sanitized = re.sub(r"\s+([，。；：！？])", r"\1", sanitized)
+    return sanitized
+
+
+def _sanitize_user_facing_zh_list(values: object) -> object:
+    if not isinstance(values, list):
+        return values
+    return [_sanitize_user_facing_zh_text(value) for value in values]
 
 
 class UserProfileAgentOutput(BaseModel):
@@ -465,6 +521,16 @@ class ComplianceReviewAgentOutput(BaseModel):
             if isinstance(fallback_reason_en, str) and fallback_reason_en.strip():
                 normalized["reason_summary_en"] = fallback_reason_en
 
+        normalized["reason_summary_zh"] = _sanitize_user_facing_zh_text(
+            normalized.get("reason_summary_zh")
+        )
+        normalized["required_disclosures_zh"] = _sanitize_user_facing_zh_list(
+            normalized.get("required_disclosures_zh")
+        )
+        normalized["suitability_notes_zh"] = _sanitize_user_facing_zh_list(
+            normalized.get("suitability_notes_zh")
+        )
+
         return normalized
 
 
@@ -519,5 +585,10 @@ class ManagerCoordinatorAgentOutput(BaseModel):
             )
         if why_this_plan_en is not None:
             normalized["why_this_plan_en"] = why_this_plan_en
+
+        normalized["summary_zh"] = _sanitize_user_facing_zh_text(normalized.get("summary_zh"))
+        normalized["why_this_plan_zh"] = _sanitize_user_facing_zh_list(
+            normalized.get("why_this_plan_zh")
+        )
 
         return normalized

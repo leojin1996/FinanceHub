@@ -926,6 +926,30 @@ def test_coordinate_manager_normalizes_summary_and_why_plan_aliases() -> None:
     )
 
 
+def test_manager_output_sanitizes_internal_statuses_and_mixed_language_in_zh_fields() -> None:
+    output = ManagerCoordinatorAgentOutput.model_validate(
+        {
+            "recommendation_status": "limited",
+            "summary_zh": "当前方案保持 revise_conservative 口径。",
+            "summary_en": "Keep the conservative revision posture.",
+            "why_this_plan_zh": [
+                "在规则快照缺失、且缺少历史持仓与交易行为数据的情况下，方案仍保留必要的审慎约束。",
+                "结合 defensive 市场立场，优先保留 fund 与 stock。",
+            ],
+            "why_this_plan_en": [
+                "The plan keeps a conservative revision posture.",
+                "A defensive stance favors funds and stocks.",
+            ],
+        }
+    )
+
+    assert output.summary_zh == "当前方案保持偏谨慎调整口径。"
+    assert output.why_this_plan_zh == [
+        "当前方案主要依据风险测评结果、市场信息与已筛选候选生成，并保留必要的审慎约束。",
+        "结合防守市场立场，优先保留基金与股票。",
+    ]
+
+
 def test_runtime_allows_up_to_four_tool_calls_before_exhaustion() -> None:
     provider = _QueuedProvider(
         [

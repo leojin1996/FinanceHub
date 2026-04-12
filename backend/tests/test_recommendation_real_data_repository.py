@@ -581,8 +581,8 @@ def test_domain_recommendation_service_keeps_api_compatible_payload_with_explici
     ).get_recommendation("balanced")
 
     assert response.allocationDisplay.model_dump() == {
-        "fund": 45,
-        "wealthManagement": 55,
+        "fund": 0,
+        "wealthManagement": 0,
         "stock": 0,
     }
     assert response.sections.funds.titleZh == "基金推荐"

@@ -1025,6 +1025,10 @@ class ManagerCoordinatorRuntimeAgent(_BaseStructuredOutputAgent):
             instructions=(
                 "Use tools before finalizing if context needs to be refreshed.",
                 "Do not change the supplied compliance verdict semantics.",
+                "Write summary_zh and why_this_plan_zh in Simplified Chinese only.",
+                "Do not include English enum values, English category names, or internal system labels in Chinese fields.",
+                "Do not mention missing rule snapshots, absent payload fields, or empty historical arrays in user-facing copy.",
+                "If holdings or transactions are empty, describe the plan as based mainly on the risk assessment, market information, and selected candidates.",
             ),
         )
         tool_definitions = {
