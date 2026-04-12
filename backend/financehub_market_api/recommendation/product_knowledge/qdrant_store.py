@@ -43,47 +43,53 @@ class QdrantProductKnowledgeStore:
         limit_per_product: int,
         total_limit: int,
     ) -> list[dict[str, object]]:
-        del limit_per_product
-        if not product_ids:
+        if not product_ids or total_limit <= 0 or limit_per_product <= 0:
             return []
+        ranked_hits: list[tuple[float, dict[str, object]]] = []
+        for product_id in product_ids:
+            response = self._http_client.post(
+                f"{self._base_url}/collections/{self._collection_name}/points/query",
+                headers=self._headers(),
+                json={
+                    "query": query_vector,
+                    "limit": limit_per_product,
+                    "with_payload": True,
+                    "filter": self._build_filter(
+                        product_id=product_id,
+                        include_internal=include_internal,
+                    ),
+                },
+                timeout=self._timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
 
-        response = self._http_client.post(
-            f"{self._base_url}/collections/{self._collection_name}/points/query",
-            headers=self._headers(),
-            json={
-                "query": query_vector,
-                "limit": total_limit,
-                "with_payload": True,
-                "filter": self._build_filter(
-                    product_ids=product_ids,
-                    include_internal=include_internal,
-                ),
-            },
-            timeout=self._timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
+            points = self._extract_points(payload)
+            product_hits = 0
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                doc_payload = point.get("payload")
+                if not isinstance(doc_payload, dict):
+                    continue
+                payload_product_id = doc_payload.get("product_id")
+                if not isinstance(payload_product_id, str):
+                    continue
+                if payload_product_id != product_id:
+                    continue
 
-        points = self._extract_points(payload)
-        hits: list[dict[str, object]] = []
-        for point in points:
-            if not isinstance(point, dict):
-                continue
-            doc_payload = point.get("payload")
-            if not isinstance(doc_payload, dict):
-                continue
-            product_id = doc_payload.get("product_id")
-            if not isinstance(product_id, str):
-                continue
-            if product_id not in product_ids:
-                continue
-            hit = dict(doc_payload)
-            score = point.get("score")
-            if isinstance(score, int | float):
-                hit["score"] = float(score)
-            hits.append(hit)
+                hit = dict(doc_payload)
+                score = point.get("score")
+                hit_score = float(score) if isinstance(score, int | float) else float("-inf")
+                if isinstance(score, int | float):
+                    hit["score"] = hit_score
+                ranked_hits.append((hit_score, hit))
+                product_hits += 1
+                if product_hits >= limit_per_product:
+                    break
 
-        return hits
+        ranked_hits.sort(key=lambda item: item[0], reverse=True)
+        return [hit for _, hit in ranked_hits[:total_limit]]
 
     def _headers(self) -> dict[str, str]:
         headers = {"content-type": "application/json"}
@@ -94,14 +100,14 @@ class QdrantProductKnowledgeStore:
     def _build_filter(
         self,
         *,
-        product_ids: list[str],
+        product_id: str,
         include_internal: bool,
     ) -> dict[str, object]:
         must_filters: list[dict[str, object]] = [
             {
                 "key": "product_id",
                 "match": {
-                    "any": product_ids,
+                    "value": product_id,
                 },
             }
         ]
@@ -125,4 +131,4 @@ class QdrantProductKnowledgeStore:
                 points = result.get("points")
                 if isinstance(points, list):
                     return points
-        return []
+        raise ValueError("malformed qdrant query response: missing result points list")
