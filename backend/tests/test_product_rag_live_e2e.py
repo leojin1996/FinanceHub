@@ -158,12 +158,20 @@ def test_live_product_rag_e2e_returns_public_detail_evidence() -> None:
             item["sourceTitle"] != "投顾内部备注"
             for item in first_fund["evidencePreview"]
         )
+        assert all(
+            "example.com" not in (item.get("sourceUri") or "")
+            for item in first_fund["evidencePreview"]
+        )
 
         detail = client.get(f"/api/recommendations/products/{first_fund['id']}")
         assert detail.status_code == 200
         assert detail.json()["evidence"]
         assert all(
             item["sourceTitle"] != "投顾内部备注"
+            for item in detail.json()["evidence"]
+        )
+        assert all(
+            "example.com" not in (item.get("sourceUri") or "")
             for item in detail.json()["evidence"]
         )
     finally:

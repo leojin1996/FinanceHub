@@ -197,6 +197,10 @@ def test_product_rag_api_e2e_keeps_internal_evidence_hidden() -> None:
             item["sourceTitle"] != "投顾内部备注"
             for item in first_fund["evidencePreview"]
         )
+        assert all(
+            "example.com" not in (item.get("sourceUri") or "")
+            for item in first_fund["evidencePreview"]
+        )
 
         detail = client.get(f"/api/recommendations/products/{first_fund['id']}")
         assert detail.status_code == 200
@@ -206,6 +210,10 @@ def test_product_rag_api_e2e_keeps_internal_evidence_hidden() -> None:
         ]
         assert all(
             item["sourceTitle"] != "投顾内部备注"
+            for item in detail.json()["evidence"]
+        )
+        assert all(
+            "example.com" not in (item.get("sourceUri") or "")
             for item in detail.json()["evidence"]
         )
     finally:

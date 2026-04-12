@@ -119,6 +119,19 @@ def _load_seed_documents() -> list[dict[str, object]]:
     return json.loads(_SEED_DOCUMENTS_PATH.read_text(encoding="utf-8"))
 
 
+def test_seed_fixture_public_source_uris_do_not_use_placeholder_domains() -> None:
+    documents = _load_seed_documents()
+
+    public_source_uris = [
+        str(document["source_uri"])
+        for document in documents
+        if document.get("visibility") == "public" and document.get("source_uri")
+    ]
+
+    assert public_source_uris
+    assert all("example.com" not in source_uri for source_uri in public_source_uris)
+
+
 def _build_generation_request(risk_profile: str) -> RecommendationGenerationRequest:
     return RecommendationGenerationRequest.model_validate(
         {

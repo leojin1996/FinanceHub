@@ -361,8 +361,10 @@ def test_openai_provider_logs_structured_invalid_then_fallback_success(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _: None)
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
             {"content": []},
             {"content": []},
             {
@@ -418,8 +420,11 @@ def test_openai_provider_logs_fallback_invalid(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _: None)
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
+            {"content": []},
             {"content": []},
             {"content": []},
             {"content": []},
@@ -472,8 +477,10 @@ def test_openai_provider_logs_fallback_invalid(
 def test_provider_trace_logs_reach_root_handler_when_root_logger_is_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _: None)
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
             {"content": []},
             {"content": []},
             {
@@ -530,8 +537,10 @@ def test_provider_trace_logs_reach_root_handler_when_root_logger_is_warning(
 def test_provider_trace_logs_reach_uvicorn_logger_when_root_has_no_handlers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _: None)
     http_client = _SequentialFakeHttpClient(
         [
+            {"content": []},
             {"content": []},
             {"content": []},
             {
@@ -1438,6 +1447,58 @@ def test_openai_provider_retries_after_read_timeout() -> None:
 
     assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
     assert len(http_client.calls) == 2
+
+
+def test_openai_provider_recovers_after_two_transient_502_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://letsaicode.com/v1/chat/completions")
+        response = httpx.Response(status_code, request=request)
+        return httpx.HTTPStatusError(
+            f"{status_code} from upstream",
+            request=request,
+            response=response,
+        )
+
+    monkeypatch.setattr(provider_module.time, "sleep", lambda _: None)
+    http_client = _SequentialFakeHttpClient(
+        [
+            _http_status_error(502),
+            _http_status_error(502),
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"summary_zh":"稳健","summary_en":"Steady"}',
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+    provider = OpenAIChatProvider(
+        ProviderConfig(
+            name=OPENAI_PROVIDER_NAME,
+            kind="openai",
+            api_key="openai-test-key",
+            base_url="https://letsaicode.com/v1",
+        ),
+        http_client=http_client,
+    )
+
+    payload = provider.chat_json(
+        model_name="gpt-5.4",
+        messages=[
+            {"role": "system", "content": "You are MarketIntelligenceAgent. Return strict JSON only."},
+            {"role": "user", "content": "Return summary_zh and summary_en."},
+        ],
+        response_schema={"type": "object"},
+        timeout_seconds=5.0,
+    )
+
+    assert payload == {"summary_zh": "稳健", "summary_en": "Steady"}
+    assert len(http_client.calls) == 3
 
 
 def test_runtime_config_reads_openai_values_from_explicit_env_file(tmp_path) -> None:

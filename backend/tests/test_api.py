@@ -39,9 +39,15 @@ def _isolate_product_knowledge_env(monkeypatch: pytest.MonkeyPatch) -> None:
         get_product_detail_service,
         get_recommendation_service,
     )
+    from financehub_market_api.recommendation.product_knowledge import service as product_knowledge_service_module
 
     for env_key in _PRODUCT_KNOWLEDGE_ENV_KEYS:
         monkeypatch.delenv(env_key, raising=False)
+    monkeypatch.setattr(
+        product_knowledge_service_module,
+        "_iter_env_file_candidates",
+        lambda: [],
+    )
 
     get_recommendation_service.cache_clear()
     get_product_detail_service.cache_clear()

@@ -127,7 +127,7 @@ describe("RecommendationsPage", () => {
                         pageNumber: 3,
                         sectionTitle: "资产组合分析",
                         sourceTitle: "基金季报（2026Q1）",
-                        sourceUri: "https://example.com/reports/fund-001-2026q1",
+                        sourceUri: "https://www.nffund.com/main/files/2025/08/29/611552282075.pdf",
                       },
                     ],
                     id: "fund-001",
@@ -318,7 +318,7 @@ describe("RecommendationsPage", () => {
       expect(within(fundEvidencePreview).getByText("持仓继续以高等级债券为主，回撤区间控制在较低水平。")).toBeInTheDocument();
       expect(within(fundEvidencePreview).getByRole("link", { name: "基金季报（2026Q1）" })).toHaveAttribute(
         "href",
-        "https://example.com/reports/fund-001-2026q1",
+        "https://www.nffund.com/main/files/2025/08/29/611552282075.pdf",
       );
 
       const stockEvidencePreview = screen.getByTestId("recommendation-evidence-preview-stock-001");
@@ -370,6 +370,107 @@ describe("RecommendationsPage", () => {
         "The enhanced recommendation runtime is unavailable right now, so this plan is based on the fallback rules engine.",
       ),
     ).toBeInTheDocument();
+  }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
+
+  it("does not render placeholder evidence domains as clickable links", async () => {
+    window.history.pushState({}, "", "/recommendations");
+    const user = userEvent.setup();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+
+        if (url.endsWith("/api/recommendations/generate")) {
+          recommendationRequests.push(JSON.parse(String(init?.body ?? "{}")));
+          return jsonResponse({
+            agentTrace: [],
+            allocationDisplay: {
+              fund: 100,
+              stock: 0,
+              wealthManagement: 0,
+            },
+            executionMode: "rules_fallback",
+            marketSummary: {
+              en: "Steady rates and carry remain supportive for bond allocations.",
+              zh: "利率环境和票息策略仍对债券配置友好。",
+            },
+            profileInsights: {
+              riskTier: "R2",
+              summaryEn: "Balanced",
+              summaryZh: "平衡型",
+            },
+            profileSummary: {
+              en: "Balanced",
+              zh: "平衡型",
+            },
+            recommendationStatus: "limited",
+            reviewStatus: "pass",
+            riskNotice: { en: [], zh: [] },
+            sections: {
+              funds: {
+                items: [
+                  {
+                    asOfDate: "2026-04-09",
+                    category: "fund",
+                    detailRoute: "/recommendations/products/fund-001",
+                    evidencePreview: [
+                      {
+                        asOfDate: "2026-04-08",
+                        docType: "fund_quarterly_report",
+                        evidenceId: "ev-fund-001",
+                        excerpt: "持仓继续以高等级债券为主，回撤区间控制在较低水平。",
+                        excerptLanguage: "zh-CN",
+                        pageNumber: 3,
+                        sectionTitle: "资产组合分析",
+                        sourceTitle: "基金季报（占位链接）",
+                        sourceUri: "https://example.com/reports/fund-001-2026q1",
+                      },
+                    ],
+                    id: "fund-001",
+                    liquidity: "T+1",
+                    nameEn: "Zhongou Steady Bond A",
+                    nameZh: "中欧稳利债券A",
+                    rationaleEn: "Steady",
+                    rationaleZh: "稳健",
+                    riskLevel: "R2",
+                    tagsEn: [],
+                    tagsZh: [],
+                  },
+                ],
+                titleEn: "Fund ideas",
+                titleZh: "基金推荐",
+              },
+              stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+              wealthManagement: {
+                items: [],
+                titleEn: "Wealth management ideas",
+                titleZh: "银行理财推荐",
+              },
+            },
+            summary: {
+              subtitleEn: "Balanced",
+              subtitleZh: "平衡",
+              titleEn: "Balanced",
+              titleZh: "平衡",
+            },
+            warnings: [],
+            whyThisPlan: { en: [], zh: [] },
+          });
+        }
+
+        throw new Error(`Unhandled fetch for ${url}`);
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "风险测评" }));
+    await completeQuestionnaire(user);
+    await user.click(screen.getByRole("link", { name: "推荐" }));
+
+    expect(await screen.findByText("基金季报（占位链接）")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "基金季报（占位链接）" })).not.toBeInTheDocument();
   }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("sends questionnaire answers and web locale context to recommendation generation", async () => {

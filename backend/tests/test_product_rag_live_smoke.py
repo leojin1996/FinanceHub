@@ -81,3 +81,7 @@ def test_live_product_rag_smoke_returns_public_evidence_preview() -> None:
         reference.sourceTitle != "投顾内部备注"
         for reference in response.sections.funds.items[0].evidencePreview
     )
+    assert all(
+        "example.com" not in (reference.sourceUri or "")
+        for reference in response.sections.funds.items[0].evidencePreview
+    )

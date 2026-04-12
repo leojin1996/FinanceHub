@@ -118,7 +118,17 @@ function getSafeExternalLink(sourceUri: string | null): string | null {
 
   try {
     const parsed = new URL(sourceUri);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+    const hostname = parsed.hostname.trim().toLowerCase();
+    const isPlaceholderHostname = [
+      "example.com",
+      "example.org",
+      "example.net",
+      "example.edu",
+      "localhost",
+    ].some((candidate) => hostname === candidate || hostname.endsWith(`.${candidate}`));
+    const tld = hostname.includes(".") ? hostname.split(".").at(-1) : hostname;
+    const isPlaceholderTld = tld === "example" || tld === "invalid" || tld === "localhost" || tld === "test";
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && !isPlaceholderHostname && !isPlaceholderTld) {
       return parsed.toString();
     }
   } catch (_error) {
