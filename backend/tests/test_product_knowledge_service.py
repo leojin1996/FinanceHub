@@ -1,5 +1,8 @@
 from financehub_market_api.recommendation.product_knowledge.schemas import ProductEvidenceBundle
-from financehub_market_api.recommendation.product_knowledge.service import ProductKnowledgeRetrievalService
+from financehub_market_api.recommendation.product_knowledge.service import (
+    ProductKnowledgeRetrievalService,
+    build_product_knowledge_retrieval_service_from_env,
+)
 
 
 class _FakeEmbeddingClient:
@@ -227,3 +230,50 @@ def test_retrieve_evidence_groups_multiple_products_with_per_product_caps() -> N
     assert [evidence.evidence_id for evidence in bundles[1].evidences] == [
         "fund-002-public-1"
     ]
+
+
+def test_build_product_knowledge_retrieval_service_from_env_returns_none_when_required_env_missing() -> None:
+    assert build_product_knowledge_retrieval_service_from_env(env={}) is None
+    assert (
+        build_product_knowledge_retrieval_service_from_env(
+            env={
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL": " ",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION": "product_knowledge",
+                "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY": "sk-test",
+            }
+        )
+        is None
+    )
+
+
+def test_build_product_knowledge_retrieval_service_from_env_supports_openai_key_fallback() -> None:
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
+
+    service = build_product_knowledge_retrieval_service_from_env(
+        env={
+            "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL": "https://qdrant.internal",
+            "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_API_KEY": "qdrant-key",
+            "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION": "financehub_product_knowledge",
+            "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY": "fallback-openai-key",
+            "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL": "https://openai.internal/v1",
+            "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL": "text-embedding-3-large",
+        }
+    )
+
+    assert isinstance(service, ProductKnowledgeRetrievalService)
+    assert isinstance(service._embedding_client, OpenAIEmbeddingClient)
+    assert service._embedding_client._api_key == "fallback-openai-key"
+    assert service._embedding_client._base_url == "https://openai.internal/v1"
+    assert service._embedding_client._model_name == "text-embedding-3-large"
+    assert isinstance(service._knowledge_store, QdrantProductKnowledgeStore)
+    assert service._knowledge_store._base_url == "https://qdrant.internal"
+    assert (
+        service._knowledge_store._collection_name
+        == "financehub_product_knowledge"
+    )
+    assert service._knowledge_store._api_key == "qdrant-key"

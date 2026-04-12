@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -96,6 +95,7 @@ class FakeProductDetailService:
 class FakeProductKnowledgeService:
     def __init__(self, bundles: list[object]) -> None:
         self._bundles = bundles
+        self.calls: list[dict[str, object]] = []
 
     def retrieve_evidence(
         self,
@@ -106,7 +106,15 @@ class FakeProductKnowledgeService:
         limit_per_product: int = 2,
         total_limit: int = 12,
     ) -> list[object]:
-        del query_text, include_internal, limit_per_product, total_limit
+        self.calls.append(
+            {
+                "query_text": query_text,
+                "product_ids": list(product_ids),
+                "include_internal": include_internal,
+                "limit_per_product": limit_per_product,
+                "total_limit": total_limit,
+            }
+        )
         return [bundle for bundle in self._bundles if bundle.product_id in product_ids]
 
 
@@ -279,7 +287,6 @@ def _build_recommendation_service_with_mixed_product_evidence() -> object:
     )
     from financehub_market_api.recommendations import RecommendationService
 
-    runtime = RecommendationGraphRuntime.with_deterministic_services()
     product_knowledge_service = FakeProductKnowledgeService(
         [
             ProductEvidenceBundle(
@@ -374,8 +381,8 @@ def _build_recommendation_service_with_mixed_product_evidence() -> object:
             ),
         ]
     )
-    runtime_with_evidence = RecommendationGraphRuntime(
-        replace(runtime._services, product_knowledge=product_knowledge_service)
+    runtime_with_evidence = RecommendationGraphRuntime.with_deterministic_services(
+        product_knowledge_service=product_knowledge_service
     )
     return RecommendationService(graph_runtime=runtime_with_evidence)
 
@@ -697,7 +704,18 @@ def test_generate_recommendations_exposes_only_public_evidence_preview() -> None
     first_fund = response.json()["sections"]["funds"]["items"][0]
     assert len(first_fund["evidencePreview"]) == 2
     assert all(item["sourceTitle"] != "投顾内部备注" for item in first_fund["evidencePreview"])
-    assert all("visibility" not in item for item in first_fund["evidencePreview"])
+    allowed_keys = {
+        "evidenceId",
+        "excerpt",
+        "excerptLanguage",
+        "sourceTitle",
+        "docType",
+        "asOfDate",
+        "pageNumber",
+        "sectionTitle",
+        "sourceUri",
+    }
+    assert all(set(item.keys()) <= allowed_keys for item in first_fund["evidencePreview"])
 
 
 def test_post_recommendations_alias_accepts_legacy_payload() -> None:
@@ -788,12 +806,7 @@ def test_get_recommendation_product_detail_exposes_only_public_evidence() -> Non
     )
     from financehub_market_api.recommendation.services.product_detail_service import ProductDetailService
 
-    product_detail_service = ProductDetailService(
-        cache=FakeProductDetailSnapshotCache(
-            snapshot_by_product_id={"fund-001": _build_product_detail_snapshot()}
-        )
-    )
-    product_detail_service._product_knowledge_service = FakeProductKnowledgeService(
+    knowledge_service = FakeProductKnowledgeService(
         [
             ProductEvidenceBundle(
                 product_id="fund-001",
@@ -855,6 +868,12 @@ def test_get_recommendation_product_detail_exposes_only_public_evidence() -> Non
             ),
         ]
     )
+    product_detail_service = ProductDetailService(
+        cache=FakeProductDetailSnapshotCache(
+            snapshot_by_product_id={"fund-001": _build_product_detail_snapshot()}
+        ),
+        product_knowledge_service=knowledge_service,
+    )
     client, clear = _install_override(
         FakeMarketDataService(overview=_build_overview()),
         product_detail_service=product_detail_service,
@@ -869,7 +888,20 @@ def test_get_recommendation_product_detail_exposes_only_public_evidence() -> Non
     assert payload["evidence"]
     assert all(item["sourceTitle"] != "投顾内部备注" for item in payload["evidence"])
     assert all(item["sourceTitle"] != "理财产品说明书" for item in payload["evidence"])
-    assert all("visibility" not in item for item in payload["evidence"])
+    allowed_keys = {
+        "evidenceId",
+        "excerpt",
+        "excerptLanguage",
+        "sourceTitle",
+        "docType",
+        "asOfDate",
+        "pageNumber",
+        "sectionTitle",
+        "sourceUri",
+    }
+    assert all(set(item.keys()) <= allowed_keys for item in payload["evidence"])
+    assert knowledge_service.calls
+    assert knowledge_service.calls[0]["include_internal"] is False
 
 
 def test_get_recommendation_product_detail_schedules_background_refresh_for_stale_detail() -> None:
@@ -913,6 +945,57 @@ def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -
 
     assert getattr(service, "_orchestrator", None) is None
     assert getattr(service, "_graph_runtime", None) is not None
+
+
+def test_default_recommendation_dependency_wires_product_knowledge_when_env_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.main import get_recommendation_service
+
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+        "https://qdrant.example.com",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+        "financehub_product_knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+        "sk-test-product-knowledge",
+    )
+
+    get_recommendation_service.cache_clear()
+    service = get_recommendation_service()
+    runtime = getattr(service, "_graph_runtime", None)
+    assert runtime is not None
+    assert getattr(runtime._services, "product_knowledge", None) is not None
+    get_recommendation_service.cache_clear()
+
+
+def test_default_product_detail_dependency_wires_product_knowledge_when_env_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.main import get_product_detail_service
+
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+        "https://qdrant.example.com",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+        "financehub_product_knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+        "sk-test-product-knowledge",
+    )
+
+    get_product_detail_service.cache_clear()
+    service = get_product_detail_service()
+
+    assert getattr(service, "_product_knowledge_service", None) is not None
+    get_product_detail_service.cache_clear()
 
 
 def test_generate_recommendations_raises_when_graph_runtime_fails() -> None:

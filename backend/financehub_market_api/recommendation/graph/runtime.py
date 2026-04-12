@@ -48,6 +48,7 @@ from financehub_market_api.recommendation.profile_intelligence import (
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
 from financehub_market_api.recommendation.product_knowledge import (
     ProductKnowledgeRetrievalService,
+    build_product_knowledge_retrieval_service_from_env,
 )
 from financehub_market_api.recommendation.repositories import (
     CandidateRepository,
@@ -511,13 +512,18 @@ class RecommendationGraphRuntime:
                 compliance_review_service=ComplianceReviewService(),
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=[],
+                product_knowledge=build_product_knowledge_retrieval_service_from_env(),
                 agent_runtime=agent_runtime,
                 candidate_repository=candidate_repository,
             )
         )
 
     @classmethod
-    def with_deterministic_services(cls) -> RecommendationGraphRuntime:
+    def with_deterministic_services(
+        cls,
+        *,
+        product_knowledge_service: ProductKnowledgeRetrievalService | None = None,
+    ) -> RecommendationGraphRuntime:
         candidates = _build_product_candidates(
             StaticCandidateRepository(),
             risk_profile="balanced",
@@ -532,6 +538,7 @@ class RecommendationGraphRuntime:
                 compliance_review_service=ComplianceReviewService(),
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=candidates,
+                product_knowledge=product_knowledge_service,
                 agent_runtime=_DeterministicAgentRuntime(),
             )
         )

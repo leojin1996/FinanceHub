@@ -17,9 +17,9 @@ from financehub_market_api.models import (
     RecommendationWarning,
 )
 from financehub_market_api.recommendation.graph.state import RecommendationGraphState
-from financehub_market_api.recommendation.product_knowledge.schemas import (
+from financehub_market_api.recommendation.product_knowledge import (
     ProductEvidenceBundle,
-    RetrievedProductEvidence,
+    project_public_evidence_references,
 )
 from financehub_market_api.recommendation.rules import (
     AGGRESSIVE_ALLOCATIONS,
@@ -132,22 +132,6 @@ def _fallback_graph_product(product_id: str, category: str, rationale: str) -> R
     )
 
 
-def _to_public_evidence_reference(
-    evidence: RetrievedProductEvidence,
-) -> RecommendationEvidenceReference:
-    return RecommendationEvidenceReference(
-        evidenceId=evidence.evidence_id,
-        excerpt=evidence.snippet,
-        excerptLanguage=evidence.language,
-        sourceTitle=evidence.source_title,
-        docType=evidence.doc_type,
-        asOfDate=evidence.as_of_date,
-        pageNumber=evidence.page_number,
-        sectionTitle=evidence.section_title,
-        sourceUri=evidence.source_uri,
-    )
-
-
 def _public_evidence_preview(
     evidence_bundles: list[ProductEvidenceBundle],
     *,
@@ -162,15 +146,7 @@ def _public_evidence_preview(
     )
     if bundle is None:
         return []
-
-    references: list[RecommendationEvidenceReference] = []
-    for evidence in bundle.evidences:
-        if evidence.visibility != "public" or not evidence.user_displayable:
-            continue
-        references.append(_to_public_evidence_reference(evidence))
-        if len(references) >= limit:
-            break
-    return references
+    return project_public_evidence_references(bundle.evidences, limit=limit)
 
 
 def _assemble_graph_sections(graph_state: RecommendationGraphState) -> RecommendationSections:

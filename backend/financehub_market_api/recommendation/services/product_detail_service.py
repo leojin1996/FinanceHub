@@ -18,7 +18,11 @@ from financehub_market_api.recommendation.candidate_pool.refresh import (
     RecommendationCandidatePoolRefresher,
 )
 from financehub_market_api.recommendation.candidate_pool.schemas import ProductChartPoint, ProductDetailSnapshot
-from financehub_market_api.recommendation.product_knowledge import ProductKnowledgeRetrievalService
+from financehub_market_api.recommendation.product_knowledge import (
+    ProductKnowledgeRetrievalService,
+    build_product_knowledge_retrieval_service_from_env,
+    project_public_evidence_references,
+)
 from financehub_market_api.recommendation.rules.product_catalog import FUNDS, STOCKS, WEALTH_MANAGEMENT
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
@@ -54,7 +58,11 @@ class ProductDetailService:
             candidate_pool_cache=CandidatePoolSnapshotCache(cache_backend),
             product_detail_cache=product_detail_cache,
         )
-        return cls(cache=product_detail_cache, refresher=refresher)
+        return cls(
+            cache=product_detail_cache,
+            refresher=refresher,
+            product_knowledge_service=build_product_knowledge_retrieval_service_from_env(),
+        )
 
     def get_product_detail(self, product_id: str) -> RecommendationProductDetailResponse | None:
         snapshot = self._cache.get_product_detail(product_id)
@@ -138,7 +146,7 @@ def _public_evidence_for_product(
         bundles = product_knowledge_service.retrieve_evidence(
             query_text=query_text or product_id,
             product_ids=[product_id],
-            include_internal=True,
+            include_internal=False,
             limit_per_product=6,
             total_limit=6,
         )
@@ -146,27 +154,11 @@ def _public_evidence_for_product(
         logger.warning("failed to retrieve product evidence for %s: %s", product_id, exc)
         return []
 
-    references: list[RecommendationEvidenceReference] = []
     for bundle in bundles:
         if bundle.product_id != product_id:
             continue
-        for evidence in bundle.evidences:
-            if evidence.visibility != "public" or not evidence.user_displayable:
-                continue
-            references.append(
-                RecommendationEvidenceReference(
-                    evidenceId=evidence.evidence_id,
-                    excerpt=evidence.snippet,
-                    excerptLanguage=evidence.language,
-                    sourceTitle=evidence.source_title,
-                    docType=evidence.doc_type,
-                    asOfDate=evidence.as_of_date,
-                    pageNumber=evidence.page_number,
-                    sectionTitle=evidence.section_title,
-                    sourceUri=evidence.source_uri,
-                )
-            )
-    return references
+        return project_public_evidence_references(bundle.evidences, limit=6)
+    return []
 
 
 def _catalog_product_to_snapshot(product: CandidateProduct) -> ProductDetailSnapshot:

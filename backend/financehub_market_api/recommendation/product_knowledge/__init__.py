@@ -14,6 +14,8 @@ from financehub_market_api.recommendation.product_knowledge.schemas import (
 )
 from financehub_market_api.recommendation.product_knowledge.service import (
     ProductKnowledgeRetrievalService,
+    build_product_knowledge_retrieval_service_from_env,
+    project_public_evidence_references,
 )
 
 __all__ = [
@@ -26,4 +28,6 @@ __all__ = [
     "QdrantProductKnowledgeStore",
     "RetrievedProductEvidence",
     "TextEmbeddingClient",
+    "build_product_knowledge_retrieval_service_from_env",
+    "project_public_evidence_references",
 ]
