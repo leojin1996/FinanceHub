@@ -330,20 +330,32 @@ def product_match_expert_node(
         limit=max(6, len(product_candidates)),
     )
     retrieval_candidates = list(retrieval_plan.candidates)
-    product_evidences = _retrieve_product_evidence_bundles(
-        product_knowledge_service=product_knowledge_service,
-        query_text=query_text,
-        candidate_ids=[candidate.id for candidate in retrieval_candidates],
-    )
+    product_evidences: list[ProductEvidenceBundle] = []
+    state_with_evidence_warning = state
+    try:
+        product_evidences = _retrieve_product_evidence_bundles(
+            product_knowledge_service=product_knowledge_service,
+            query_text=query_text,
+            candidate_ids=[candidate.id for candidate in retrieval_candidates],
+        )
+    except Exception as exc:  # noqa: BLE001
+        state_with_evidence_warning = append_warning(
+            state,
+            stage="product_match_expert",
+            code="product_evidence_unavailable",
+            message=_format_runtime_error(exc),
+        )
 
     try:
         product_match, metadata = agent_runtime.match_products(  # type: ignore[attr-defined]
-            map_user_profile(state["request_context"].payload.riskAssessmentResult.finalProfile),
-            user_profile_insights=_user_profile_output_for_runtime(state),
-            market_intelligence=_market_output_for_runtime(state),
+            map_user_profile(
+                state_with_evidence_warning["request_context"].payload.riskAssessmentResult.finalProfile
+            ),
+            user_profile_insights=_user_profile_output_for_runtime(state_with_evidence_warning),
+            market_intelligence=_market_output_for_runtime(state_with_evidence_warning),
             candidates=retrieval_candidates,
             prompt_context=_build_product_match_prompt_context(
-                state=state,
+                state=state_with_evidence_warning,
                 candidates=retrieval_candidates,
                 recalled_memories=recalled_memories,
                 product_evidences=product_evidences,
@@ -362,7 +374,7 @@ def product_match_expert_node(
         )
 
     ordered_candidates, invalid_ids = _ordered_candidates_from_agent_selection(
-        candidates=list(retrieval_plan.candidates),
+        candidates=retrieval_candidates,
         product_match=product_match,
     )
     if invalid_ids or not ordered_candidates:
@@ -397,7 +409,7 @@ def product_match_expert_node(
         ],
     )
     next_state = {
-        **state,
+        **state_with_evidence_warning,
         "product_strategy": ProductStrategy(
             recommended_categories=(
                 list(product_match.recommended_categories)
@@ -833,7 +845,7 @@ def _build_product_match_prompt_context(
             ),
             AgentPromptSection(
                 title="Product evidence bundles",
-                body=_render_json([bundle.model_dump(mode="json") for bundle in product_evidences]),
+                body=_render_json(_product_evidence_prompt_payload(product_evidences)),
             ),
         ),
         instructions=(
@@ -857,6 +869,34 @@ def _retrieve_product_evidence_bundles(
         query_text=query_text,
         product_ids=candidate_ids,
     )
+
+
+def _product_evidence_prompt_payload(
+    product_evidences: list[ProductEvidenceBundle],
+) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for bundle in product_evidences:
+        payload.append(
+            {
+                "product_id": bundle.product_id,
+                "evidences": [
+                    {
+                        "evidence_id": evidence.evidence_id,
+                        "score": evidence.score,
+                        "snippet": evidence.snippet,
+                        "source_title": evidence.source_title,
+                        "doc_type": evidence.doc_type,
+                        "source_type": evidence.source_type,
+                        "as_of_date": evidence.as_of_date,
+                        "page_number": evidence.page_number,
+                        "section_title": evidence.section_title,
+                        "language": evidence.language,
+                    }
+                    for evidence in bundle.evidences
+                ],
+            }
+        )
+    return payload
 
 
 def _build_compliance_prompt_context(

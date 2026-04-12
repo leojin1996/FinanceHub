@@ -959,6 +959,26 @@ class _StubProductKnowledgeService:
         ]
 
 
+class _FailingProductKnowledgeService:
+    def retrieve_evidence(
+        self,
+        *,
+        query_text: str,
+        product_ids: list[str],
+        include_internal: bool = True,
+        limit_per_product: int = 2,
+        total_limit: int = 12,
+    ) -> list[ProductEvidenceBundle]:
+        del (
+            query_text,
+            product_ids,
+            include_internal,
+            limit_per_product,
+            total_limit,
+        )
+        raise RuntimeError("product evidence unavailable")
+
+
 def _build_runtime(
     *,
     agent_runtime: object,
@@ -1451,6 +1471,7 @@ def test_graph_runtime_injects_product_evidence_into_product_match_prompt_contex
     assert "wm-001 evidence snippet" in product_prompt
     assert "fund-001 evidence snippet" in product_prompt
     assert "stock-001 evidence snippet" in product_prompt
+    assert "https://example.com/prospectus" not in product_prompt
 
 
 def test_graph_runtime_preserves_product_evidence_after_compliance_filtering() -> None:
@@ -1477,6 +1498,55 @@ def test_graph_runtime_preserves_product_evidence_after_compliance_filtering() -
     evidence_ids = {bundle.product_id for bundle in retrieval_context.product_evidences}
     assert shortlist_ids - approved_candidate_ids
     assert evidence_ids == shortlist_ids
+
+
+def test_graph_runtime_handles_none_product_knowledge_service_with_empty_product_evidence() -> None:
+    runtime = _build_runtime(
+        agent_runtime=_SubsetSelectionRuntime(),
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        product_knowledge_service=None,
+    )
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    retrieval_context = final_state["retrieval_context"]
+    assert retrieval_context is not None
+    assert retrieval_context.product_evidences == []
+    assert final_state["warnings"] == []
+
+
+def test_graph_runtime_degrades_when_product_evidence_retrieval_fails() -> None:
+    runtime = _build_runtime(
+        agent_runtime=_SubsetSelectionRuntime(),
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        product_knowledge_service=_FailingProductKnowledgeService(),
+    )
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    retrieval_context = final_state["retrieval_context"]
+    assert retrieval_context is not None
+    assert retrieval_context.product_evidences == []
+    assert any(
+        warning.stage == "product_match_expert"
+        and warning.code == "product_evidence_unavailable"
+        and "product evidence unavailable" in warning.message
+        for warning in final_state["warnings"]
+    )
+
+    response = RecommendationService(graph_runtime=runtime).generate_recommendation(
+        _build_generation_request("balanced")
+    )
+    assert any(
+        warning.stage == "product_match_expert"
+        and warning.code == "product_evidence_unavailable"
+        and "product evidence unavailable" in warning.message
+        for warning in response.warnings
+    )
 
 
 def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:
