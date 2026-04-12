@@ -35,6 +35,10 @@ from financehub_market_api.recommendation.graph.state import (
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.memory import MemoryRecallService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
+from financehub_market_api.recommendation.product_knowledge import (
+    ProductEvidenceBundle,
+    ProductKnowledgeRetrievalService,
+)
 from financehub_market_api.recommendation.rules import map_user_profile
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
@@ -278,6 +282,7 @@ def product_match_expert_node(
     state: RecommendationGraphState,
     *,
     product_retrieval_service: ProductRetrievalService,
+    product_knowledge_service: ProductKnowledgeRetrievalService | None,
     memory_recall_service: MemoryRecallService,
     product_candidates: list[CandidateProduct],
     agent_runtime: object | None = None,
@@ -324,17 +329,24 @@ def product_match_expert_node(
         liquidity_preference=user_intelligence.liquidity_preference,
         limit=max(6, len(product_candidates)),
     )
+    retrieval_candidates = list(retrieval_plan.candidates)
+    product_evidences = _retrieve_product_evidence_bundles(
+        product_knowledge_service=product_knowledge_service,
+        query_text=query_text,
+        candidate_ids=[candidate.id for candidate in retrieval_candidates],
+    )
 
     try:
         product_match, metadata = agent_runtime.match_products(  # type: ignore[attr-defined]
             map_user_profile(state["request_context"].payload.riskAssessmentResult.finalProfile),
             user_profile_insights=_user_profile_output_for_runtime(state),
             market_intelligence=_market_output_for_runtime(state),
-            candidates=list(retrieval_plan.candidates),
+            candidates=retrieval_candidates,
             prompt_context=_build_product_match_prompt_context(
                 state=state,
-                candidates=list(retrieval_plan.candidates),
+                candidates=retrieval_candidates,
                 recalled_memories=recalled_memories,
+                product_evidences=product_evidences,
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -378,6 +390,10 @@ def product_match_expert_node(
             )
             for index, candidate in enumerate(ordered_candidates)
         ],
+        product_evidences=_select_product_evidence_bundles_for_candidates(
+            product_evidences=product_evidences,
+            candidate_ids=[candidate.id for candidate in ordered_candidates],
+        ),
         filtered_out_reasons=[
             *list(retrieval_plan.filtered_out_reasons),
             *list(product_match.filtered_out_reasons),
@@ -562,6 +578,14 @@ def compliance_risk_officer_node(
                     for item in retrieval_context.candidates
                     if item.product_id in approved_ids
                 ],
+                product_evidences=_select_product_evidence_bundles_for_candidates(
+                    product_evidences=retrieval_context.product_evidences,
+                    candidate_ids=[
+                        item.product_id
+                        for item in retrieval_context.candidates
+                        if item.product_id in approved_ids
+                    ],
+                ),
                 filtered_out_reasons=[
                     *list(retrieval_context.filtered_out_reasons),
                     *[
@@ -793,6 +817,7 @@ def _build_product_match_prompt_context(
     state: RecommendationGraphState,
     candidates: list[CandidateProduct],
     recalled_memories: list[str],
+    product_evidences: list[ProductEvidenceBundle],
 ) -> AgentPromptContext:
     return AgentPromptContext(
         task=(
@@ -816,13 +841,49 @@ def _build_product_match_prompt_context(
                 title="Retrieved memories",
                 body=_render_json(recalled_memories),
             ),
+            AgentPromptSection(
+                title="Product evidence bundles",
+                body=_render_json([bundle.model_dump(mode="json") for bundle in product_evidences]),
+            ),
         ),
         instructions=(
             "Only return product ids that exist in the supplied candidate pool.",
             "Use selected_product_ids for the final ids and ranking_rationale_zh/ranking_rationale_en for the bilingual rationale.",
             "Use filtered_out_reasons to explain major exclusions.",
+            "Ground candidate selection in the supplied product evidence when it is available.",
         ),
     )
+
+
+def _retrieve_product_evidence_bundles(
+    *,
+    product_knowledge_service: ProductKnowledgeRetrievalService | None,
+    query_text: str,
+    candidate_ids: list[str],
+) -> list[ProductEvidenceBundle]:
+    if product_knowledge_service is None or not candidate_ids:
+        return []
+    return product_knowledge_service.retrieve_evidence(
+        query_text=query_text,
+        product_ids=candidate_ids,
+    )
+
+
+def _select_product_evidence_bundles_for_candidates(
+    *,
+    product_evidences: list[ProductEvidenceBundle],
+    candidate_ids: list[str],
+) -> list[ProductEvidenceBundle]:
+    if not product_evidences or not candidate_ids:
+        return []
+    evidence_by_product_id = {
+        bundle.product_id: bundle for bundle in product_evidences
+    }
+    return [
+        evidence_by_product_id[candidate_id]
+        for candidate_id in candidate_ids
+        if candidate_id in evidence_by_product_id
+    ]
 
 
 def _build_compliance_prompt_context(

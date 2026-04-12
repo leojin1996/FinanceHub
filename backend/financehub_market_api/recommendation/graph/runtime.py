@@ -46,6 +46,9 @@ from financehub_market_api.recommendation.profile_intelligence import (
     ProfileIntelligenceService,
 )
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
+from financehub_market_api.recommendation.product_knowledge import (
+    ProductKnowledgeRetrievalService,
+)
 from financehub_market_api.recommendation.repositories import (
     CandidateRepository,
     PrefetchedCandidateRepository,
@@ -73,6 +76,7 @@ class GraphServices:
     memory_recall: MemoryRecallService
     product_retrieval: ProductRetrievalService
     product_candidates: list[CandidateProduct]
+    product_knowledge: ProductKnowledgeRetrievalService | None = None
     compliance_review: ComplianceReviewService | None = None
     compliance_review_service: ComplianceReviewService | None = None
     compliance_facts_service: ComplianceFactsService | None = None
@@ -408,6 +412,7 @@ class RecommendationGraphRuntime:
             lambda state: product_match_expert_node(
                 state,
                 product_retrieval_service=services.product_retrieval,
+                product_knowledge_service=services.product_knowledge,
                 memory_recall_service=services.memory_recall,
                 product_candidates=services.product_candidates,
                 agent_runtime=services.agent_runtime,

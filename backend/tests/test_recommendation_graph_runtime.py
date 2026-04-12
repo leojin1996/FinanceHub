@@ -32,6 +32,10 @@ from financehub_market_api.recommendation.graph.runtime import (
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.memory import MemoryRecallService
 from financehub_market_api.recommendation.product_index import ProductRetrievalService
+from financehub_market_api.recommendation.product_knowledge.schemas import (
+    ProductEvidenceBundle,
+    RetrievedProductEvidence,
+)
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.repositories.real_data_repository import (
     RealDataCandidateRepository,
@@ -246,6 +250,16 @@ class _HighRiskFirstVectorStore:
         return [
             {"id": "fund-aggressive-001", "score": 0.99},
             {"id": "fund-balanced-001", "score": 0.95},
+        ][:limit]
+
+
+class _MultiCandidateVectorStore:
+    def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+        del query_text
+        return [
+            {"id": "wm-001", "score": 0.99},
+            {"id": "fund-001", "score": 0.95},
+            {"id": "stock-001", "score": 0.9},
         ][:limit]
 
 
@@ -783,10 +797,56 @@ class _FailingMarketDataService:
         raise RuntimeError("market data unavailable")
 
 
+class _StubProductKnowledgeService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def retrieve_evidence(
+        self,
+        *,
+        query_text: str,
+        product_ids: list[str],
+        include_internal: bool = True,
+        limit_per_product: int = 2,
+        total_limit: int = 12,
+    ) -> list[ProductEvidenceBundle]:
+        self.calls.append(
+            {
+                "query_text": query_text,
+                "product_ids": list(product_ids),
+                "include_internal": include_internal,
+                "limit_per_product": limit_per_product,
+                "total_limit": total_limit,
+            }
+        )
+        return [
+            ProductEvidenceBundle(
+                product_id=product_id,
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id=f"{product_id}-evidence",
+                        product_id=product_id,
+                        score=0.95,
+                        snippet=f"{product_id} evidence snippet",
+                        source_title="Product prospectus",
+                        source_uri="https://example.com/prospectus",
+                        doc_type="prospectus",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                    )
+                ],
+            )
+            for product_id in product_ids
+        ]
+
+
 def _build_runtime(
     *,
     agent_runtime: object,
     product_candidates: list[CandidateProduct] | None = None,
+    product_retrieval_service: ProductRetrievalService | None = None,
+    product_knowledge_service: object | None = None,
     market_data_service=None,
     candidate_repository=None,
 ) -> RecommendationGraphRuntime:
@@ -807,7 +867,9 @@ def _build_runtime(
             if market_data_service is not None
             else MarketIntelligenceService(),
             memory_recall=MemoryRecallService(store=_SingleMemoryStore()),
-            product_retrieval=ProductRetrievalService(vector_store=_SingleVectorStore()),
+            product_retrieval=product_retrieval_service
+            or ProductRetrievalService(vector_store=_SingleVectorStore()),
+            product_knowledge=product_knowledge_service,
             compliance_facts_service=ComplianceFactsService(),
             product_candidates=candidates,
             agent_runtime=agent_runtime,
@@ -1230,6 +1292,52 @@ def test_graph_runtime_marks_manager_coordinator_trace_as_error_on_manager_failu
     )
     trace_by_request = {event.requestName: event for event in response.agentTrace}
     assert trace_by_request["manager_coordinator"].status == "error"
+
+
+def test_graph_runtime_stores_product_evidence_bundles_in_retrieval_context() -> None:
+    knowledge_service = _StubProductKnowledgeService()
+    runtime = _build_runtime(
+        agent_runtime=_CurrentAgentRuntime(),
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        product_knowledge_service=knowledge_service,
+    )
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    retrieval_context = final_state["retrieval_context"]
+    assert retrieval_context is not None
+    assert retrieval_context.product_evidences
+    assert {bundle.product_id for bundle in retrieval_context.product_evidences} == {
+        "wm-001",
+        "fund-001",
+        "stock-001",
+    }
+    assert knowledge_service.calls
+    assert knowledge_service.calls[0]["query_text"] == "我希望获得稳健配置建议"
+    assert {"wm-001", "fund-001", "stock-001"}.issubset(
+        set(knowledge_service.calls[0]["product_ids"])
+    )
+
+
+def test_graph_runtime_injects_product_evidence_into_product_match_prompt_context() -> None:
+    runtime_double = _RecordingAgentRuntime()
+    runtime = _build_runtime(
+        agent_runtime=runtime_double,
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        product_knowledge_service=_StubProductKnowledgeService(),
+    )
+
+    runtime.run(_build_generation_request("balanced"))
+
+    assert runtime_double.product_prompt_context is not None
+    product_prompt = runtime_double.product_prompt_context.render_user_prompt()
+    assert "wm-001 evidence snippet" in product_prompt
+    assert "fund-001 evidence snippet" in product_prompt
+    assert "stock-001 evidence snippet" in product_prompt
 
 
 def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:

@@ -13,6 +13,7 @@ from financehub_market_api.models import (
     RecommendationGenerationRequest,
     RecommendationWarning,
 )
+from financehub_market_api.recommendation.product_knowledge import ProductEvidenceBundle
 
 
 class RequestContext(BaseModel):
@@ -95,6 +96,7 @@ class RetrievedCandidate(BaseModel):
 class RetrievalContext(BaseModel):
     recalled_memories: list[str] = Field(default_factory=list)
     candidates: list[RetrievedCandidate] = Field(default_factory=list)
+    product_evidences: list[ProductEvidenceBundle] = Field(default_factory=list)
     filtered_out_reasons: list[str] = Field(default_factory=list)
 
 
