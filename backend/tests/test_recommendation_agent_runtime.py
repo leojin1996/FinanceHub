@@ -305,3 +305,9 @@ def test_coordinate_manager_returns_structured_summary() -> None:
         why_this_plan_zh=["匹配当前风险承受能力。"],
         why_this_plan_en=["Matches the current risk profile."],
     )
+
+
+def test_provider_protocol_has_chat_with_tools() -> None:
+    from financehub_market_api.recommendation.agents.interfaces import StructuredOutputProvider
+
+    assert hasattr(StructuredOutputProvider, "chat_with_tools")
