@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -20,26 +19,24 @@ from .models import (
     ChatSessionListResponse,
     SendMessageRequest,
 )
-from .store import ChatSessionStore, ChatStoreError
+from .store import (
+    ChatSessionStore,
+    ChatStoreError,
+    InMemoryChatSessionStore,
+    build_chat_session_store,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+ChatSessionStoreLike = ChatSessionStore | InMemoryChatSessionStore
+
 
 @lru_cache(maxsize=1)
-def get_chat_session_store() -> ChatSessionStore:
-    redis_url = os.environ.get(
-        "FINANCEHUB_MARKET_CACHE_REDIS_URL",
-        "redis://127.0.0.1:6379/0",
-    )
-    try:
-        import redis  # type: ignore[import-untyped]
-    except ImportError as exc:
-        msg = "redis package is required for chat session storage"
-        raise RuntimeError(msg) from exc
-    redis_client = redis.from_url(redis_url)
-    return ChatSessionStore(redis_client)
+def get_chat_session_store() -> ChatSessionStoreLike:
+    """Redis-backed store when available; otherwise in-memory (see build_chat_session_store)."""
+    return build_chat_session_store()
 
 
 @lru_cache(maxsize=1)
@@ -62,7 +59,7 @@ def _messages_to_openai_format(messages: list[ChatMessage]) -> list[dict[str, An
 def _chat_sse_stream(
     *,
     agent_stream: Generator[ChatStreamEvent, None, None],
-    store: ChatSessionStore,
+    store: ChatSessionStoreLike,
     session_id: str,
 ) -> Generator[str, None, None]:
     """Format ChatAgent stream as SSE, accumulate assistant text, persist when done."""
@@ -96,7 +93,7 @@ def _chat_sse_stream(
 def _streaming_chat_response(
     *,
     agent_stream: Generator[ChatStreamEvent, None, None],
-    store: ChatSessionStore,
+    store: ChatSessionStoreLike,
     session_id: str,
 ) -> StreamingResponse:
     return StreamingResponse(
@@ -111,7 +108,7 @@ def _streaming_chat_response(
 
 @chat_router.post("/sessions", response_model=ChatSession)
 def create_chat_session(
-    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> ChatSession:
     try:
         return store.create_session()
@@ -121,7 +118,7 @@ def create_chat_session(
 
 @chat_router.get("/sessions", response_model=ChatSessionListResponse)
 def list_chat_sessions(
-    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
     limit: int = Query(default=50, ge=0, le=500),
 ) -> ChatSessionListResponse:
     try:
@@ -137,7 +134,7 @@ def list_chat_sessions(
 )
 def get_chat_messages(
     session_id: str,
-    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> ChatMessageListResponse:
     if store.get_session(session_id) is None:
         raise HTTPException(status_code=404, detail="chat session not found")
@@ -152,7 +149,7 @@ def get_chat_messages(
 def send_chat_message(
     session_id: str,
     body: SendMessageRequest,
-    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
     agent: Annotated[ChatAgent, Depends(get_chat_agent)],
 ) -> StreamingResponse:
     if store.get_session(session_id) is None:
@@ -184,7 +181,7 @@ def send_chat_message(
 @chat_router.delete("/sessions/{session_id}")
 def delete_chat_session(
     session_id: str,
-    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> dict[str, bool]:
     try:
         deleted = store.delete_session(session_id)

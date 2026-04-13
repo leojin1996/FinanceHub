@@ -9,7 +9,11 @@ import pytest
 from starlette.testclient import TestClient
 
 from financehub_market_api.chat.models import ChatMessage
-from financehub_market_api.chat.store import ChatSessionStore, ChatStoreError
+from financehub_market_api.chat.store import (
+    ChatSessionStore,
+    InMemoryChatSessionStore,
+    build_chat_session_store,
+)
 from financehub_market_api.main import app
 from financehub_market_api.chat.router import get_chat_session_store, get_chat_agent
 
@@ -291,3 +295,26 @@ def test_delete_session_returns_404_for_unknown_session(
     client = TestClient(app)
     resp = client.delete("/api/chat/sessions/bad-id")
     assert resp.status_code == 404
+
+
+def test_in_memory_chat_session_store_roundtrip() -> None:
+    store = InMemoryChatSessionStore()
+    s = store.create_session(title="T")
+    assert s.title == "T"
+    msg = ChatMessage(
+        id="1",
+        role="user",
+        content="hi",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    store.add_message(s.id, msg)
+    assert len(store.get_messages(s.id)) == 1
+    listed = store.list_sessions(limit=10)
+    assert len(listed) == 1
+    assert listed[0].id == s.id
+
+
+def test_build_chat_session_store_forces_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINANCEHUB_CHAT_STORE_BACKEND", "memory")
+    store = build_chat_session_store()
+    assert isinstance(store, InMemoryChatSessionStore)

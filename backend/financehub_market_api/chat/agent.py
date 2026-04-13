@@ -27,9 +27,18 @@ SYSTEM_PROMPT = (
     "and generate personalized investment recommendations.\n"
     "Always respond in the same language the user used. "
     "Be concise, accurate, and professional.\n"
+    "For English user messages, write in English only. "
+    "For Chinese user messages, write in Chinese only: do not insert English words "
+    "(except unavoidable stock/index codes like 600519 or 000001.SZ).\n"
+    "Do not use Markdown in replies (no **bold**, no # headings, no backticks); "
+    "the client shows plain text. Use line breaks and punctuation for structure.\n"
     "你是FinanceHub的双语智能理财助手，专注于中国A股市场。\n"
     "你可以帮助用户了解市场状况、查询股票信息、生成个性化投资推荐。\n"
-    "请始终使用用户使用的语言回复。回答要简洁、准确、专业。"
+    "请始终使用用户使用的语言回复。回答要简洁、准确、专业。\n"
+    "若用户使用中文提问，全文使用中文表述，不要在句中夹杂英文单词或短语"
+    "（股票/指数代码等必要符号除外）。\n"
+    "不要使用 Markdown 格式（不要用 ** 加粗、不要用 # 标题、不要用反引号代码块）；"
+    "界面按纯文本展示，请用换行与中文标点组织层次。"
 )
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
