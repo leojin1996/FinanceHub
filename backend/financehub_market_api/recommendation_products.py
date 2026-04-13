@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from financehub_market_api.models import RecommendationProduct, RecommendationSummary
 from financehub_market_api.recommendation.rules.product_catalog import (
-    AGGRESSIVE_OPTION_SUBTITLES,
-    AGGRESSIVE_OPTION_TITLES,
     DEFAULT_SUMMARY_SUBTITLE_EN,
     DEFAULT_SUMMARY_SUBTITLE_ZH,
     FUNDS as DOMAIN_FUNDS,
-    RISK_NOTICE_EN,
-    RISK_NOTICE_ZH,
     STOCKS as DOMAIN_STOCKS,
     WEALTH_MANAGEMENT as DOMAIN_WEALTH_MANAGEMENT,
 )

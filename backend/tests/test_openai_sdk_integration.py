@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 from openai import OpenAI
 
 

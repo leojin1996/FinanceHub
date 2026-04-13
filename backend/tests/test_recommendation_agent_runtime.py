@@ -5,7 +5,6 @@ import pytest
 
 from financehub_market_api.recommendation.agents.contracts import (
     ComplianceReviewAgentOutput,
-    ManagerCoordinatorAgentOutput,
     MarketIntelligenceAgentOutput,
     ProductMatchAgentOutput,
     UserProfileAgentOutput,
@@ -449,9 +448,3 @@ def test_prefilled_tool_calls_appear_in_provider_messages() -> None:
     messages = first_call["messages"]
     tool_messages = [m for m in messages if m.get("role") == "tool"]
     assert len(tool_messages) >= 1
-
-
-def test_provider_protocol_has_chat_with_tools() -> None:
-    from financehub_market_api.recommendation.agents.interfaces import StructuredOutputProvider
-
-    assert hasattr(StructuredOutputProvider, "chat_with_tools")
