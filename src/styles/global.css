@@ -1,5 +1,6 @@
 @import "./tokens.css";
 @import "./app-shell.css";
+@import "./chat.css";
 
 * {
   box-sizing: border-box;
