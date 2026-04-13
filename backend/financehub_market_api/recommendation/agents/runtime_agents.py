@@ -5,9 +5,10 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, TypeVar
+from typing import TypeVar
+from uuid import uuid4 as _uuid4
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ValidationError
 
 from financehub_market_api.recommendation.agents.contracts import (
     ComplianceReviewAgentOutput,
@@ -60,110 +61,41 @@ class _ToolDefinition:
     handler: Callable[[dict[str, object]], dict[str, object]]
 
 
-class _ToolLoopDecision(BaseModel):
-    action: Literal["tool_call", "final"]
-    tool_name: str | None = None
-    tool_arguments: dict[str, object] = Field(default_factory=dict)
-    final_payload: dict[str, object] | None = None
+_SUBMIT_RESULT_FUNCTION_NAME = "submit_result"
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_aliases(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
 
-        normalized = dict(value)
-        tool_name = normalized.get("tool_name")
-        if not isinstance(tool_name, str) or not tool_name:
-            alias_tool_name = normalized.get("tool")
-            if isinstance(alias_tool_name, str) and alias_tool_name:
-                normalized["tool_name"] = alias_tool_name
+def _build_openai_tools(
+    tool_definitions: Mapping[str, _ToolDefinition],
+    output_model_class: type[BaseModel],
+) -> tuple[list[dict[str, object]], dict[str, Callable[[dict[str, object]], dict[str, object]]]]:
+    tools: list[dict[str, object]] = []
+    handler_registry: dict[str, Callable[[dict[str, object]], dict[str, object]]] = {}
 
-        tool_arguments = normalized.get("tool_arguments")
-        if not isinstance(tool_arguments, dict):
-            for alias_key in ("parameters", "arguments"):
-                alias_arguments = normalized.get(alias_key)
-                if isinstance(alias_arguments, dict):
-                    normalized["tool_arguments"] = alias_arguments
-                    break
-
-        raw_action = normalized.get("action")
-        if isinstance(raw_action, str):
-            lowered_action = raw_action.strip().lower()
-            if lowered_action in {
-                "return_decision",
-                "return_final",
-                "final_decision",
-                "decision",
-                "done",
-            }:
-                normalized["action"] = "final"
-            elif lowered_action in {"call_tool", "use_tool"}:
-                normalized["action"] = "tool_call"
-
-        if not isinstance(normalized.get("final_payload"), dict):
-            decision_payload = normalized.get("decision")
-            if isinstance(decision_payload, dict):
-                normalized["final_payload"] = decision_payload
-        if (
-            normalized.get("action") == "final"
-            and not isinstance(normalized.get("final_payload"), dict)
-        ):
-            final_payload = {
-                key: value
-                for key, value in normalized.items()
-                if key not in {"action", "tool_name", "tool_arguments", "final_payload"}
+    for tool_def in tool_definitions.values():
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
             }
-            if final_payload:
-                normalized["final_payload"] = final_payload
+        )
+        handler_registry[tool_def.name] = tool_def.handler
 
-        if "action" not in normalized:
-            if normalized.get("tool_name"):
-                normalized["action"] = "tool_call"
-            elif isinstance(normalized.get("final_payload"), dict):
-                normalized["action"] = "final"
-
-        return normalized
-
-    @model_validator(mode="after")
-    def _validate_shape(self) -> _ToolLoopDecision:
-        if self.action == "tool_call":
-            if not self.tool_name:
-                raise ValueError("tool_name is required when action=tool_call")
-            return self
-        if self.final_payload is None:
-            raise ValueError("final_payload is required when action=final")
-        return self
-
-
-def _tool_loop_response_schema(output_schema: Mapping[str, object]) -> dict[str, object]:
-    final_payload_schema = (
-        dict(output_schema)
-        if isinstance(output_schema, dict)
-        else {"type": "object", "additionalProperties": True}
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": _SUBMIT_RESULT_FUNCTION_NAME,
+                "description": "Submit the final structured output for this agent.",
+                "parameters": output_model_class.model_json_schema(),
+            },
+        }
     )
-    top_level_properties = output_schema.get("properties")
-    if not isinstance(top_level_properties, dict):
-        top_level_properties = {}
-    return {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["tool_call", "final"],
-            },
-            "tool_name": {
-                "type": ["string", "null"],
-            },
-            "tool_arguments": {
-                "type": "object",
-                "additionalProperties": True,
-            },
-            "final_payload": final_payload_schema,
-            **top_level_properties,
-        },
-        "additionalProperties": True,
-    }
+
+    return tools, handler_registry
 
 
 def _trim_trace_value(value: object) -> object:
@@ -188,32 +120,6 @@ def _trim_trace_value(value: object) -> object:
 
 def _response_summary(payload: Mapping[str, object]) -> str:
     return json.dumps(_trim_trace_value(payload), ensure_ascii=False, sort_keys=True)
-
-
-def _validation_feedback_suffix(exc: ValidationError) -> str:
-    error_text = str(exc)
-    if "at least one selected product id" in error_text:
-        return (
-            "\nCandidate pool is not empty when candidates were supplied. "
-            "Do not claim it is empty; choose at least one valid supplied id "
-            "or call list_candidate_products for grounding."
-        )
-    return ""
-
-
-def _product_match_validation_feedback_suffix(
-    exc: ValidationError,
-    *,
-    candidates: list[CandidateProduct],
-) -> str:
-    error_text = str(exc)
-    if "at least one selected product id" not in error_text or not candidates:
-        return ""
-    valid_ids = ", ".join(candidate.id for candidate in candidates)
-    return (
-        f"\nValid supplied candidate ids: {valid_ids}.\n"
-        "Treat the candidate_pool_facts section as authoritative when choosing ids."
-    )
 
 
 def _emit_trace_log(message: str, *args: object) -> None:
@@ -309,19 +215,6 @@ def _combine_prompt_context(
     )
 
 
-def _build_tool_descriptions(tool_definitions: Mapping[str, _ToolDefinition]) -> tuple[str, ...]:
-    return tuple(
-        f"{tool.name}: {tool.description}" for tool in tool_definitions.values()
-    )
-
-
-def _required_output_keys(output_schema: Mapping[str, object]) -> tuple[str, ...]:
-    raw_required = output_schema.get("required")
-    if not isinstance(raw_required, list):
-        return ()
-    return tuple(item for item in raw_required if isinstance(item, str))
-
-
 class _BaseStructuredOutputAgent:
     def __init__(
         self,
@@ -376,18 +269,6 @@ class _BaseStructuredOutputAgent:
 
         return payload, trace_context
 
-    def _validate_without_finish(
-        self,
-        payload: dict[str, object],
-        trace_context: _TraceRequestContext,
-        validator: Callable[[dict[str, object]], _ValidatedOutputT],
-    ) -> _ValidatedOutputT:
-        try:
-            return validator(payload)
-        except ValidationError as exc:
-            self._log_trace_error(trace_context, exc)
-            raise
-
     def _log_trace_error(self, trace_context: _TraceRequestContext, error: Exception) -> None:
         if not trace_context.trace_enabled:
             return
@@ -427,147 +308,142 @@ class _BaseStructuredOutputAgent:
         self._log_trace_error(trace_context, error)
         return error
 
-    def _render_tool_history(
-        self,
-        tool_calls: Sequence[AgentToolCallRecord],
-    ) -> str:
-        if not tool_calls:
-            return ""
-        parts = ["Tool outputs so far"]
-        for index, tool_call in enumerate(tool_calls, start=1):
-            parts.append(
-                "\n".join(
-                    [
-                        f"{index}. {tool_call.tool_name}",
-                        f"arguments={_serialize_mapping(tool_call.arguments)}",
-                        f"result={_serialize_mapping(tool_call.result)}",
-                    ]
-                )
-            )
-        return "\n\n".join(parts)
-
     def _run_tool_loop(
         self,
         *,
         system_prompt: str,
         prompt_context: AgentPromptContext,
         tool_definitions: Mapping[str, _ToolDefinition],
-        output_schema: dict[str, object],
+        output_model_class: type[BaseModel],
         output_validator: Callable[[dict[str, object]], _ValidatedOutputT],
-        validation_feedback_builder: Callable[[ValidationError], str] | None = None,
         prefilled_tool_calls: Sequence[AgentToolCallRecord] = (),
     ) -> tuple[_ValidatedOutputT, tuple[AgentToolCallRecord, ...]]:
-        tool_calls: list[AgentToolCallRecord] = []
-        tool_descriptions = _build_tool_descriptions(tool_definitions)
-        response_schema = _tool_loop_response_schema(output_schema)
-        validation_feedback: str | None = None
+        openai_tools, handler_registry = _build_openai_tools(tool_definitions, output_model_class)
+        tool_call_records: list[AgentToolCallRecord] = []
         validation_retries = 0
-        required_output_keys = _required_output_keys(output_schema)
+
+        user_prompt = prompt_context.render_user_prompt()
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        for record in prefilled_tool_calls:
+            fake_id = f"call_{_uuid4().hex[:12]}"
+            messages.append(
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": fake_id,
+                            "type": "function",
+                            "function": {
+                                "name": record.tool_name,
+                                "arguments": json.dumps(
+                                    _json_ready(record.arguments), ensure_ascii=False
+                                ),
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": fake_id,
+                    "content": json.dumps(
+                        _json_ready(record.result), ensure_ascii=False
+                    ),
+                }
+            )
 
         for _ in range(_MAX_TOOL_CALLS + _MAX_VALIDATION_RETRIES + 1):
-            user_prompt = prompt_context.render_user_prompt(
-                tool_descriptions=tool_descriptions
+            response = self._provider.chat_with_tools(
+                model_name=self._model_name,
+                messages=messages,
+                tools=openai_tools,
+                timeout_seconds=self._request_timeout_seconds,
+                request_name=self._request_name,
             )
-            tool_history = self._render_tool_history(
-                (*prefilled_tool_calls, *tool_calls)
-            )
-            if tool_history:
-                user_prompt = f"{user_prompt}\n\n{tool_history}"
-            if validation_feedback:
-                user_prompt = (
-                    f"{user_prompt}\n\n"
-                    "Previous response was invalid. Return corrected structured JSON only.\n"
-                    f"{validation_feedback}"
+
+            raw_tool_calls = response.get("tool_calls")
+            if not raw_tool_calls:
+                raise RuntimeError(
+                    f"[{self._request_name}] model stopped without calling submit_result"
                 )
 
-            payload, trace_context = self._execute(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_schema=response_schema,
-            )
-            try:
-                decision = _ToolLoopDecision.model_validate(payload)
-            except ValidationError as exc:
+            assistant_message = dict(response)
+            messages.append(assistant_message)
+
+            for tc in raw_tool_calls:
+                function_info = tc["function"]
+                fn_name = function_info["name"]
+                fn_args_raw = function_info["arguments"]
+                fn_args = (
+                    json.loads(fn_args_raw)
+                    if isinstance(fn_args_raw, str)
+                    else fn_args_raw
+                )
+                tc_id = tc["id"]
+
+                if fn_name == _SUBMIT_RESULT_FUNCTION_NAME:
+                    try:
+                        validated_output = output_validator(fn_args)
+                    except ValidationError as exc:
+                        if validation_retries < _MAX_VALIDATION_RETRIES:
+                            validation_retries += 1
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc_id,
+                                    "content": (
+                                        f"Validation error: {exc}. "
+                                        "Please correct and call submit_result again."
+                                    ),
+                                }
+                            )
+                            break
+                        raise RuntimeError(
+                            f"[{self._request_name}] submit_result validation failed after retries"
+                        ) from exc
+                    return validated_output, tuple(tool_call_records)
+
+                handler = handler_registry.get(fn_name)
+                if handler is None:
+                    raise RuntimeError(
+                        f"[{self._request_name}] invalid tool request: {fn_name}"
+                    )
+
+                if len(tool_call_records) >= _MAX_TOOL_CALLS:
+                    raise RuntimeError(
+                        f"[{self._request_name}] tool loop exhausted"
+                    )
+
                 try:
-                    validated_output = self._validate_without_finish(
-                        payload,
-                        trace_context,
-                        output_validator,
-                    )
-                except ValidationError:
-                    if validation_retries < _MAX_VALIDATION_RETRIES:
-                        validation_retries += 1
-                        validation_feedback = (
-                            "The payload did not satisfy the required schema. "
-                            f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
-                            f"Validation error: {exc}"
-                            f"{_validation_feedback_suffix(exc)}"
-                            f"{validation_feedback_builder(exc) if validation_feedback_builder is not None else ''}"
-                        )
-                        continue
-                    error_message = (
-                        "invalid final payload"
-                        if payload.get("action") == "final"
-                        else "invalid tool request"
-                    )
-                    raise self._tool_error(
-                        trace_context,
-                        error_message,
+                    result = handler(fn_args)
+                except (TypeError, ValueError, KeyError) as exc:
+                    raise RuntimeError(
+                        f"[{self._request_name}] invalid tool request: {fn_name}"
                     ) from exc
-                self._log_trace_finish(trace_context, payload)
-                return validated_output, tuple(tool_calls)
-            if decision.action == "final":
-                final_payload = decision.final_payload
-                if final_payload is None:
-                    raise self._tool_error(trace_context, "invalid final payload")
-                try:
-                    validated_output = self._validate_without_finish(
-                        final_payload,
-                        trace_context,
-                        output_validator,
+
+                tool_call_records.append(
+                    AgentToolCallRecord(
+                        tool_name=fn_name,
+                        arguments=fn_args,
+                        result=result,
                     )
-                except ValidationError as exc:
-                    if validation_retries < _MAX_VALIDATION_RETRIES:
-                        validation_retries += 1
-                        validation_feedback = (
-                            "The final payload did not satisfy the required schema. "
-                            f"Required keys: {', '.join(required_output_keys) or '(none)'}.\n"
-                            f"Validation error: {exc}"
-                            f"{_validation_feedback_suffix(exc)}"
-                            f"{validation_feedback_builder(exc) if validation_feedback_builder is not None else ''}"
-                        )
-                        continue
-                    raise
-                self._log_trace_finish(trace_context, final_payload)
-                return validated_output, tuple(tool_calls)
-
-            if len(tool_calls) >= _MAX_TOOL_CALLS:
-                raise self._tool_error(trace_context, "tool loop exhausted")
-
-            tool_definition = tool_definitions.get(decision.tool_name or "")
-            if tool_definition is None:
-                raise self._tool_error(
-                    trace_context,
-                    f"invalid tool request: {decision.tool_name}",
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": json.dumps(
+                            result, ensure_ascii=False, default=str
+                        ),
+                    }
                 )
 
-            try:
-                result = tool_definition.handler(decision.tool_arguments)
-            except (TypeError, ValueError, KeyError) as exc:
-                raise self._tool_error(
-                    trace_context,
-                    f"invalid tool request: {tool_definition.name}",
-                ) from exc
-
-            tool_calls.append(
-                AgentToolCallRecord(
-                    tool_name=tool_definition.name,
-                    arguments=dict(decision.tool_arguments),
-                    result=result,
-                )
-            )
-
-        raise self._tool_error(trace_context, "tool loop exhausted")
+        raise RuntimeError(f"[{self._request_name}] tool loop exhausted")
 
 
 class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):
@@ -628,10 +504,11 @@ class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are UserProfileAgent. Use the available tools when you need "
                 "grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=UserProfileAgentOutput.model_json_schema(),
+            output_model_class=UserProfileAgentOutput,
             output_validator=UserProfileAgentOutput.model_validate,
         )
 
@@ -723,10 +600,11 @@ class MarketIntelligenceRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are MarketIntelligenceAgent. Use the available tools when you "
                 "need grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=MarketIntelligenceAgentOutput.model_json_schema(),
+            output_model_class=MarketIntelligenceAgentOutput,
             output_validator=MarketIntelligenceAgentOutput.model_validate,
         )
 
@@ -837,15 +715,12 @@ class ProductMatchRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are ProductMatchExpertAgent. Use the available tools when you "
                 "need grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=ProductMatchAgentOutput.model_json_schema(),
+            output_model_class=ProductMatchAgentOutput,
             output_validator=ProductMatchAgentOutput.model_validate,
-            validation_feedback_builder=lambda exc: _product_match_validation_feedback_suffix(
-                exc,
-                candidates=candidates,
-            ),
             prefilled_tool_calls=prefilled_tool_calls,
         )
 
@@ -952,10 +827,11 @@ class ComplianceReviewRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are ComplianceRiskOfficerAgent. Use the available tools when "
                 "you need grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=ComplianceReviewAgentOutput.model_json_schema(),
+            output_model_class=ComplianceReviewAgentOutput,
             output_validator=ComplianceReviewAgentOutput.model_validate,
         )
 
@@ -1057,10 +933,11 @@ class ManagerCoordinatorRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are ManagerCoordinatorAgent. Use the available tools when you "
                 "need grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=ManagerCoordinatorAgentOutput.model_json_schema(),
+            output_model_class=ManagerCoordinatorAgentOutput,
             output_validator=ManagerCoordinatorAgentOutput.model_validate,
         )
 
@@ -1162,10 +1039,11 @@ class _BaseRankingRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 f"You are {self._agent_label}SelectionAgent. Use the available tools "
                 "when you need grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=ProductRankingAgentOutput.model_json_schema(),
+            output_model_class=ProductRankingAgentOutput,
             output_validator=ProductRankingAgentOutput.model_validate,
         )
 
@@ -1279,10 +1157,11 @@ class ExplanationRuntimeAgent(_BaseStructuredOutputAgent):
             system_prompt=(
                 "You are ExplanationAgent. Use the available tools when you need "
                 "grounding. Return only the requested structured decision JSON."
+                "\nWhen you have gathered enough information, call submit_result with the final structured output."
             ),
             prompt_context=_combine_prompt_context(default_context, prompt_context),
             tool_definitions=tool_definitions,
-            output_schema=ExplanationAgentOutput.model_json_schema(),
+            output_model_class=ExplanationAgentOutput,
             output_validator=ExplanationAgentOutput.model_validate,
         )
 
