@@ -5,6 +5,11 @@ import json
 import httpx
 from openai import OpenAI
 
+from financehub_market_api.recommendation.agents.provider import (
+    OpenAIChatProvider,
+    ProviderConfig,
+)
+
 
 def _mock_transport_with_tool_call(
     tool_call_id: str = "call_abc123",
@@ -165,12 +170,6 @@ def test_sdk_submit_result_argument_parsing() -> None:
     tool_call = response.choices[0].message.tool_calls[0]
     parsed = json.loads(tool_call.function.arguments)
     assert parsed == {"risk_tier": "R2", "liquidity_preference": "high"}
-
-
-from financehub_market_api.recommendation.agents.provider import (
-    OpenAIChatProvider,
-    ProviderConfig,
-)
 
 
 def test_sdk_retry_on_transient_error() -> None:
