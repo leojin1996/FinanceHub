@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 
 from .cache import build_snapshot_cache
+from .chat.router import chat_router
 from .models import (
     IndicesResponse,
     MarketOverviewResponse,
@@ -23,6 +24,8 @@ from .upstreams.dolthub import DoltHubClient
 from .upstreams.index_data import IndexDataClient
 
 app = FastAPI(title="FinanceHub Market API")
+
+app.include_router(chat_router)
 
 
 @lru_cache(maxsize=1)

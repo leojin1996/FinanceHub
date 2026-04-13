@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+import uuid
+from collections.abc import Generator
+from datetime import UTC, datetime
+from functools import lru_cache
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+
+from .agent import ChatAgent, ChatStreamEvent, build_chat_agent
+from .models import (
+    ChatMessage,
+    ChatMessageListResponse,
+    ChatSession,
+    ChatSessionListResponse,
+    SendMessageRequest,
+)
+from .store import ChatSessionStore, ChatStoreError
+
+LOGGER = logging.getLogger(__name__)
+
+chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+@lru_cache(maxsize=1)
+def get_chat_session_store() -> ChatSessionStore:
+    redis_url = os.environ.get(
+        "FINANCEHUB_MARKET_CACHE_REDIS_URL",
+        "redis://127.0.0.1:6379/0",
+    )
+    try:
+        import redis  # type: ignore[import-untyped]
+    except ImportError as exc:
+        msg = "redis package is required for chat session storage"
+        raise RuntimeError(msg) from exc
+    redis_client = redis.from_url(redis_url)
+    return ChatSessionStore(redis_client)
+
+
+@lru_cache(maxsize=1)
+def get_chat_agent() -> ChatAgent:
+    # Import after app module load to avoid circular import with main.
+    from ..main import get_market_data_service
+
+    return build_chat_agent(get_market_data_service())
+
+
+def _messages_to_openai_format(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    """Map stored messages to OpenAI chat format (user and assistant only)."""
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role in ("user", "assistant"):
+            out.append({"role": msg.role, "content": msg.content})
+    return out
+
+
+def _chat_sse_stream(
+    *,
+    agent_stream: Generator[ChatStreamEvent, None, None],
+    store: ChatSessionStore,
+    session_id: str,
+) -> Generator[str, None, None]:
+    """Format ChatAgent stream as SSE, accumulate assistant text, persist when done."""
+    content_parts: list[str] = []
+    try:
+        for event in agent_stream:
+            yield f"event: {event.event}\ndata: {json.dumps(event.data)}\n\n"
+            if event.event == "delta":
+                piece = event.data.get("content")
+                if isinstance(piece, str) and piece:
+                    content_parts.append(piece)
+    finally:
+        full_text = "".join(content_parts)
+        if not full_text:
+            return
+        assistant = ChatMessage(
+            id=uuid.uuid4().hex,
+            role="assistant",
+            content=full_text,
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        try:
+            store.add_message(session_id, assistant)
+        except ChatStoreError as exc:
+            LOGGER.exception(
+                "Failed to persist assistant message after stream for session %s",
+                session_id,
+            )
+            err_payload = json.dumps({"message": str(exc)})
+            yield f"event: error\ndata: {err_payload}\n\n"
+
+
+def _streaming_chat_response(
+    *,
+    agent_stream: Generator[ChatStreamEvent, None, None],
+    store: ChatSessionStore,
+    session_id: str,
+) -> StreamingResponse:
+    return StreamingResponse(
+        _chat_sse_stream(
+            agent_stream=agent_stream,
+            store=store,
+            session_id=session_id,
+        ),
+        media_type="text/event-stream",
+    )
+
+
+@chat_router.post("/sessions", response_model=ChatSession)
+def create_chat_session(
+    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+) -> ChatSession:
+    try:
+        return store.create_session()
+    except ChatStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@chat_router.get("/sessions", response_model=ChatSessionListResponse)
+def list_chat_sessions(
+    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    limit: int = Query(default=50, ge=0, le=500),
+) -> ChatSessionListResponse:
+    sessions = store.list_sessions(limit)
+    return ChatSessionListResponse(sessions=sessions)
+
+
+@chat_router.get(
+    "/sessions/{session_id}/messages",
+    response_model=ChatMessageListResponse,
+)
+def get_chat_messages(
+    session_id: str,
+    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+) -> ChatMessageListResponse:
+    if store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="chat session not found")
+    messages = store.get_messages(session_id)
+    return ChatMessageListResponse(messages=messages)
+
+
+@chat_router.post("/sessions/{session_id}/messages")
+def send_chat_message(
+    session_id: str,
+    body: SendMessageRequest,
+    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+    agent: Annotated[ChatAgent, Depends(get_chat_agent)],
+) -> StreamingResponse:
+    if store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="chat session not found")
+
+    user_message = ChatMessage(
+        id=uuid.uuid4().hex,
+        role="user",
+        content=body.content,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    try:
+        store.add_message(session_id, user_message)
+    except ChatStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="chat session not found") from exc
+
+    history = store.get_messages(session_id)
+    openai_messages = _messages_to_openai_format(history)
+    stream = agent.stream(openai_messages)
+    return _streaming_chat_response(
+        agent_stream=stream,
+        store=store,
+        session_id=session_id,
+    )
+
+
+@chat_router.delete("/sessions/{session_id}")
+def delete_chat_session(
+    session_id: str,
+    store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
+) -> dict[str, bool]:
+    try:
+        deleted = store.delete_session(session_id)
+    except ChatStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="chat session not found")
+    return {"deleted": True}
