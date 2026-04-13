@@ -3,10 +3,11 @@ import { type ChangeEvent, type KeyboardEvent, useCallback, useRef, useState } f
 import { useChatState } from "./chat-state";
 
 export function ChatInput() {
-  const { sendMessage, isStreaming, activeSessionId } = useChatState();
+  const { sendMessage, isStreaming, activeSessionId, isLoadingSessions } = useChatState();
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const disabled = isStreaming || !activeSessionId;
+  // Allow typing while the first session list is loading; only lock when we know there is no session (load finished empty/failed).
+  const inputLocked = isStreaming || (!activeSessionId && !isLoadingSessions);
 
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -23,7 +24,7 @@ export function ChatInput() {
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed || inputLocked || !activeSessionId) return;
     setText("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     void sendMessage(trimmed);
@@ -46,9 +47,15 @@ export function ChatInput() {
         value={text}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        disabled={disabled}
+        disabled={inputLocked}
       />
-      <button className="chat-panel__send-btn" onClick={handleSend} disabled={disabled || !text.trim()} type="button" aria-label="发送">
+      <button
+        className="chat-panel__send-btn"
+        onClick={handleSend}
+        disabled={isStreaming || !activeSessionId || !text.trim()}
+        type="button"
+        aria-label="发送"
+      >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="22" y1="2" x2="11" y2="13" />
           <polygon points="22 2 15 22 11 13 2 9 22 2" />
