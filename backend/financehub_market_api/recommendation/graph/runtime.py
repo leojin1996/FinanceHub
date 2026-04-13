@@ -406,7 +406,7 @@ class RecommendationGraphRuntime:
             ),
         )
         graph.add_node(
-            "market_intelligence",
+            "market_intelligence_analyst",
             lambda state: market_intelligence_node(
                 state,
                 market_intelligence_service=services.market_intelligence,
@@ -447,8 +447,8 @@ class RecommendationGraphRuntime:
         )
 
         graph.add_edge(START, "user_profile_analyst")
-        graph.add_edge("user_profile_analyst", "market_intelligence")
-        graph.add_edge("market_intelligence", "product_match_expert")
+        graph.add_edge("user_profile_analyst", "market_intelligence_analyst")
+        graph.add_edge("market_intelligence_analyst", "product_match_expert")
         graph.add_edge("product_match_expert", "compliance_risk_officer")
         graph.add_conditional_edges(
             "compliance_risk_officer",
