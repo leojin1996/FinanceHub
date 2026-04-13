@@ -13,6 +13,7 @@ from typing import Literal, cast
 from uuid import uuid4
 
 import httpx
+from openai import OpenAI as OpenAIClient
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
@@ -689,6 +690,12 @@ class OpenAIChatProvider:
     ) -> None:
         self._config = config
         self._http_client = http_client or httpx.Client()
+        sdk_http_client = http_client if isinstance(http_client, httpx.Client) else None
+        self._openai_client = OpenAIClient(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            http_client=sdk_http_client,
+        )
 
     def chat_json(
         self,
@@ -755,6 +762,53 @@ class OpenAIChatProvider:
                     error_message=str(fallback_exc),
                 )
                 raise fallback_exc from structured_exc
+
+    def chat_with_tools(
+        self,
+        *,
+        model_name: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        timeout_seconds: float,
+        request_name: str | None = None,
+    ) -> dict[str, object]:
+        for attempt in range(OPENAI_MAX_ATTEMPTS):
+            try:
+                response = self._openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    timeout=timeout_seconds,
+                )
+                message = response.choices[0].message
+                result: dict[str, object] = {"role": "assistant"}
+                if message.content is not None:
+                    result["content"] = message.content
+                if message.tool_calls:
+                    result["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in message.tool_calls
+                    ]
+                self._capture_raw_response(
+                    body=response.model_dump(),
+                    model_name=model_name,
+                    request_name=request_name,
+                    phase="function_calling",
+                )
+                return result
+            except Exception as exc:
+                if attempt + 1 >= OPENAI_MAX_ATTEMPTS:
+                    raise LLMProviderError(f"OpenAI function calling request failed: {exc}") from exc
+                time.sleep(OPENAI_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        raise AssertionError("openai function calling retry loop exited unexpectedly")
 
     def _trace_log(
         self,
