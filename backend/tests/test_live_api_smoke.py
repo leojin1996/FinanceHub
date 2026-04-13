@@ -7,6 +7,9 @@ import pytest
 from pydantic import BaseModel
 
 _API_KEY_ENV = "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY"
+_BASE_URL_ENV = "FINANCEHUB_LLM_PROVIDER_OPENAI_BASE_URL"
+_MODEL_ENV = "FINANCEHUB_LLM_PROVIDER_OPENAI_MODEL_DEFAULT"
+_DEFAULT_MODEL = "gpt-4o-mini"
 
 pytestmark = pytest.mark.live
 
@@ -18,6 +21,20 @@ def _skip_without_api_key() -> str:
     return key
 
 
+def _base_url() -> str | None:
+    url = os.environ.get(_BASE_URL_ENV)
+    if not url:
+        return None
+    normalized = url.strip().rstrip("/")
+    if not normalized.endswith("/v1"):
+        normalized = f"{normalized}/v1"
+    return normalized
+
+
+def _model() -> str:
+    return os.environ.get(_MODEL_ENV) or _DEFAULT_MODEL
+
+
 class _SimpleOutput(BaseModel):
     answer: str
 
@@ -26,7 +43,8 @@ def test_live_single_tool_call_and_submit() -> None:
     from openai import OpenAI
 
     api_key = _skip_without_api_key()
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=_base_url())
+    model = _model()
 
     tools = [
         {
@@ -54,7 +72,7 @@ def test_live_single_tool_call_and_submit() -> None:
 
     for _ in range(5):
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=messages,
             tools=tools,
             timeout=30.0,
@@ -83,7 +101,8 @@ def test_live_multi_tool_loop() -> None:
     from openai import OpenAI
 
     api_key = _skip_without_api_key()
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, base_url=_base_url())
+    model = _model()
 
     class _MultiOutput(BaseModel):
         summary: str
@@ -127,7 +146,7 @@ def test_live_multi_tool_loop() -> None:
     tool_calls_made: list[str] = []
     for _ in range(8):
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=messages,
             tools=tools,
             timeout=30.0,
