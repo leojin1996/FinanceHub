@@ -14,6 +14,7 @@ from ..recommendation.agents.provider import (
     _build_env_values,
     _clean_env_value,
     _normalize_base_url,
+    _parse_request_timeout_seconds,
 )
 from ..service import MarketDataService
 
@@ -95,6 +96,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 MAX_TOOL_ROUNDS = 10
+CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT = 120.0
 
 
 class ChatAgentState(TypedDict):
@@ -115,10 +117,13 @@ class ChatAgent:
         openai_client: OpenAI,
         model_name: str,
         market_data_service: MarketDataService,
+        *,
+        stream_timeout_seconds: float = CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT,
     ) -> None:
         self._openai_client = openai_client
         self._model_name = model_name
         self._market_data_service = market_data_service
+        self._stream_timeout_seconds = stream_timeout_seconds
         self._tool_definitions = TOOL_DEFINITIONS
 
     def stream(
@@ -177,47 +182,47 @@ class ChatAgent:
         content_parts_out: list[str],
     ) -> Generator[ChatStreamEvent, None, None]:
         """Stream an OpenAI chat completion and collect deltas / tool calls."""
-        response_stream = self._openai_client.chat.completions.create(
+        with self._openai_client.chat.completions.create(
             model=self._model_name,
             messages=state["messages"],
             tools=self._tool_definitions,
             stream=True,
-        )
+            timeout=self._stream_timeout_seconds,
+        ) as response_stream:
+            pending_tool_calls: dict[int, dict[str, Any]] = {}
 
-        pending_tool_calls: dict[int, dict[str, Any]] = {}
+            for chunk in response_stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
 
-        for chunk in response_stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
+                if delta.content:
+                    content_parts_out.append(delta.content)
+                    yield ChatStreamEvent(
+                        event="delta",
+                        data={"content": delta.content},
+                    )
 
-            if delta.content:
-                content_parts_out.append(delta.content)
-                yield ChatStreamEvent(
-                    event="delta",
-                    data={"content": delta.content},
-                )
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in pending_tool_calls:
+                            pending_tool_calls[idx] = {
+                                "id": tc_delta.id or "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        entry = pending_tool_calls[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["function"]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["function"]["arguments"] += tc_delta.function.arguments
 
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in pending_tool_calls:
-                        pending_tool_calls[idx] = {
-                            "id": tc_delta.id or "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        }
-                    entry = pending_tool_calls[idx]
-                    if tc_delta.id:
-                        entry["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            entry["function"]["name"] += tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            entry["function"]["arguments"] += tc_delta.function.arguments
-
-        for idx in sorted(pending_tool_calls):
-            tool_calls_out.append(pending_tool_calls[idx])
+            for idx in sorted(pending_tool_calls):
+                tool_calls_out.append(pending_tool_calls[idx])
 
     def _tool_node(
         self,
@@ -233,6 +238,7 @@ class ChatAgent:
             try:
                 args = json.loads(raw_args) if raw_args else {}
             except json.JSONDecodeError:
+                LOGGER.warning("Malformed tool arguments for %s: %r", fn_name, raw_args)
                 args = {}
 
             try:
@@ -283,6 +289,13 @@ class ChatAgent:
         return {"error": f"Unknown tool: {name}"}
 
 
+def _chat_stream_openai_timeout_seconds(env: Mapping[str, str]) -> float:
+    """Uses FINANCEHUB_LLM_TIMEOUT_SECONDS when set; else 120s for long streams."""
+    if _clean_env_value(env.get("FINANCEHUB_LLM_TIMEOUT_SECONDS")) is None:
+        return CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT
+    return _parse_request_timeout_seconds(env)
+
+
 def build_chat_agent(
     market_data_service: MarketDataService,
     environ: Mapping[str, str] | None = None,
@@ -302,4 +315,10 @@ def build_chat_agent(
     )
 
     openai_client = OpenAI(api_key=api_key, base_url=base_url)
-    return ChatAgent(openai_client, model_name, market_data_service)
+    stream_timeout_seconds = _chat_stream_openai_timeout_seconds(env)
+    return ChatAgent(
+        openai_client,
+        model_name,
+        market_data_service,
+        stream_timeout_seconds=stream_timeout_seconds,
+    )
