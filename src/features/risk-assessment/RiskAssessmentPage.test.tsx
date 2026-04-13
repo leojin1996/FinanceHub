@@ -79,4 +79,17 @@ describe("RiskAssessmentPage", () => {
     expect(screen.getByText("Question 1 of 20")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next" })).toBeInTheDocument();
   });
+
+  it("advances only one step when the next button is double-clicked", async () => {
+    window.history.pushState({}, "", "/risk-assessment");
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(screen.getAllByRole("radio")[2]);
+    await user.dblClick(screen.getByRole("button", { name: "下一题" }));
+
+    expect(screen.getByText("第 2 / 20 题")).toBeInTheDocument();
+    expect(screen.queryByText("第 3 / 20 题")).not.toBeInTheDocument();
+  });
 });

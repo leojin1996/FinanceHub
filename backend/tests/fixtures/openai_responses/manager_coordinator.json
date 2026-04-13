@@ -1,0 +1,16 @@
+{
+  "request_name": "manager_coordinator",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"recommendation_status\": \"ready\",\n  \"summary_zh\": \"建议以现金管理和短债基金为主。\",\n  \"summary_en\": \"Favor cash management and short bond funds.\",\n  \"why_this_plan_zh\": [\"优先满足保本与流动性要求。\"],\n  \"why_this_plan_en\": [\"This plan prioritizes principal protection and liquidity.\"]\n}\n```"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message"
+  }
+}

@@ -21,21 +21,33 @@ class StockPriceSnapshot:
 
 class DoltHubClient:
     BASE_URL = "https://www.dolthub.com/api/v1alpha1/chenditc/investment_data"
+    REQUEST_TIMEOUT_SECONDS = 15.0
+    MAX_ATTEMPTS = 2
 
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self._http_client = http_client or httpx.Client()
 
     def _query(self, sql: str) -> dict:
-        response = self._http_client.get(self.BASE_URL, params={"q": sql}, timeout=15.0)
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("query_execution_status") != "Success":
-            error_message = payload.get("query_execution_message") or payload.get(
-                "error_message",
-                "unknown upstream error",
-            )
-            raise DoltHubQueryError(f"DoltHub query failed: {error_message}")
-        return payload
+        for attempt in range(self.MAX_ATTEMPTS):
+            try:
+                response = self._http_client.get(
+                    self.BASE_URL,
+                    params={"q": sql},
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("query_execution_status") != "Success":
+                    error_message = payload.get("query_execution_message") or payload.get(
+                        "error_message",
+                        "unknown upstream error",
+                    )
+                    raise DoltHubQueryError(f"DoltHub query failed: {error_message}")
+                return payload
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError):
+                if attempt + 1 >= self.MAX_ATTEMPTS:
+                    raise
+        raise AssertionError("DoltHub request retry loop exited unexpectedly")
 
     def fetch_watchlist_prices(self, symbols: list[str]) -> StockPriceSnapshot:
         requested_symbols = set(symbols)

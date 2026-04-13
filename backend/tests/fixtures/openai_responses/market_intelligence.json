@@ -1,0 +1,16 @@
+{
+  "request_name": "market_intelligence",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"sentiment\": \"negative\",\n  \"stance\": \"defensive\",\n  \"preferred_categories\": [\"wealth_management\", \"fund\"],\n  \"avoided_categories\": [\"stock\"],\n  \"summary_zh\": \"市场偏弱，优先稳健和流动性。\",\n  \"summary_en\": \"Markets are soft, so favor resilience and liquidity.\",\n  \"evidence_refs\": [\"market_overview\", \"indices\"]\n}\n```"
+      }
+    ],
+    "model": "claude-opus-4-6",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message"
+  }
+}

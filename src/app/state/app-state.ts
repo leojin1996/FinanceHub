@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { RecommendationResponse } from "../../services/chinaMarketApi";
 import type { RiskAssessmentResult } from "../../features/risk-assessment/risk-scoring";
 
 export type Locale = "zh-CN" | "en-US";
@@ -16,6 +17,9 @@ export interface AuthSession {
 export interface AppStateValue {
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  recommendationCache: Record<string, RecommendationResponse>;
+  setRecommendationCacheEntry: (key: string, value: RecommendationResponse) => void;
+  clearRecommendationCache: () => void;
   riskAssessmentResult: RiskAssessmentResult | null;
   setRiskAssessmentResult: (result: RiskAssessmentResult | null) => void;
   riskProfile: RiskProfile | null;

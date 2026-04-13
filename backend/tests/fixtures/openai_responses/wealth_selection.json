@@ -1,0 +1,24 @@
+{
+  "request_name": "wealth_selection",
+  "capture_phase": "structured",
+  "body": {
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"ranked_ids\": [\"wm-002\", \"wm-001\"],\n  \"rationale\": \"wm-002 ranks first as it offers fixed income enhancement with stable NAV characteristics, aligning well with balanced risk profile's goal of steady growth while maintaining lower risk. wm-001 ranks second as a solid stable base allocation with reasonable 90-day liquidity, suitable as a complementary holding for the balanced portfolio.\"\n}\n```"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "model": "claude-sonnet-4-5-20250929",
+    "usage": {
+      "input_tokens": 2611,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 97,
+      "claude_cache_creation_5_m_tokens": 0,
+      "claude_cache_creation_1_h_tokens": 0
+    }
+  }
+}

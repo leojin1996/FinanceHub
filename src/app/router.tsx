@@ -5,6 +5,7 @@ import { ChineseIndicesPage } from "../features/chinese-indices/ChineseIndicesPa
 import { ChineseStocksPage } from "../features/chinese-stocks/ChineseStocksPage";
 import { MarketOverviewPage } from "../features/market-overview/MarketOverviewPage";
 import { RecommendationsPage } from "../features/recommendations/RecommendationsPage";
+import { RecommendationProductDetailPage } from "../features/recommendations/RecommendationProductDetailPage";
 import { RiskAssessmentPage } from "../features/risk-assessment/RiskAssessmentPage";
 import { useAppState } from "./state/app-state";
 
@@ -36,6 +37,10 @@ export function AppRouter() {
           <Route element={<ChineseIndicesPage />} path="/indices" />
           <Route element={<RiskAssessmentPage />} path="/risk-assessment" />
           <Route element={<RecommendationsPage />} path="/recommendations" />
+          <Route
+            element={<RecommendationProductDetailPage />}
+            path="/recommendations/products/:productId"
+          />
         </Route>
       </Routes>
     </BrowserRouter>

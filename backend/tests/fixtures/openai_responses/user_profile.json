@@ -1,0 +1,20 @@
+{
+  "request_name": "user_profile",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "text": "```json\n{\n  \"profile_focus_zh\": \"平衡风险与收益，追求稳健增长\",\n  \"profile_focus_en\": \"Balance risk and return for steady growth\"\n}\n```",
+        "type": "text"
+      }
+    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message",
+    "usage": {
+      "input_tokens": 2203,
+      "output_tokens": 56
+    }
+  }
+}

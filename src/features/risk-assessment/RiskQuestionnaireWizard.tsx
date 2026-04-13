@@ -40,7 +40,12 @@ export function RiskQuestionnaireWizard({ onComplete }: RiskQuestionnaireWizardP
   function handleSelect(score: number) {
     setAnswers((currentAnswers) => {
       const nextAnswers = [...currentAnswers];
-      nextAnswers[stepIndex] = { dimension: currentQuestion.dimension, score };
+      nextAnswers[stepIndex] = {
+        answerId: String(score),
+        dimension: currentQuestion.dimension,
+        questionId: String(currentQuestion.id),
+        score,
+      };
       return nextAnswers;
     });
   }

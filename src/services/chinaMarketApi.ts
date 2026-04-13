@@ -1,3 +1,4 @@
+import type { Locale } from "../app/state/app-state";
 import type { RiskAssessmentResult } from "../features/risk-assessment/risk-scoring";
 
 export interface MetricCardData {
@@ -77,11 +78,25 @@ export interface AllocationDisplay {
   stock: number;
 }
 
+export interface RecommendationEvidenceReference {
+  evidenceId: string;
+  excerpt: string;
+  excerptLanguage: string;
+  sourceTitle: string;
+  docType: string;
+  asOfDate: string | null;
+  pageNumber: number | null;
+  sectionTitle: string | null;
+  sourceUri: string | null;
+}
+
 export interface RecommendationProduct {
   id: string;
   category: "fund" | "wealth_management" | "stock";
   code?: string | null;
   liquidity?: string | null;
+  asOfDate?: string | null;
+  detailRoute?: string | null;
   nameEn: string;
   nameZh: string;
   rationaleEn: string;
@@ -89,6 +104,7 @@ export interface RecommendationProduct {
   riskLevel: string;
   tagsEn: string[];
   tagsZh: string[];
+  evidencePreview?: RecommendationEvidenceReference[] | null;
 }
 
 export interface RecommendationSection {
@@ -113,6 +129,40 @@ export interface RecommendationWarning {
   stage: string;
 }
 
+export interface RecommendationAgentTraceToolCall {
+  arguments: Record<string, unknown>;
+  result: Record<string, unknown>;
+  toolName: string;
+}
+
+export interface RecommendationAgentTraceEvent {
+  nodeName: string;
+  providerName?: string | null;
+  requestName: string;
+  status: "start" | "finish" | "error" | "transition";
+  toolCalls?: RecommendationAgentTraceToolCall[] | null;
+}
+
+interface RecommendationRiskAssessmentPayload {
+  baseProfile: RiskAssessmentResult["baseProfile"];
+  dimensionLevels: RiskAssessmentResult["dimensionLevels"];
+  dimensionScores: RiskAssessmentResult["dimensionScores"];
+  finalProfile: RiskAssessmentResult["finalProfile"];
+  totalScore: RiskAssessmentResult["totalScore"];
+}
+
+export interface RecommendationGenerationPayload {
+  clientContext: {
+    channel: "web";
+    locale: Locale;
+  };
+  historicalHoldings: [];
+  historicalTransactions: [];
+  includeAggressiveOption: boolean;
+  questionnaireAnswers: RiskAssessmentResult["questionnaireAnswers"];
+  riskAssessmentResult: RecommendationRiskAssessmentPayload;
+}
+
 export interface RecommendationResponse {
   aggressiveOption: {
     allocation: AllocationDisplay;
@@ -127,6 +177,7 @@ export interface RecommendationResponse {
   profileSummary: LocalizedText;
   reviewStatus: "pass" | "partial_pass";
   riskNotice: LocalizedTextList;
+  agentTrace?: RecommendationAgentTraceEvent[];
   sections: {
     funds: RecommendationSection;
     wealthManagement: RecommendationSection;
@@ -140,6 +191,31 @@ export interface RecommendationResponse {
   };
   warnings: RecommendationWarning[];
   whyThisPlan: LocalizedTextList;
+}
+
+export interface RecommendationProductDetailResponse {
+  id: string;
+  category: "fund" | "wealth_management" | "stock";
+  code?: string | null;
+  providerName?: string | null;
+  nameZh: string;
+  nameEn: string;
+  asOfDate: string;
+  stale: boolean;
+  source: string;
+  riskLevel: string;
+  liquidity?: string | null;
+  tagsZh: string[];
+  tagsEn: string[];
+  summary: LocalizedText;
+  recommendationRationale: LocalizedText;
+  chartLabel: LocalizedText;
+  chart: TrendPoint[];
+  yieldMetrics: Record<string, string>;
+  fees: Record<string, string>;
+  drawdownOrVolatility: Record<string, string>;
+  fitForProfile: LocalizedText;
+  evidence?: RecommendationEvidenceReference[] | null;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -165,18 +241,44 @@ export function fetchStocks(query?: string): Promise<StocksResponse> {
   return fetch(url).then(readJson<StocksResponse>);
 }
 
+export function buildRecommendationGenerationPayload(
+  locale: Locale,
+  riskAssessmentResult: RiskAssessmentResult,
+): RecommendationGenerationPayload {
+  return {
+    clientContext: {
+      channel: "web",
+      locale,
+    },
+    historicalHoldings: [],
+    historicalTransactions: [],
+    includeAggressiveOption: true,
+    questionnaireAnswers: riskAssessmentResult.questionnaireAnswers,
+    riskAssessmentResult: {
+      baseProfile: riskAssessmentResult.baseProfile,
+      dimensionLevels: riskAssessmentResult.dimensionLevels,
+      dimensionScores: riskAssessmentResult.dimensionScores,
+      finalProfile: riskAssessmentResult.finalProfile,
+      totalScore: riskAssessmentResult.totalScore,
+    },
+  };
+}
+
 export function fetchRecommendations(
+  locale: Locale,
   riskAssessmentResult: RiskAssessmentResult,
 ): Promise<RecommendationResponse> {
   return fetch("/api/recommendations/generate", {
-    body: JSON.stringify({
-      historicalHoldings: [],
-      historicalTransactions: [],
-      includeAggressiveOption: true,
-      questionnaireAnswers: [],
-      riskAssessmentResult,
-    }),
+    body: JSON.stringify(buildRecommendationGenerationPayload(locale, riskAssessmentResult)),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   }).then(readJson<RecommendationResponse>);
+}
+
+export function fetchRecommendationProductDetail(
+  productId: string,
+): Promise<RecommendationProductDetailResponse> {
+  return fetch(`/api/recommendations/products/${encodeURIComponent(productId)}`).then(
+    readJson<RecommendationProductDetailResponse>,
+  );
 }

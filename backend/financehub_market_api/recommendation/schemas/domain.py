@@ -45,6 +45,10 @@ class CandidateProduct:
     rationale_en: str
     code: str | None = None
     liquidity: str | None = None
+    lockup_days: int | None = None
+    max_drawdown_percent: float | None = None
+    as_of_date: str | None = None
+    detail_route: str | None = None
 
     def to_api_model(self) -> RecommendationProduct:
         return RecommendationProduct(
@@ -59,6 +63,8 @@ class CandidateProduct:
             rationaleEn=self.rationale_en,
             code=self.code,
             liquidity=self.liquidity,
+            asOfDate=self.as_of_date,
+            detailRoute=self.detail_route,
         )
 
 

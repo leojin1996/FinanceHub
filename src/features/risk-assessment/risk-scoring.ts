@@ -10,7 +10,9 @@ export type RiskDimension =
 export type DimensionLevel = "low" | "mediumLow" | "medium" | "mediumHigh" | "high";
 
 export interface AnswerScore {
+  answerId?: string;
   dimension: RiskDimension;
+  questionId?: string;
   score: number;
 }
 
@@ -19,6 +21,7 @@ export interface RiskAssessmentResult {
   dimensionLevels: Record<RiskDimension, DimensionLevel>;
   dimensionScores: Record<RiskDimension, number>;
   finalProfile: RiskProfile;
+  questionnaireAnswers: AnswerScore[];
   totalScore: number;
 }
 
@@ -177,6 +180,7 @@ export function buildAssessmentResult(answerScores: AnswerScore[]): RiskAssessme
     dimensionLevels,
     dimensionScores,
     finalProfile: finalProfileFromAssessment({ baseProfile, dimensionLevels, totalScore }),
+    questionnaireAnswers: answerScores,
     totalScore,
   };
 }

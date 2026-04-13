@@ -1,4 +1,5 @@
 import pytest
+import httpx
 
 from financehub_market_api.upstreams.dolthub import DoltHubClient
 
@@ -22,6 +23,19 @@ class FakeHttpClient:
     def get(self, url: str, params: dict[str, str], timeout: float) -> FakeResponse:
         self.calls.append({"url": url, "params": params, "timeout": timeout})
         return FakeResponse(self._payloads.pop(0))
+
+
+class RetryableFakeHttpClient:
+    def __init__(self, responses: list[dict | Exception]) -> None:
+        self._responses = responses
+        self.calls: list[dict] = []
+
+    def get(self, url: str, params: dict[str, str], timeout: float) -> FakeResponse:
+        self.calls.append({"url": url, "params": params, "timeout": timeout})
+        next_response = self._responses.pop(0)
+        if isinstance(next_response, Exception):
+            raise next_response
+        return FakeResponse(next_response)
 
 
 def test_fetch_watchlist_prices_queries_latest_and_previous_trade_dates() -> None:
@@ -300,3 +314,67 @@ def test_fetch_watchlist_prices_uses_latest_seven_valid_closes() -> None:
     assert "SELECT DISTINCT tradedate" in client.calls[3]["params"]["q"]
     assert "LIMIT 7" in client.calls[3]["params"]["q"]
     assert "tradedate IN (" in client.calls[4]["params"]["q"]
+
+
+def test_fetch_watchlist_prices_retries_transient_read_timeout() -> None:
+    client = RetryableFakeHttpClient(
+        [
+            httpx.ReadTimeout("The read operation timed out"),
+            {
+                "query_execution_status": "Success",
+                "rows": [{"tradedate": "2026-04-01"}],
+            },
+            {
+                "query_execution_status": "Success",
+                "rows": [{"tradedate": "2026-03-31"}],
+            },
+            {
+                "query_execution_status": "Success",
+                "rows": [
+                    {
+                        "tradedate": "2026-04-01",
+                        "symbol": "SZ300750",
+                        "close": "188.55",
+                        "volume": "123456789",
+                        "amount": "2345678901",
+                    },
+                    {
+                        "tradedate": "2026-03-31",
+                        "symbol": "SZ300750",
+                        "close": "177.54",
+                    },
+                ],
+            },
+            {
+                "query_execution_status": "Success",
+                "rows": [
+                    {"tradedate": "2026-04-01"},
+                    {"tradedate": "2026-03-31"},
+                    {"tradedate": "2026-03-30"},
+                    {"tradedate": "2026-03-29"},
+                    {"tradedate": "2026-03-26"},
+                    {"tradedate": "2026-03-25"},
+                    {"tradedate": "2026-03-24"},
+                ],
+            },
+            {
+                "query_execution_status": "Success",
+                "rows": [
+                    {"tradedate": "2026-03-24", "symbol": "SZ300750", "close": "176.00"},
+                    {"tradedate": "2026-03-25", "symbol": "SZ300750", "close": "177.10"},
+                    {"tradedate": "2026-03-26", "symbol": "SZ300750", "close": "178.40"},
+                    {"tradedate": "2026-03-29", "symbol": "SZ300750", "close": "179.60"},
+                    {"tradedate": "2026-03-30", "symbol": "SZ300750", "close": "180.20"},
+                    {"tradedate": "2026-03-31", "symbol": "SZ300750", "close": "177.54"},
+                    {"tradedate": "2026-04-01", "symbol": "SZ300750", "close": "188.55"},
+                ],
+            },
+        ]
+    )
+    adapter = DoltHubClient(http_client=client)
+
+    snapshot = adapter.fetch_watchlist_prices(["SZ300750"])
+
+    assert snapshot.as_of_date == "2026-04-01"
+    assert snapshot.latest_prices["SZ300750"] == 188.55
+    assert len(client.calls) == 6

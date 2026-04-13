@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
+import type { RecommendationResponse } from "../../services/chinaMarketApi";
 import type { RiskAssessmentResult } from "../../features/risk-assessment/risk-scoring";
 
 import {
@@ -78,6 +79,8 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     () => readInitialSessionState(),
   );
   const [locale, setLocale] = useState<Locale>("zh-CN");
+  const [recommendationCache, setRecommendationCache] =
+    useState<Record<string, RecommendationResponse>>({});
   const [riskAssessmentResult, setRiskAssessmentResult] =
     useState<RiskAssessmentResult | null>(null);
   const [session, setSession] = useState<AuthSession | null>(initialSession);
@@ -100,6 +103,17 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     }
   }, [cleanupInvalidStoredSession]);
 
+  const setRecommendationCacheEntry = (key: string, value: RecommendationResponse) => {
+    setRecommendationCache((currentCache) => ({
+      ...currentCache,
+      [key]: value,
+    }));
+  };
+
+  const clearRecommendationCache = () => {
+    setRecommendationCache({});
+  };
+
   const signIn = (nextSession: AuthSession) => {
     setSession(nextSession);
     const storage = getSafeStorage();
@@ -116,6 +130,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
 
   const signOut = () => {
     setSession(null);
+    clearRecommendationCache();
     const storage = getSafeStorage();
     if (!storage) {
       return;
@@ -133,6 +148,9 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
       value={{
         locale,
         setLocale,
+        recommendationCache,
+        setRecommendationCacheEntry,
+        clearRecommendationCache,
         riskAssessmentResult,
         setRiskAssessmentResult,
         riskProfile,

@@ -11,6 +11,7 @@ RecommendationCategory = Literal["fund", "wealth_management", "stock"]
 ReviewStatus = Literal["pass", "partial_pass"]
 DimensionLevel = Literal["low", "mediumLow", "medium", "mediumHigh", "high"]
 ExecutionMode = Literal["agent_assisted", "rules_fallback"]
+RecommendationStatus = Literal["ready", "limited", "blocked"]
 
 
 class MetricCard(BaseModel):
@@ -146,12 +147,26 @@ class HistoricalTransaction(BaseModel):
     occurredAt: str | None = None
 
 
+class ConversationMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1)
+    occurredAt: str | None = None
+
+
+class RecommendationClientContext(BaseModel):
+    channel: str | None = None
+    locale: str | None = None
+
+
 class RecommendationGenerationRequest(BaseModel):
     riskAssessmentResult: RiskAssessmentResultPayload
     includeAggressiveOption: bool = True
     questionnaireAnswers: list[QuestionnaireAnswer] = Field(default_factory=list)
     historicalHoldings: list[HistoricalHolding] = Field(default_factory=list)
     historicalTransactions: list[HistoricalTransaction] = Field(default_factory=list)
+    userIntentText: str | None = None
+    conversationMessages: list[ConversationMessage] = Field(default_factory=list)
+    clientContext: RecommendationClientContext | None = None
 
 
 class AllocationDisplay(BaseModel):
@@ -160,11 +175,25 @@ class AllocationDisplay(BaseModel):
     stock: int
 
 
+class RecommendationEvidenceReference(BaseModel):
+    evidenceId: str
+    excerpt: str
+    excerptLanguage: str
+    sourceTitle: str
+    docType: str
+    asOfDate: str | None = None
+    pageNumber: int | None = None
+    sectionTitle: str | None = None
+    sourceUri: str | None = None
+
+
 class RecommendationProduct(BaseModel):
     id: str
     category: RecommendationCategory
     code: str | None = None
     liquidity: str | None = None
+    asOfDate: str | None = None
+    detailRoute: str | None = None
     nameEn: str
     nameZh: str
     rationaleEn: str
@@ -172,6 +201,7 @@ class RecommendationProduct(BaseModel):
     riskLevel: str
     tagsEn: list[str]
     tagsZh: list[str]
+    evidencePreview: list[RecommendationEvidenceReference] = Field(default_factory=list)
 
 
 class RecommendationSection(BaseModel):
@@ -217,15 +247,96 @@ class RecommendationWarning(BaseModel):
     message: str
 
 
+class ComplianceReviewPayload(BaseModel):
+    verdict: Literal["approve", "revise_conservative", "block"]
+    reasonSummary: LocalizedText
+    requiredDisclosures: LocalizedTextList
+    suitabilityNotes: LocalizedTextList
+    appliedRuleIds: list[str] = Field(default_factory=list)
+    blockingReasonCodes: list[str] = Field(default_factory=list)
+
+
+class MarketEvidenceItem(BaseModel):
+    source: str
+    asOf: str
+    summary: LocalizedText
+
+
+class ProfileInsightsPayload(BaseModel):
+    riskTier: str
+    liquidityPreference: str
+    investmentHorizon: str
+    returnObjective: str
+    drawdownSensitivity: str
+    derivedSignals: list[str] = Field(default_factory=list)
+
+
+class RecommendationMarketIntelligencePayload(BaseModel):
+    sentiment: str
+    stance: str
+    preferredCategories: list[str] = Field(default_factory=list)
+    avoidedCategories: list[str] = Field(default_factory=list)
+    evidenceRefs: list[str] = Field(default_factory=list)
+
+
+class AgentTraceToolCall(BaseModel):
+    toolName: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+    result: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentTraceEvent(BaseModel):
+    nodeName: str
+    requestName: str
+    status: Literal["start", "finish", "error", "transition"]
+    providerName: str | None = None
+    modelName: str | None = None
+    durationMs: int | None = None
+    requestSummary: str | None = None
+    responseSummary: str | None = None
+    toolCalls: list[AgentTraceToolCall] = Field(default_factory=list)
+
+
 class RecommendationResponse(BaseModel):
     aggressiveOption: RecommendationOption | None
     allocationDisplay: AllocationDisplay
     executionMode: ExecutionMode
     marketSummary: LocalizedText
+    marketIntelligence: RecommendationMarketIntelligencePayload | None = None
     profileSummary: LocalizedText
+    profileInsights: ProfileInsightsPayload | None = None
     reviewStatus: ReviewStatus
     riskNotice: LocalizedTextList
     sections: RecommendationSections
     summary: RecommendationSummary
     warnings: list[RecommendationWarning] = Field(default_factory=list)
     whyThisPlan: LocalizedTextList
+    recommendationStatus: RecommendationStatus = "ready"
+    complianceReview: ComplianceReviewPayload | None = None
+    marketEvidence: list[MarketEvidenceItem] = Field(default_factory=list)
+    agentTrace: list[AgentTraceEvent] = Field(default_factory=list)
+
+
+class RecommendationProductDetailResponse(BaseModel):
+    id: str
+    category: RecommendationCategory
+    code: str | None = None
+    providerName: str | None = None
+    nameZh: str
+    nameEn: str
+    asOfDate: str
+    stale: bool
+    source: str
+    riskLevel: str
+    liquidity: str | None = None
+    tagsZh: list[str] = Field(default_factory=list)
+    tagsEn: list[str] = Field(default_factory=list)
+    summary: LocalizedText
+    recommendationRationale: LocalizedText
+    chartLabel: LocalizedText
+    chart: list[TrendPoint] = Field(default_factory=list)
+    yieldMetrics: dict[str, str] = Field(default_factory=dict)
+    fees: dict[str, str] = Field(default_factory=dict)
+    drawdownOrVolatility: dict[str, str] = Field(default_factory=dict)
+    fitForProfile: LocalizedText
+    evidence: list[RecommendationEvidenceReference] = Field(default_factory=list)

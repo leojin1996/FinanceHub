@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
-import { type Locale } from "../../app/state/app-state";
+import { useAppState, type Locale } from "../../app/state/app-state";
 import { InsightCard } from "../../components/InsightCard";
 import {
+  buildRecommendationGenerationPayload,
   fetchRecommendations,
+  type RecommendationAgentTraceEvent,
+  type RecommendationAgentTraceToolCall,
+  type RecommendationEvidenceReference,
   type RecommendationProduct,
   type RecommendationResponse,
 } from "../../services/chinaMarketApi";
@@ -22,11 +27,18 @@ function getCopy(locale: Locale) {
       degradedBody:
         "The enhanced recommendation runtime is unavailable right now, so this plan is based on the fallback rules engine.",
       degradedTitle: "Recommendation currently uses the rules fallback path",
+      partialDegradedBody:
+        "Part of the AI analysis was unavailable, so the system automatically fell back to default ranking or summary logic for the affected steps.",
+      partialDegradedTitle: "Part of the AI analysis used fallback handling",
+      traceSummary: (stageCount: number, toolCount: number) =>
+        `${stageCount} stages logged, ${toolCount} tool calls recorded.`,
+      traceTitle: "AI analysis trace",
       loading: "Building your recommendation plan...",
       loadingBody:
         "We are combining your assessment profile with the current market stance to assemble a first-pass recommendation set.",
       riskNotices: "Risk notices",
       source: "Built from your questionnaire result",
+      viewDetails: "View details",
       whyThisPlan: "Why this plan fits",
     };
   }
@@ -36,16 +48,94 @@ function getCopy(locale: Locale) {
     aggressive: "进取型备选",
     degradedBody: "由于智能增强暂不可用，当前结果基于规则引擎生成，建议结合自身情况谨慎参考。",
     degradedTitle: "当前推荐已回退到规则引擎结果",
+    partialDegradedBody: "部分 AI 分析阶段暂时不可用，系统已对受影响步骤自动回退到默认逻辑，当前推荐仍可正常参考。",
+    partialDegradedTitle: "部分 AI 分析已自动降级处理",
+    traceSummary: (stageCount: number, toolCount: number) =>
+      `已记录 ${stageCount} 个阶段，${toolCount} 次工具调用。`,
+    traceTitle: "AI 分析足迹",
     loading: "正在生成你的推荐方案...",
     loadingBody: "系统正在结合你的风险测评结果与当前市场判断，生成第一版资产配置与选品建议。",
     riskNotices: "风险提示",
     source: "基于你的风险测评结果生成",
+    viewDetails: "查看详情",
     whyThisPlan: "为什么这样配",
   };
 }
 
 function getLocalizedText(locale: Locale, zh: string, en: string) {
   return locale === "en-US" ? en : zh;
+}
+
+function getToolCalls(event: RecommendationAgentTraceEvent) {
+  return Array.isArray(event.toolCalls) ? event.toolCalls : [];
+}
+
+function getTraceStageLabel(
+  locale: Locale,
+  requestName: string | undefined,
+  nodeName: string,
+) {
+  const zhLabels: Record<string, string> = {
+    manager_coordinator: "方案统筹",
+    market_intelligence: "市场研判",
+    product_match_expert: "产品匹配",
+    user_profile_analyst: "画像分析",
+  };
+  const enLabels: Record<string, string> = {
+    manager_coordinator: "Plan coordination",
+    market_intelligence: "Market intelligence",
+    product_match_expert: "Product matching",
+    user_profile_analyst: "Profile analysis",
+  };
+  const stageName = requestName ?? nodeName;
+
+  if (locale === "en-US") {
+    return enLabels[stageName] ?? stageName;
+  }
+
+  return zhLabels[stageName] ?? stageName;
+}
+
+function getTraceData(agentTrace: RecommendationResponse["agentTrace"]) {
+  const traceEvents =
+    agentTrace?.filter((event) => event.status === "finish" && getToolCalls(event).length > 0) ?? [];
+  const toolCount = traceEvents.reduce((total, event) => total + getToolCalls(event).length, 0);
+
+  return {
+    toolCount,
+    traceEvents,
+  };
+}
+
+function getEvidencePreview(product: RecommendationProduct): RecommendationEvidenceReference[] {
+  return Array.isArray(product.evidencePreview) ? product.evidencePreview : [];
+}
+
+function getSafeExternalLink(sourceUri: string | null): string | null {
+  if (!sourceUri) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(sourceUri);
+    const hostname = parsed.hostname.trim().toLowerCase();
+    const isPlaceholderHostname = [
+      "example.com",
+      "example.org",
+      "example.net",
+      "example.edu",
+      "localhost",
+    ].some((candidate) => hostname === candidate || hostname.endsWith(`.${candidate}`));
+    const tld = hostname.includes(".") ? hostname.split(".").at(-1) : hostname;
+    const isPlaceholderTld = tld === "example" || tld === "invalid" || tld === "localhost" || tld === "test";
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && !isPlaceholderHostname && !isPlaceholderTld) {
+      return parsed.toString();
+    }
+  } catch (_error) {
+    return null;
+  }
+
+  return null;
 }
 
 function AllocationBar({ label, value }: { label: string; value: number }) {
@@ -63,6 +153,9 @@ function AllocationBar({ label, value }: { label: string; value: number }) {
 }
 
 function ProductCard({ locale, product }: { locale: Locale; product: RecommendationProduct }) {
+  const detailRoute = product.detailRoute ?? `/recommendations/products/${product.id}`;
+  const evidencePreview = getEvidencePreview(product);
+
   return (
     <article className="panel recommendation-product-card">
       <header className="recommendation-product-card__header">
@@ -72,12 +165,13 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
             {product.code ? `${product.code} · ` : ""}
             {product.riskLevel}
             {product.liquidity ? ` · ${product.liquidity}` : ""}
+            {product.asOfDate ? ` · ${product.asOfDate}` : ""}
           </p>
         </div>
       </header>
       <div className="recommendation-product-card__tags">
-        {(locale === "en-US" ? product.tagsEn : product.tagsZh).map((tag) => (
-          <span className="tag-badge" key={tag}>
+        {(locale === "en-US" ? product.tagsEn : product.tagsZh).map((tag, index) => (
+          <span className="tag-badge" key={`${product.id}-${tag}-${index}`}>
             {tag}
           </span>
         ))}
@@ -85,6 +179,46 @@ function ProductCard({ locale, product }: { locale: Locale; product: Recommendat
       <p className="recommendation-product-card__body">
         {getLocalizedText(locale, product.rationaleZh, product.rationaleEn)}
       </p>
+      {evidencePreview.length > 0 ? (
+        <div
+          className="recommendation-evidence-list recommendation-evidence-list--preview"
+          data-testid={`recommendation-evidence-preview-${product.id}`}
+        >
+          {evidencePreview.map((reference) => {
+            const safeSourceUri = getSafeExternalLink(reference.sourceUri);
+
+            return (
+              <article className="recommendation-evidence-item" key={reference.evidenceId}>
+                <p className="recommendation-evidence-item__excerpt" lang={reference.excerptLanguage}>
+                  {reference.excerpt}
+                </p>
+                <p className="recommendation-evidence-item__meta">
+                  {safeSourceUri ? (
+                    <a
+                      className="recommendation-evidence-item__source-link"
+                      href={safeSourceUri}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      {reference.sourceTitle}
+                    </a>
+                  ) : (
+                    <span className="recommendation-evidence-item__source-title">{reference.sourceTitle}</span>
+                  )}
+                  {reference.asOfDate ? (
+                    <span className="recommendation-evidence-item__as-of-date">{reference.asOfDate}</span>
+                  ) : null}
+                </p>
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+      <div className="recommendation-product-card__actions">
+        <Link className="recommendation-product-card__link" to={detailRoute}>
+          {locale === "en-US" ? "View details" : "查看详情"}
+        </Link>
+      </div>
     </article>
   );
 }
@@ -93,23 +227,36 @@ export function RecommendationDeck({
   locale,
   riskAssessmentResult,
 }: RecommendationDeckProps) {
+  const { recommendationCache, setRecommendationCacheEntry } = useAppState();
   const copy = getCopy(locale);
-  const [data, setData] = useState<RecommendationResponse | null>(null);
+  const recommendationRequestKey = JSON.stringify(
+    buildRecommendationGenerationPayload(locale, riskAssessmentResult),
+  );
+  const cachedRecommendation = recommendationCache[recommendationRequestKey] ?? null;
+  const [data, setData] = useState<RecommendationResponse | null>(cachedRecommendation);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedRecommendation);
 
   useEffect(() => {
+    if (cachedRecommendation) {
+      setData(cachedRecommendation);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     setLoading(true);
     setError(null);
 
-    fetchRecommendations(riskAssessmentResult)
+    fetchRecommendations(locale, riskAssessmentResult)
       .then((response) => {
         if (cancelled) {
           return;
         }
         setData(response);
+        setRecommendationCacheEntry(recommendationRequestKey, response);
       })
       .catch((requestError: unknown) => {
         if (cancelled) {
@@ -127,15 +274,24 @@ export function RecommendationDeck({
     return () => {
       cancelled = true;
     };
-  }, [riskAssessmentResult]);
+  }, [
+    cachedRecommendation,
+    locale,
+    recommendationRequestKey,
+    riskAssessmentResult,
+    setRecommendationCacheEntry,
+  ]);
 
   const sectionList = useMemo(() => {
     if (!data) {
       return [];
     }
 
-    return [data.sections.funds, data.sections.wealthManagement, data.sections.stocks];
+    return [data.sections.funds, data.sections.wealthManagement, data.sections.stocks].filter(
+      (section) => section.items.length > 0,
+    );
   }, [data]);
+  const traceData = useMemo(() => getTraceData(data?.agentTrace), [data?.agentTrace]);
 
   if (loading) {
     return (
@@ -155,6 +311,14 @@ export function RecommendationDeck({
 
   const showDegradedBanner =
     data.executionMode === "rules_fallback" || data.warnings.length > 0;
+  const degradedTitle =
+    data.executionMode === "rules_fallback"
+      ? copy.degradedTitle
+      : copy.partialDegradedTitle;
+  const degradedBody =
+    data.executionMode === "rules_fallback"
+      ? copy.degradedBody
+      : copy.partialDegradedBody;
 
   return (
     <section className="recommendation-page-layout">
@@ -177,9 +341,9 @@ export function RecommendationDeck({
       {showDegradedBanner ? (
         <article className="panel recommendation-degraded">
           <header className="panel__header">
-            <h2>{copy.degradedTitle}</h2>
+            <h2>{degradedTitle}</h2>
           </header>
-          <p>{copy.degradedBody}</p>
+          <p>{degradedBody}</p>
           {data.warnings.length > 0 ? (
             <ul>
               {data.warnings.map((warning) => (
@@ -187,6 +351,35 @@ export function RecommendationDeck({
               ))}
             </ul>
           ) : null}
+        </article>
+      ) : null}
+
+      {traceData.toolCount > 0 ? (
+        <article className="panel recommendation-trace">
+          <header className="panel__header">
+            <h2>{copy.traceTitle}</h2>
+          </header>
+          <p>{copy.traceSummary(traceData.traceEvents.length, traceData.toolCount)}</p>
+          <div className="recommendation-grid recommendation-grid--stacked">
+            {traceData.traceEvents.map((event, eventIndex) => (
+              <article
+                className="recommendation-product-card"
+                key={`${event.requestName}-${event.nodeName}-${eventIndex}`}
+              >
+                <strong>{getTraceStageLabel(locale, event.requestName, event.nodeName)}</strong>
+                <div className="recommendation-product-card__tags">
+                  {getToolCalls(event).map((toolCall: RecommendationAgentTraceToolCall, toolIndex: number) => (
+                    <span
+                      className="tag-badge"
+                      key={`${event.nodeName}-${toolCall.toolName}-${toolIndex}`}
+                    >
+                      {toolCall.toolName}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
         </article>
       ) : null}
 
@@ -224,8 +417,11 @@ export function RecommendationDeck({
       </section>
 
       <section className="recommendation-sections">
-        {sectionList.map((section) => (
-          <article className="recommendation-section" key={section.titleZh}>
+        {sectionList.map((section, index) => (
+          <article
+            className="recommendation-section"
+            key={`${section.titleZh}-${section.titleEn}-${index}`}
+          >
             <header className="panel__header recommendation-section__header">
               <h2>{getLocalizedText(locale, section.titleZh, section.titleEn)}</h2>
             </header>

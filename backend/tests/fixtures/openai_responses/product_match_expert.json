@@ -1,0 +1,16 @@
+{
+  "request_name": "product_match_expert",
+  "capture_phase": "structured",
+  "body": {
+    "content": [
+      {
+        "type": "text",
+        "text": "```json\n{\n  \"action\": \"return_decision\",\n  \"selected_product_ids\": [\"wm-001\", \"fund-001\"],\n  \"primary_recommendation_id\": \"wm-001\",\n  \"recommended_categories\": [\"wealth_management\", \"fund\"],\n  \"ranking_rationale_zh\": \"现金管理作为核心配置，短债基金作为补充。\",\n  \"ranking_rationale_en\": \"Cash management is the core allocation and the short bond fund is a complement.\",\n  \"filtered_out_reasons\": []\n}\n```"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "type": "message"
+  }
+}

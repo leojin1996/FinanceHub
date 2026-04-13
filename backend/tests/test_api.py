@@ -9,16 +9,51 @@ from fastapi.testclient import TestClient
 from financehub_market_api.models import (
     IndexCard,
     IndicesResponse,
+    LocalizedText,
     MarketOverviewResponse,
     MetricCard,
     OverviewStockSummary,
     RecommendationGenerationRequest,
+    RecommendationProductDetailResponse,
     RecommendationResponse,
     StockRow,
     StocksResponse,
     TrendPoint,
 )
 from financehub_market_api.service import DataUnavailableError
+
+_PRODUCT_KNOWLEDGE_ENV_KEYS = [
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_API_KEY",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+    "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+    "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY",
+]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_product_knowledge_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from financehub_market_api.main import (
+        get_product_detail_service,
+        get_recommendation_service,
+    )
+    from financehub_market_api.recommendation.product_knowledge import service as product_knowledge_service_module
+
+    for env_key in _PRODUCT_KNOWLEDGE_ENV_KEYS:
+        monkeypatch.delenv(env_key, raising=False)
+    monkeypatch.setattr(
+        product_knowledge_service_module,
+        "_iter_env_file_candidates",
+        lambda: [],
+    )
+
+    get_recommendation_service.cache_clear()
+    get_product_detail_service.cache_clear()
+    yield
+    get_recommendation_service.cache_clear()
+    get_product_detail_service.cache_clear()
 
 
 class FakeMarketDataService:
@@ -74,6 +109,57 @@ class FakeRecommendationService:
     def get_recommendation(self, risk_profile: str) -> RecommendationResponse:
         self.last_risk_profile = risk_profile
         return self._response
+
+
+class FakeProductDetailService:
+    def __init__(self, response: RecommendationProductDetailResponse | None) -> None:
+        self._response = response
+        self.last_product_id: str | None = None
+        self.refreshed_product_ids: list[str] = []
+
+    def get_product_detail(self, product_id: str) -> RecommendationProductDetailResponse | None:
+        self.last_product_id = product_id
+        return self._response
+
+    def refresh_product_detail(self, product_id: str) -> None:
+        self.refreshed_product_ids.append(product_id)
+
+
+class FakeProductKnowledgeService:
+    def __init__(self, bundles: list[object]) -> None:
+        self._bundles = bundles
+        self.calls: list[dict[str, object]] = []
+
+    def retrieve_evidence(
+        self,
+        *,
+        query_text: str,
+        product_ids: list[str],
+        include_internal: bool = True,
+        limit_per_product: int = 2,
+        total_limit: int = 12,
+    ) -> list[object]:
+        self.calls.append(
+            {
+                "query_text": query_text,
+                "product_ids": list(product_ids),
+                "include_internal": include_internal,
+                "limit_per_product": limit_per_product,
+                "total_limit": total_limit,
+            }
+        )
+        return [bundle for bundle in self._bundles if bundle.product_id in product_ids]
+
+
+class FakeProductDetailSnapshotCache:
+    def __init__(self, snapshot_by_product_id: dict[str, object]) -> None:
+        self._snapshot_by_product_id = snapshot_by_product_id
+
+    def get_product_detail(self, product_id: str) -> object | None:
+        return self._snapshot_by_product_id.get(product_id)
+
+    def peek_product_detail(self, product_id: str) -> object | None:
+        return self._snapshot_by_product_id.get(product_id)
 
 
 def _build_overview() -> MarketOverviewResponse:
@@ -219,30 +305,210 @@ def _build_stocks() -> StocksResponse:
 
 def _build_recommendation_response() -> RecommendationResponse:
     from financehub_market_api.recommendations import RecommendationService
-    from financehub_market_api.recommendation.agents import AnthropicMultiAgentRuntime
-    from financehub_market_api.recommendation.orchestration import RecommendationOrchestrator
-    from financehub_market_api.recommendation.repositories import StaticCandidateRepository
+    from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
 
-    orchestrator = RecommendationOrchestrator(
-        candidate_repository=StaticCandidateRepository(),
-        multi_agent_runtime=AnthropicMultiAgentRuntime(providers={})
+    return RecommendationService(
+        graph_runtime=RecommendationGraphRuntime.with_deterministic_services()
+    ).get_recommendation("balanced")
+
+
+def _build_recommendation_service_with_mixed_product_evidence() -> object:
+    from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
+    from financehub_market_api.recommendation.product_knowledge.schemas import (
+        ProductEvidenceBundle,
+        RetrievedProductEvidence,
     )
-    return RecommendationService(orchestrator=orchestrator).get_recommendation("balanced")
+    from financehub_market_api.recommendations import RecommendationService
+
+    product_knowledge_service = FakeProductKnowledgeService(
+        [
+            ProductEvidenceBundle(
+                product_id="fund-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-1",
+                        product_id="fund-001",
+                        score=0.97,
+                        snippet="基金主要投资高等级信用债，兼顾流动性与回撤控制。",
+                        source_title="基金招募说明书",
+                        source_uri="https://example.com/fund-001/prospectus",
+                        doc_type="prospectus",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-10",
+                        section_title="投资范围",
+                        page_number=12,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-internal-1",
+                        product_id="fund-001",
+                        score=0.95,
+                        snippet="内部评审：建议仅在高净值客户场景下重点推介。",
+                        source_title="投顾内部备注",
+                        source_uri=None,
+                        doc_type="advisor_note",
+                        source_type="internal_curated",
+                        visibility="internal",
+                        user_displayable=False,
+                        as_of_date="2026-04-09",
+                        section_title="审阅结论",
+                        page_number=None,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-2",
+                        product_id="fund-001",
+                        score=0.93,
+                        snippet="近一年最大回撤控制在同类中低位。",
+                        source_title="基金定期报告",
+                        source_uri="https://example.com/fund-001/report",
+                        doc_type="periodic_report",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-08",
+                        section_title="风险指标",
+                        page_number=5,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-3",
+                        product_id="fund-001",
+                        score=0.90,
+                        snippet="管理人对久期和信用分散做了明确约束。",
+                        source_title="基金合同",
+                        source_uri="https://example.com/fund-001/contract",
+                        doc_type="contract",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-07",
+                        section_title="投资限制",
+                        page_number=3,
+                        language="zh-CN",
+                    ),
+                ],
+            ),
+            ProductEvidenceBundle(
+                product_id="wm-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="wm-001-public-1",
+                        product_id="wm-001",
+                        score=0.88,
+                        snippet="理财说明书披露了净值波动区间和开放日安排。",
+                        source_title="理财产品说明书",
+                        source_uri="https://example.com/wm-001/spec",
+                        doc_type="product_spec",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-06",
+                        section_title="申赎规则",
+                        page_number=9,
+                        language="zh-CN",
+                    )
+                ],
+            ),
+        ]
+    )
+    runtime_with_evidence = RecommendationGraphRuntime.with_deterministic_services(
+        product_knowledge_service=product_knowledge_service
+    )
+    return RecommendationService(graph_runtime=runtime_with_evidence)
+
+
+def _build_product_detail_response(*, stale: bool) -> RecommendationProductDetailResponse:
+    return RecommendationProductDetailResponse(
+        id="fund-001",
+        category="fund",
+        code="000001",
+        providerName="Test provider",
+        nameZh="稳健债券A",
+        nameEn="Stable Bond A",
+        asOfDate="2026-04-09",
+        stale=stale,
+        source="test_detail_source",
+        riskLevel="R2",
+        liquidity="T+1",
+        tagsZh=["低回撤"],
+        tagsEn=["Low drawdown"],
+        summary=LocalizedText(
+            zh="测试详情摘要。",
+            en="Test detail summary.",
+        ),
+        recommendationRationale=LocalizedText(
+            zh="测试推荐理由。",
+            en="Test recommendation rationale.",
+        ),
+        chartLabel=LocalizedText(
+            zh="近期净值",
+            en="Recent NAV",
+        ),
+        chart=[TrendPoint(date="2026-04-09", value=1.02)],
+        yieldMetrics={"annualizedReturn": "3.42%"},
+        fees={"managementFee": "0.30%"},
+        drawdownOrVolatility={"maxDrawdown": "-0.80%"},
+        fitForProfile=LocalizedText(
+            zh="适合稳健型用户。",
+            en="Fits stable users.",
+        ),
+    )
+
+
+def _build_product_detail_snapshot() -> object:
+    from financehub_market_api.recommendation.candidate_pool.schemas import ProductDetailSnapshot
+
+    return ProductDetailSnapshot(
+        id="fund-001",
+        category="fund",
+        code="000001",
+        provider_name="Test provider",
+        name_zh="稳健债券A",
+        name_en="Stable Bond A",
+        as_of_date="2026-04-09",
+        generated_at="2026-04-09T10:00:00+08:00",
+        fresh_until="2026-04-10T10:00:00+08:00",
+        source="test_detail_source",
+        stale=False,
+        risk_level="R2",
+        liquidity="T+1",
+        tags_zh=["低回撤"],
+        tags_en=["Low drawdown"],
+        summary_zh="测试详情摘要。",
+        summary_en="Test detail summary.",
+        recommendation_rationale_zh="测试推荐理由。",
+        recommendation_rationale_en="Test recommendation rationale.",
+        chart_label_zh="近期净值",
+        chart_label_en="Recent NAV",
+        chart=[],
+        yield_metrics={"annualizedReturn": "3.42%"},
+        fees={"managementFee": "0.30%"},
+        drawdown_or_volatility={"maxDrawdown": "-0.80%"},
+        fit_for_profile_zh="适合稳健型用户。",
+        fit_for_profile_en="Fits stable users.",
+    )
 
 
 def _install_override(
     service: FakeMarketDataService,
     recommendation_service: FakeRecommendationService | None = None,
+    product_detail_service: FakeProductDetailService | None = None,
 ) -> tuple[TestClient, Callable[[], None]]:
     from financehub_market_api.main import (
         app,
         get_market_data_service,
+        get_product_detail_service,
         get_recommendation_service,
     )
 
     app.dependency_overrides[get_market_data_service] = lambda: service
     if recommendation_service is not None:
         app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
+    if product_detail_service is not None:
+        app.dependency_overrides[get_product_detail_service] = lambda: product_detail_service
     client = TestClient(app)
 
     def _clear() -> None:
@@ -371,10 +637,118 @@ def test_post_recommendations_passes_risk_profile_and_returns_payload() -> None:
         "stock": 20,
     }
     assert response.json()["sections"]["funds"]["titleZh"] == "基金推荐"
-    assert response.json()["profileSummary"]["zh"].startswith("您的测评结果")
+    assert response.json()["profileSummary"]["zh"]
     assert response.json()["marketSummary"]["en"]
-    assert response.json()["executionMode"] in {"agent_assisted", "rules_fallback"}
+    assert response.json()["executionMode"] == "agent_assisted"
     assert isinstance(response.json()["warnings"], list)
+
+
+def test_generate_recommendations_accepts_extended_request_payload() -> None:
+    recommendation_service = FakeRecommendationService(_build_recommendation_response())
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "userIntentText": "稳健理财",
+                "conversationMessages": [
+                    {
+                        "role": "user",
+                        "content": "稳健理财",
+                        "occurredAt": "2026-04-08T10:00:00Z",
+                    }
+                ],
+                "clientContext": {"channel": "web", "locale": "zh-CN"},
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    assert recommendation_service.last_generation_request is not None
+    assert recommendation_service.last_generation_request.userIntentText == "稳健理财"
+
+
+def test_generate_recommendations_exposes_only_public_evidence_preview() -> None:
+    recommendation_service = _build_recommendation_service_with_mixed_product_evidence()
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    first_fund = response.json()["sections"]["funds"]["items"][0]
+    assert len(first_fund["evidencePreview"]) == 2
+    assert all(item["sourceTitle"] != "投顾内部备注" for item in first_fund["evidencePreview"])
+    allowed_keys = {
+        "evidenceId",
+        "excerpt",
+        "excerptLanguage",
+        "sourceTitle",
+        "docType",
+        "asOfDate",
+        "pageNumber",
+        "sectionTitle",
+        "sourceUri",
+    }
+    assert all(set(item.keys()) <= allowed_keys for item in first_fund["evidencePreview"])
 
 
 def test_post_recommendations_alias_accepts_legacy_payload() -> None:
@@ -441,6 +815,144 @@ def test_post_recommendations_alias_accepts_new_payload() -> None:
     assert recommendation_service.last_generation_request.riskAssessmentResult.finalProfile == "balanced"
 
 
+def test_get_recommendation_product_detail_returns_standard_detail_payload() -> None:
+    from financehub_market_api.main import app
+
+    client = TestClient(app)
+
+    response = client.get("/api/recommendations/products/fund-001")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "fund-001"
+    assert payload["category"] == "fund"
+    assert payload["summary"]["zh"]
+    assert payload["recommendationRationale"]["zh"]
+    assert isinstance(payload["chart"], list)
+    assert payload["fitForProfile"]["zh"]
+
+
+def test_get_recommendation_product_detail_exposes_only_public_evidence() -> None:
+    from financehub_market_api.recommendation.product_knowledge.schemas import (
+        ProductEvidenceBundle,
+        RetrievedProductEvidence,
+    )
+    from financehub_market_api.recommendation.services.product_detail_service import ProductDetailService
+
+    knowledge_service = FakeProductKnowledgeService(
+        [
+            ProductEvidenceBundle(
+                product_id="fund-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-public-1",
+                        product_id="fund-001",
+                        score=0.96,
+                        snippet="基金招募说明书披露了投资范围与久期约束。",
+                        source_title="基金招募说明书",
+                        source_uri="https://example.com/fund-001/prospectus",
+                        doc_type="prospectus",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-10",
+                        section_title="投资策略",
+                        page_number=8,
+                        language="zh-CN",
+                    ),
+                    RetrievedProductEvidence(
+                        evidence_id="fund-001-internal-1",
+                        product_id="fund-001",
+                        score=0.95,
+                        snippet="内部评审建议保守销售。",
+                        source_title="投顾内部备注",
+                        source_uri=None,
+                        doc_type="advisor_note",
+                        source_type="internal_curated",
+                        visibility="internal",
+                        user_displayable=False,
+                        as_of_date="2026-04-09",
+                        section_title="内部审阅",
+                        page_number=None,
+                        language="zh-CN",
+                    ),
+                ],
+            ),
+            ProductEvidenceBundle(
+                product_id="wm-001",
+                evidences=[
+                    RetrievedProductEvidence(
+                        evidence_id="wm-001-public-1",
+                        product_id="wm-001",
+                        score=0.90,
+                        snippet="不应出现在 fund-001 详情中。",
+                        source_title="理财产品说明书",
+                        source_uri="https://example.com/wm-001/spec",
+                        doc_type="product_spec",
+                        source_type="public_official",
+                        visibility="public",
+                        user_displayable=True,
+                        as_of_date="2026-04-08",
+                        section_title="申赎规则",
+                        page_number=6,
+                        language="zh-CN",
+                    )
+                ],
+            ),
+        ]
+    )
+    product_detail_service = ProductDetailService(
+        cache=FakeProductDetailSnapshotCache(
+            snapshot_by_product_id={"fund-001": _build_product_detail_snapshot()}
+        ),
+        product_knowledge_service=knowledge_service,
+    )
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        product_detail_service=product_detail_service,
+    )
+    try:
+        response = client.get("/api/recommendations/products/fund-001")
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["evidence"]
+    assert all(item["sourceTitle"] != "投顾内部备注" for item in payload["evidence"])
+    assert all(item["sourceTitle"] != "理财产品说明书" for item in payload["evidence"])
+    allowed_keys = {
+        "evidenceId",
+        "excerpt",
+        "excerptLanguage",
+        "sourceTitle",
+        "docType",
+        "asOfDate",
+        "pageNumber",
+        "sectionTitle",
+        "sourceUri",
+    }
+    assert all(set(item.keys()) <= allowed_keys for item in payload["evidence"])
+    assert knowledge_service.calls
+    assert knowledge_service.calls[0]["include_internal"] is False
+
+
+def test_get_recommendation_product_detail_schedules_background_refresh_for_stale_detail() -> None:
+    product_detail_service = FakeProductDetailService(_build_product_detail_response(stale=True))
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        product_detail_service=product_detail_service,
+    )
+    try:
+        response = client.get("/api/recommendations/products/fund-001")
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    assert product_detail_service.last_product_id == "fund-001"
+    assert product_detail_service.refreshed_product_ids == ["fund-001"]
+
+
 @pytest.mark.parametrize(
     "path",
     ["/api/market-overview", "/api/indices", "/api/stocks"],
@@ -456,3 +968,165 @@ def test_data_unavailable_error_is_translated_to_http_503(path: str) -> None:
     assert response.status_code == 503
     body: dict[str, Any] = response.json()
     assert body == {"detail": "upstream unavailable"}
+
+
+def test_default_recommendation_dependency_uses_graph_runtime_backed_service() -> None:
+    from financehub_market_api.main import get_recommendation_service
+
+    service = get_recommendation_service()
+
+    assert getattr(service, "_orchestrator", None) is None
+    runtime = getattr(service, "_graph_runtime", None)
+    assert runtime is not None
+    assert getattr(runtime._services, "product_knowledge", None) is None
+
+
+def test_default_product_detail_dependency_is_inert_when_product_knowledge_env_absent() -> None:
+    from financehub_market_api.main import get_product_detail_service
+
+    service = get_product_detail_service()
+
+    assert getattr(service, "_product_knowledge_service", None) is None
+
+
+def test_default_recommendation_dependency_wires_product_knowledge_when_env_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.main import get_recommendation_service
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
+
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+        "https://qdrant.example.com",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+        "financehub_product_knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+        "sk-test-product-knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+        "https://openai.example.com/v1",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+        "text-embedding-3-large",
+    )
+
+    service = get_recommendation_service()
+    runtime = getattr(service, "_graph_runtime", None)
+    assert runtime is not None
+    retrieval_service = getattr(runtime._services, "product_knowledge", None)
+    assert retrieval_service is not None
+    assert isinstance(retrieval_service._embedding_client, OpenAIEmbeddingClient)
+    assert retrieval_service._embedding_client._api_key == "sk-test-product-knowledge"
+    assert retrieval_service._embedding_client._base_url == "https://openai.example.com/v1"
+    assert retrieval_service._embedding_client._model_name == "text-embedding-3-large"
+    assert isinstance(retrieval_service._knowledge_store, QdrantProductKnowledgeStore)
+    assert retrieval_service._knowledge_store._base_url == "https://qdrant.example.com"
+    assert (
+        retrieval_service._knowledge_store._collection_name
+        == "financehub_product_knowledge"
+    )
+
+
+def test_default_product_detail_dependency_wires_product_knowledge_when_env_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.main import get_product_detail_service
+    from financehub_market_api.recommendation.product_knowledge.embedding_client import (
+        OpenAIEmbeddingClient,
+    )
+    from financehub_market_api.recommendation.product_knowledge.qdrant_store import (
+        QdrantProductKnowledgeStore,
+    )
+
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_URL",
+        "https://qdrant.example.com",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_QDRANT_COLLECTION",
+        "financehub_product_knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_API_KEY",
+        "sk-test-product-knowledge",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_OPENAI_BASE_URL",
+        "https://openai.example.com/v1",
+    )
+    monkeypatch.setenv(
+        "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
+        "text-embedding-3-large",
+    )
+
+    service = get_product_detail_service()
+    retrieval_service = getattr(service, "_product_knowledge_service", None)
+    assert retrieval_service is not None
+    assert isinstance(retrieval_service._embedding_client, OpenAIEmbeddingClient)
+    assert retrieval_service._embedding_client._api_key == "sk-test-product-knowledge"
+    assert retrieval_service._embedding_client._base_url == "https://openai.example.com/v1"
+    assert retrieval_service._embedding_client._model_name == "text-embedding-3-large"
+    assert isinstance(retrieval_service._knowledge_store, QdrantProductKnowledgeStore)
+    assert retrieval_service._knowledge_store._base_url == "https://qdrant.example.com"
+    assert (
+        retrieval_service._knowledge_store._collection_name
+        == "financehub_product_knowledge"
+    )
+
+
+def test_generate_recommendations_raises_when_graph_runtime_fails() -> None:
+    from financehub_market_api.recommendations import RecommendationService
+
+    class _FailingGraphRuntime:
+        def run(self, payload: object) -> object:
+            del payload
+            raise RuntimeError("graph runtime crashed")
+
+    recommendation_service = RecommendationService(graph_runtime=_FailingGraphRuntime())
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="graph runtime crashed"):
+            client.post(
+                "/api/recommendations/generate",
+                json={
+                    "historicalHoldings": [],
+                    "historicalTransactions": [],
+                    "includeAggressiveOption": True,
+                    "questionnaireAnswers": [],
+                    "riskAssessmentResult": {
+                        "baseProfile": "stable",
+                        "dimensionLevels": {
+                            "capitalStability": "medium",
+                            "investmentExperience": "medium",
+                            "investmentHorizon": "mediumHigh",
+                            "returnObjective": "medium",
+                            "riskTolerance": "medium",
+                        },
+                        "dimensionScores": {
+                            "capitalStability": 12,
+                            "investmentExperience": 11,
+                            "investmentHorizon": 14,
+                            "returnObjective": 13,
+                            "riskTolerance": 12,
+                        },
+                        "finalProfile": "balanced",
+                        "totalScore": 62,
+                    },
+                },
+            )
+    finally:
+        clear()
