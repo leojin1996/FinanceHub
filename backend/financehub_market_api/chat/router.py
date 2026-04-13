@@ -86,13 +86,11 @@ def _chat_sse_stream(
         )
         try:
             store.add_message(session_id, assistant)
-        except ChatStoreError as exc:
+        except ChatStoreError:
             LOGGER.exception(
                 "Failed to persist assistant message after stream for session %s",
                 session_id,
             )
-            err_payload = json.dumps({"message": str(exc)})
-            yield f"event: error\ndata: {err_payload}\n\n"
 
 
 def _streaming_chat_response(
@@ -126,7 +124,10 @@ def list_chat_sessions(
     store: Annotated[ChatSessionStore, Depends(get_chat_session_store)],
     limit: int = Query(default=50, ge=0, le=500),
 ) -> ChatSessionListResponse:
-    sessions = store.list_sessions(limit)
+    try:
+        sessions = store.list_sessions(limit)
+    except ChatStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ChatSessionListResponse(sessions=sessions)
 
 
@@ -140,7 +141,10 @@ def get_chat_messages(
 ) -> ChatMessageListResponse:
     if store.get_session(session_id) is None:
         raise HTTPException(status_code=404, detail="chat session not found")
-    messages = store.get_messages(session_id)
+    try:
+        messages = store.get_messages(session_id)
+    except ChatStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ChatMessageListResponse(messages=messages)
 
 
