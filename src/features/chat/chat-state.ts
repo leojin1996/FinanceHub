@@ -14,7 +14,7 @@ export interface ChatStateValue {
   sessions: ChatSession[];
   activeSessionId: string | null;
   switchSession: (sessionId: string) => void;
-  createSession: () => Promise<void>;
+  createSession: () => Promise<ChatSession | null>;
   deleteSession: (sessionId: string) => Promise<void>;
 
   // Messages

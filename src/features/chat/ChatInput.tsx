@@ -3,11 +3,9 @@ import { type ChangeEvent, type KeyboardEvent, useCallback, useRef, useState } f
 import { useChatState } from "./chat-state";
 
 export function ChatInput() {
-  const { sendMessage, isStreaming, activeSessionId, isLoadingSessions } = useChatState();
+  const { sendMessage, isStreaming } = useChatState();
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Allow typing while the first session list is loading; only lock when we know there is no session (load finished empty/failed).
-  const inputLocked = isStreaming || (!activeSessionId && !isLoadingSessions);
 
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -24,7 +22,7 @@ export function ChatInput() {
 
   const handleSend = () => {
     const trimmed = text.trim();
-    if (!trimmed || inputLocked || !activeSessionId) return;
+    if (!trimmed || isStreaming) return;
     setText("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     void sendMessage(trimmed);
@@ -47,12 +45,12 @@ export function ChatInput() {
         value={text}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        disabled={inputLocked}
+        disabled={isStreaming}
       />
       <button
         className="chat-panel__send-btn"
         onClick={handleSend}
-        disabled={isStreaming || !activeSessionId || !text.trim()}
+        disabled={isStreaming || !text.trim()}
         type="button"
         aria-label="发送"
       >

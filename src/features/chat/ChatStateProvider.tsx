@@ -45,6 +45,8 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
 
   const initialOpenLoadCompletedRef = useRef(false);
   const initialOpenLoadInFlightRef = useRef(false);
+  const isStreamingRef = useRef(false);
+  isStreamingRef.current = isStreaming;
 
   const closePanel = useCallback(() => {
     setIsOpen(false);
@@ -83,14 +85,17 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
     setActiveSessionId(sessionId);
   }, []);
 
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(async (): Promise<ChatSession | null> => {
     setError(null);
     try {
       const session = await createChatSession();
       setSessions((prev) => [session, ...prev]);
       setActiveSessionId(session.id);
+      initialOpenLoadCompletedRef.current = true;
+      return session;
     } catch (err) {
       setError(toUserFriendlyError(err));
+      return null;
     }
   }, []);
 
@@ -123,7 +128,8 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
     void (async () => {
       try {
         const loaded = await getChatMessages(activeSessionId);
-        if (!cancelled) {
+        // Avoid overwriting optimistic / streaming messages while a reply is in flight.
+        if (!cancelled && !isStreamingRef.current) {
           setMessages(loaded);
         }
       } catch (err) {
@@ -144,15 +150,18 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
 
   const sendMessage = useCallback(
     async (content: string) => {
-      const sessionId = activeSessionId;
-      if (!sessionId) {
-        setError("No chat session is active. Open the chat panel to start or resume a conversation.");
-        return;
-      }
-
       const trimmed = content.trim();
       if (!trimmed) {
         return;
+      }
+
+      let sessionId = activeSessionId;
+      if (!sessionId) {
+        const session = await createSession();
+        if (!session) {
+          return;
+        }
+        sessionId = session.id;
       }
 
       const userMessage: ChatMessage = {
@@ -162,10 +171,10 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
         created_at: new Date().toISOString(),
       };
 
-      setMessages((prev) => [...prev, userMessage]);
-      setIsStreaming(true);
       setStreamingContent("");
       setError(null);
+      setIsStreaming(true);
+      setMessages((prev) => [...prev, userMessage]);
 
       let accumulated = "";
 
@@ -213,7 +222,7 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
         setIsStreaming(false);
       }
     },
-    [activeSessionId],
+    [activeSessionId, createSession],
   );
 
   const clearError = useCallback(() => {

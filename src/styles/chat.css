@@ -45,6 +45,34 @@
   animation: chat-panel-slide-up 0.25s ease-out;
 }
 
+.chat-panel__error {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(209, 67, 67, 0.1);
+  border-bottom: 1px solid rgba(209, 67, 67, 0.25);
+  font-size: 13px;
+  color: var(--fh-negative);
+}
+
+.chat-panel__error-text {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.chat-panel__error-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--fh-negative);
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+  padding: 0;
+}
+
 @keyframes chat-panel-slide-up {
   from {
     opacity: 0;
@@ -185,6 +213,9 @@
   outline: none;
   color: var(--fh-text-primary);
   background: var(--fh-bg-elevated);
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
 }
 
 .chat-panel__input-field:focus {
