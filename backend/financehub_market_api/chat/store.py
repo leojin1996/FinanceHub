@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from datetime import UTC, datetime
 from typing import Protocol
 
+from redis.exceptions import RedisError
+
 from .models import ChatMessage, ChatSession
+
+LOGGER = logging.getLogger(__name__)
+
+
+class ChatStoreError(Exception):
+    """Raised when a chat store write fails due to Redis or an unexpected client error."""
+
+    def __init__(self, message: str, *, session_id: str | None = None) -> None:
+        self.session_id = session_id
+        super().__init__(message)
 
 
 def _utc_iso_now() -> str:
@@ -52,20 +65,36 @@ class ChatSessionStore:
     def __init__(self, redis_client: ChatRedisLike) -> None:
         self._redis = redis_client
 
+    def _touch_session(self, session_id: str) -> None:
+        updated_at = _utc_iso_now()
+        try:
+            self._redis.hset(
+                _session_hash_key(session_id),
+                mapping={b"updated_at": updated_at.encode("utf-8")},
+            )
+            self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+        except RedisError as exc:
+            msg = "Failed to update session timestamp in Redis"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+
     def create_session(self, title: str = "New Chat") -> ChatSession:
         session_id = uuid.uuid4().hex
         created_at = _utc_iso_now()
         updated_at = created_at
         session_key = _session_hash_key(session_id)
-        self._redis.hset(
-            session_key,
-            mapping={
-                b"title": title.encode("utf-8"),
-                b"created_at": created_at.encode("utf-8"),
-                b"updated_at": updated_at.encode("utf-8"),
-            },
-        )
-        self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+        try:
+            self._redis.hset(
+                session_key,
+                mapping={
+                    b"title": title.encode("utf-8"),
+                    b"created_at": created_at.encode("utf-8"),
+                    b"updated_at": updated_at.encode("utf-8"),
+                },
+            )
+            self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+        except RedisError as exc:
+            msg = "Failed to create chat session in Redis"
+            raise ChatStoreError(msg, session_id=session_id) from exc
         return ChatSession(
             id=session_id,
             title=title,
@@ -76,7 +105,14 @@ class ChatSessionStore:
     def list_sessions(self, limit: int = 50) -> list[ChatSession]:
         if limit <= 0:
             return []
-        raw_ids = self._redis.zrevrange(USER_SESSIONS_ZSET_KEY, 0, limit - 1)
+        try:
+            raw_ids = self._redis.zrevrange(USER_SESSIONS_ZSET_KEY, 0, limit - 1)
+        except RedisError:
+            LOGGER.warning(
+                "Redis error while listing chat sessions; returning empty list",
+                exc_info=True,
+            )
+            return []
         sessions: list[ChatSession] = []
         for raw_id in raw_ids:
             session_id = _decode_zset_member(raw_id)
@@ -86,7 +122,15 @@ class ChatSessionStore:
         return sessions
 
     def get_session(self, session_id: str) -> ChatSession | None:
-        raw = self._redis.hgetall(_session_hash_key(session_id))
+        try:
+            raw = self._redis.hgetall(_session_hash_key(session_id))
+        except RedisError:
+            LOGGER.warning(
+                "Redis error while loading chat session %s; returning None",
+                session_id,
+                exc_info=True,
+            )
+            return None
         if not raw:
             return None
         title_b = raw.get(b"title")
@@ -106,15 +150,30 @@ class ChatSessionStore:
 
     def delete_session(self, session_id: str) -> bool:
         session_key = _session_hash_key(session_id)
-        if not self._redis.hgetall(session_key):
+        try:
+            raw = self._redis.hgetall(session_key)
+        except RedisError as exc:
+            msg = "Failed to read chat session before delete"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        if not raw:
             return False
-        self._redis.delete(session_key)
-        self._redis.delete(_messages_list_key(session_id))
-        self._redis.zrem(USER_SESSIONS_ZSET_KEY, session_id)
+        try:
+            self._redis.delete(session_key)
+            self._redis.delete(_messages_list_key(session_id))
+            self._redis.zrem(USER_SESSIONS_ZSET_KEY, session_id)
+        except RedisError as exc:
+            msg = "Failed to delete chat session from Redis"
+            raise ChatStoreError(msg, session_id=session_id) from exc
         return True
 
     def add_message(self, session_id: str, message: ChatMessage) -> None:
-        if self.get_session(session_id) is None:
+        session_key = _session_hash_key(session_id)
+        try:
+            raw = self._redis.hgetall(session_key)
+        except RedisError as exc:
+            msg = "Failed to verify chat session before add_message"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        if not raw:
             msg = f"Unknown chat session: {session_id}"
             raise ValueError(msg)
         payload = json.dumps(
@@ -122,16 +181,23 @@ class ChatSessionStore:
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")
-        self._redis.rpush(_messages_list_key(session_id), payload)
-        updated_at = _utc_iso_now()
-        self._redis.hset(
-            _session_hash_key(session_id),
-            mapping={b"updated_at": updated_at.encode("utf-8")},
-        )
-        self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+        try:
+            self._redis.rpush(_messages_list_key(session_id), payload)
+        except RedisError as exc:
+            msg = "Failed to append chat message in Redis"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        self._touch_session(session_id)
 
     def get_messages(self, session_id: str) -> list[ChatMessage]:
-        raw_items = self._redis.lrange(_messages_list_key(session_id), 0, -1)
+        try:
+            raw_items = self._redis.lrange(_messages_list_key(session_id), 0, -1)
+        except RedisError:
+            LOGGER.warning(
+                "Redis error while loading messages for session %s; returning empty list",
+                session_id,
+                exc_info=True,
+            )
+            return []
         messages: list[ChatMessage] = []
         for raw in raw_items:
             try:
@@ -149,10 +215,21 @@ class ChatSessionStore:
         return messages
 
     def update_session_title(self, session_id: str, title: str) -> None:
-        if self.get_session(session_id) is None:
+        session_key = _session_hash_key(session_id)
+        try:
+            raw = self._redis.hgetall(session_key)
+        except RedisError as exc:
+            msg = "Failed to verify chat session before update_session_title"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        if not raw:
             msg = f"Unknown chat session: {session_id}"
             raise ValueError(msg)
-        self._redis.hset(
-            _session_hash_key(session_id),
-            mapping={b"title": title.encode("utf-8")},
-        )
+        try:
+            self._redis.hset(
+                session_key,
+                mapping={b"title": title.encode("utf-8")},
+            )
+        except RedisError as exc:
+            msg = "Failed to update chat session title in Redis"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        self._touch_session(session_id)
