@@ -13,6 +13,9 @@ from financehub_market_api.models import (
     RecommendationGenerationRequest,
     RecommendationWarning,
 )
+from financehub_market_api.recommendation.compliance_knowledge import (
+    ComplianceEvidenceBundle,
+)
 from financehub_market_api.recommendation.product_knowledge import ProductEvidenceBundle
 
 
@@ -100,6 +103,10 @@ class RetrievalContext(BaseModel):
     filtered_out_reasons: list[str] = Field(default_factory=list)
 
 
+class ComplianceRetrievalContext(BaseModel):
+    evidences: list[ComplianceEvidenceBundle] = Field(default_factory=list)
+
+
 class ComplianceReviewState(BaseModel):
     verdict: Literal["approve", "revise_conservative", "block"]
     reason_zh: str
@@ -133,6 +140,7 @@ class RecommendationGraphState(TypedDict):
     agent_market_summary: AgentMarketSummaryState | None
     market_intelligence: MarketIntelligenceState | None
     retrieval_context: RetrievalContext | None
+    compliance_retrieval: ComplianceRetrievalContext | None
     compliance_review: ComplianceReviewState | None
     final_response: FinalResponseState | None
     product_strategy: ProductStrategy | None
@@ -155,6 +163,7 @@ def build_initial_graph_state(
         "agent_market_summary": None,
         "market_intelligence": None,
         "retrieval_context": None,
+        "compliance_retrieval": None,
         "compliance_review": None,
         "final_response": None,
         "product_strategy": None,

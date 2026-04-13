@@ -31,6 +31,14 @@ _PRODUCT_KNOWLEDGE_ENV_KEYS = [
     "FINANCEHUB_PRODUCT_KNOWLEDGE_EMBEDDING_MODEL",
     "FINANCEHUB_LLM_PROVIDER_OPENAI_API_KEY",
 ]
+_COMPLIANCE_KNOWLEDGE_ENV_KEYS = [
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_QDRANT_URL",
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_QDRANT_API_KEY",
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_QDRANT_COLLECTION",
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_OPENAI_API_KEY",
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_OPENAI_BASE_URL",
+    "FINANCEHUB_COMPLIANCE_KNOWLEDGE_EMBEDDING_MODEL",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -39,12 +47,23 @@ def _isolate_product_knowledge_env(monkeypatch: pytest.MonkeyPatch) -> None:
         get_product_detail_service,
         get_recommendation_service,
     )
+    from financehub_market_api.recommendation.compliance_knowledge import (
+        service as compliance_knowledge_service_module,
+    )
     from financehub_market_api.recommendation.product_knowledge import service as product_knowledge_service_module
 
-    for env_key in _PRODUCT_KNOWLEDGE_ENV_KEYS:
+    for env_key in [
+        *_PRODUCT_KNOWLEDGE_ENV_KEYS,
+        *_COMPLIANCE_KNOWLEDGE_ENV_KEYS,
+    ]:
         monkeypatch.delenv(env_key, raising=False)
     monkeypatch.setattr(
         product_knowledge_service_module,
+        "_iter_env_file_candidates",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        compliance_knowledge_service_module,
         "_iter_env_file_candidates",
         lambda: [],
     )
@@ -149,6 +168,32 @@ class FakeProductKnowledgeService:
             }
         )
         return [bundle for bundle in self._bundles if bundle.product_id in product_ids]
+
+
+class FakeComplianceKnowledgeService:
+    def __init__(self, bundles: list[object]) -> None:
+        self._bundles = bundles
+        self.calls: list[dict[str, object]] = []
+
+    def retrieve_evidence(
+        self,
+        query,
+        *,
+        total_limit: int = 12,
+    ) -> list[object]:
+        self.calls.append(
+            {
+                "query_text": query.query_text,
+                "rule_types": list(query.rule_types),
+                "categories": list(query.categories),
+                "risk_tiers": list(query.risk_tiers),
+                "audience": query.audience,
+                "jurisdiction": query.jurisdiction,
+                "effective_on": query.effective_on,
+                "total_limit": total_limit,
+            }
+        )
+        return list(self._bundles)
 
 
 class FakeProductDetailSnapshotCache:
@@ -418,6 +463,52 @@ def _build_recommendation_service_with_mixed_product_evidence() -> object:
         product_knowledge_service=product_knowledge_service
     )
     return RecommendationService(graph_runtime=runtime_with_evidence)
+
+
+def _build_recommendation_service_with_compliance_knowledge() -> object:
+    from financehub_market_api.recommendation.graph.runtime import (
+        RecommendationGraphRuntime,
+    )
+    from financehub_market_api.recommendation.compliance_knowledge.schemas import (
+        ComplianceEvidenceBundle,
+        RetrievedComplianceEvidence,
+    )
+    from financehub_market_api.recommendations import RecommendationService
+
+    compliance_knowledge_service = FakeComplianceKnowledgeService(
+        [
+            ComplianceEvidenceBundle(
+                rule_type="suitability",
+                evidences=[
+                    RetrievedComplianceEvidence(
+                        evidence_id="rule-001#1",
+                        score=0.94,
+                        snippet="销售机构应当将产品风险等级与投资者风险承受能力进行匹配。",
+                        source_title="基金销售适当性管理办法",
+                        source_uri="https://example.com/rule-001.pdf",
+                        doc_type="regulation_pdf",
+                        source_type="public_regulation",
+                        jurisdiction="CN",
+                        rule_id="suitability-risk-tier-match",
+                        rule_type="suitability",
+                        audience="fund_sales",
+                        applies_to_categories=["fund"],
+                        applies_to_risk_tiers=["R1", "R2", "R3", "R4", "R5"],
+                        disclosure_type="suitability_warning",
+                        effective_date="2026-04-13",
+                        section_title="适当性匹配要求",
+                        page_number=6,
+                    )
+                ],
+            )
+        ]
+    )
+    runtime = RecommendationGraphRuntime.with_deterministic_services(
+        compliance_knowledge_service=compliance_knowledge_service
+    )
+    service = RecommendationService(graph_runtime=runtime)
+    setattr(service, "_fake_compliance_knowledge_service", compliance_knowledge_service)
+    return service
 
 
 def _build_product_detail_response(*, stale: bool) -> RecommendationProductDetailResponse:
@@ -749,6 +840,57 @@ def test_generate_recommendations_exposes_only_public_evidence_preview() -> None
         "sourceUri",
     }
     assert all(set(item.keys()) <= allowed_keys for item in first_fund["evidencePreview"])
+
+
+def test_generate_recommendations_applies_compliance_knowledge_without_exposing_it() -> None:
+    recommendation_service = _build_recommendation_service_with_compliance_knowledge()
+    client, clear = _install_override(
+        FakeMarketDataService(overview=_build_overview()),
+        recommendation_service,
+    )
+    try:
+        response = client.post(
+            "/api/recommendations/generate",
+            json={
+                "userIntentText": "稳健理财",
+                "historicalHoldings": [],
+                "historicalTransactions": [],
+                "includeAggressiveOption": True,
+                "questionnaireAnswers": [],
+                "riskAssessmentResult": {
+                    "baseProfile": "stable",
+                    "dimensionLevels": {
+                        "capitalStability": "medium",
+                        "investmentExperience": "medium",
+                        "investmentHorizon": "mediumHigh",
+                        "returnObjective": "medium",
+                        "riskTolerance": "medium",
+                    },
+                    "dimensionScores": {
+                        "capitalStability": 12,
+                        "investmentExperience": 11,
+                        "investmentHorizon": 14,
+                        "returnObjective": 13,
+                        "riskTolerance": 12,
+                    },
+                    "finalProfile": "balanced",
+                    "totalScore": 62,
+                },
+            },
+        )
+    finally:
+        clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reviewStatus"] in {"pass", "partial_pass"}
+    assert "complianceEvidence" not in body
+    assert "complianceEvidence" not in str(body)
+    fake_service = getattr(
+        recommendation_service,
+        "_fake_compliance_knowledge_service",
+    )
+    assert fake_service.calls
 
 
 def test_post_recommendations_alias_accepts_legacy_payload() -> None:

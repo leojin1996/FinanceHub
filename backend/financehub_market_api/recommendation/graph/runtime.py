@@ -22,6 +22,10 @@ from financehub_market_api.recommendation.compliance import (
     ComplianceFactsService,
     ComplianceReviewService,
 )
+from financehub_market_api.recommendation.compliance_knowledge import (
+    ComplianceKnowledgeRetrievalService,
+    build_compliance_knowledge_retrieval_service_from_env,
+)
 from financehub_market_api.recommendation.graph.nodes import (
     compliance_risk_officer_node,
     manager_coordinator_node,
@@ -78,6 +82,7 @@ class GraphServices:
     product_retrieval: ProductRetrievalService
     product_candidates: list[CandidateProduct]
     product_knowledge: ProductKnowledgeRetrievalService | None = None
+    compliance_knowledge: ComplianceKnowledgeRetrievalService | None = None
     compliance_review: ComplianceReviewService | None = None
     compliance_review_service: ComplianceReviewService | None = None
     compliance_facts_service: ComplianceFactsService | None = None
@@ -423,6 +428,7 @@ class RecommendationGraphRuntime:
             "compliance_risk_officer",
             lambda state: compliance_risk_officer_node(
                 state,
+                compliance_knowledge_service=services.compliance_knowledge,
                 compliance_review_service=(
                     services.compliance_review_service or services.compliance_review
                 ),
@@ -513,6 +519,7 @@ class RecommendationGraphRuntime:
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=[],
                 product_knowledge=build_product_knowledge_retrieval_service_from_env(),
+                compliance_knowledge=build_compliance_knowledge_retrieval_service_from_env(),
                 agent_runtime=agent_runtime,
                 candidate_repository=candidate_repository,
             )
@@ -523,6 +530,7 @@ class RecommendationGraphRuntime:
         cls,
         *,
         product_knowledge_service: ProductKnowledgeRetrievalService | None = None,
+        compliance_knowledge_service: ComplianceKnowledgeRetrievalService | None = None,
     ) -> RecommendationGraphRuntime:
         candidates = _build_product_candidates(
             StaticCandidateRepository(),
@@ -539,6 +547,7 @@ class RecommendationGraphRuntime:
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=candidates,
                 product_knowledge=product_knowledge_service,
+                compliance_knowledge=compliance_knowledge_service,
                 agent_runtime=_DeterministicAgentRuntime(),
             )
         )
@@ -565,6 +574,7 @@ class RecommendationGraphRuntime:
                 compliance_review_service=ComplianceReviewService(),
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=adjusted_candidates,
+                compliance_knowledge=None,
                 agent_runtime=_DeterministicAgentRuntime(),
             )
         )

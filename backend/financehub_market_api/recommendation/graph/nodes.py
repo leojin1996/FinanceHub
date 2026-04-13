@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
 from financehub_market_api.models import MarketEvidenceItem
@@ -15,9 +16,16 @@ from financehub_market_api.recommendation.agents.runtime_context import (
     AgentPromptContext,
     AgentPromptSection,
 )
+from financehub_market_api.recommendation.compliance import ComplianceReviewService
+from financehub_market_api.recommendation.compliance_knowledge import (
+    ComplianceEvidenceBundle,
+    ComplianceKnowledgeQuery,
+    ComplianceKnowledgeRetrievalService,
+)
 from financehub_market_api.recommendation.graph.routing import route_compliance_verdict
 from financehub_market_api.recommendation.graph.state import (
     AgentMarketSummaryState,
+    ComplianceRetrievalContext,
     AgentProfileFocusState,
     ComplianceReviewState,
     FinalResponseState,
@@ -362,6 +370,19 @@ def product_match_expert_node(
             ),
         )
     except Exception as exc:  # noqa: BLE001
+        if retrieval_candidates:
+            return _product_match_fallback_state(
+                state_with_evidence_warning,
+                selected_candidates=retrieval_candidates,
+                recalled_memories=recalled_memories,
+                product_evidences=product_evidences,
+                filtered_out_reasons=retrieval_plan.filtered_out_reasons,
+                warning_code="agent_product_match_failed",
+                warning_message=_format_runtime_error(exc),
+                provider_name=provider_name,
+                model_name=model_name,
+                request_summary=f"candidate_pool={len(product_candidates)}",
+            )
         return _block_state_due_to_agent_failure(
             state,
             node_name="product_match_expert",
@@ -378,6 +399,26 @@ def product_match_expert_node(
         product_match=product_match,
     )
     if invalid_ids or not ordered_candidates:
+        if retrieval_candidates:
+            invalid_label = ",".join(invalid_ids) if invalid_ids else "empty_selection"
+            return _product_match_fallback_state(
+                state_with_evidence_warning,
+                selected_candidates=retrieval_candidates,
+                recalled_memories=recalled_memories,
+                product_evidences=product_evidences,
+                filtered_out_reasons=[
+                    *list(retrieval_plan.filtered_out_reasons),
+                    f"product_match_expert invalid output: {invalid_label}",
+                ],
+                warning_code="agent_product_match_invalid_output",
+                warning_message=(
+                    "product_match_expert returned invalid candidate references: "
+                    f"{invalid_label}"
+                ),
+                provider_name=metadata.provider_name,
+                model_name=metadata.model_name,
+                request_summary=f"candidate_pool={len(product_candidates)}",
+            )
         invalid_label = ",".join(invalid_ids) if invalid_ids else "empty_selection"
         return _block_state_due_to_agent_failure(
             state,
@@ -390,19 +431,10 @@ def product_match_expert_node(
             model_name=metadata.model_name,
         )
 
-    retrieval_context = RetrievalContext(
-        recalled_memories=list(recalled_memories),
-        candidates=[
-            RetrievedCandidate(
-                product_id=candidate.id,
-                category=candidate.category,
-                score=max(0.01, 1.0 - index * 0.08),
-                rationale=candidate.rationale_zh,
-                runtime_candidate=_runtime_snapshot(candidate),
-            )
-            for index, candidate in enumerate(ordered_candidates)
-        ],
-        product_evidences=list(product_evidences),
+    retrieval_context = _retrieval_context_from_candidates(
+        selected_candidates=ordered_candidates,
+        recalled_memories=recalled_memories,
+        product_evidences=product_evidences,
         filtered_out_reasons=[
             *list(retrieval_plan.filtered_out_reasons),
             *list(product_match.filtered_out_reasons),
@@ -434,15 +466,73 @@ def product_match_expert_node(
     )
 
 
+def _product_match_fallback_state(
+    state: RecommendationGraphState,
+    *,
+    selected_candidates: list[CandidateProduct],
+    recalled_memories: list[str],
+    product_evidences: list[ProductEvidenceBundle],
+    filtered_out_reasons: list[str],
+    warning_code: str,
+    warning_message: str,
+    provider_name: str | None,
+    model_name: str | None,
+    request_summary: str,
+) -> RecommendationGraphState:
+    next_state = append_warning(
+        state,
+        stage="product_match_expert",
+        code=warning_code,
+        message=warning_message,
+    )
+    next_state = {
+        **next_state,
+        "product_strategy": ProductStrategy(
+            recommended_categories=list(
+                dict.fromkeys(candidate.category for candidate in selected_candidates)
+            ),
+            ranking_rationale_zh=(
+                "AI 选品结果暂时不可用，系统已回退到候选检索排序结果，"
+                "保留当前候选池中最匹配用户画像与市场环境的产品。"
+            ),
+            ranking_rationale_en=(
+                "AI product matching was unavailable, so the system fell back to the "
+                "retrieval ranking and kept the candidates that best fit the user "
+                "profile and market context."
+            ),
+        ),
+        "retrieval_context": _retrieval_context_from_candidates(
+            selected_candidates=selected_candidates,
+            recalled_memories=recalled_memories,
+            product_evidences=product_evidences,
+            filtered_out_reasons=[
+                *list(filtered_out_reasons),
+                f"product_match_expert fallback applied: {warning_code}",
+            ],
+        ),
+    }
+    return append_agent_trace_event(
+        next_state,
+        node_name="product_match_expert",
+        request_name="product_match_expert",
+        status="error",
+        provider_name=provider_name,
+        model_name=model_name,
+        request_summary=request_summary,
+        response_summary=warning_code,
+        tool_calls=(),
+    )
+
+
 def compliance_risk_officer_node(
     state: RecommendationGraphState,
     *,
-    compliance_review_service: object | None,
+    compliance_knowledge_service: ComplianceKnowledgeRetrievalService | None,
+    compliance_review_service: ComplianceReviewService | None,
     compliance_facts_service: object | None,
     product_candidates: list[CandidateProduct],
     agent_runtime: object | None = None,
 ) -> RecommendationGraphState:
-    del compliance_review_service
     if _is_blocked(state):
         return _append_skipped_trace(
             state,
@@ -491,9 +581,37 @@ def compliance_risk_officer_node(
             model_name=model_name,
         )
 
+    compliance_evidences: list[ComplianceEvidenceBundle] = []
+    state_with_evidence = state
+    try:
+        compliance_evidences = _retrieve_compliance_evidence_bundles(
+            compliance_knowledge_service=compliance_knowledge_service,
+            state=state,
+            selected_candidates=selected_candidates,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if compliance_review_service is not None:
+            return _static_compliance_fallback_state(
+                state,
+                compliance_review_service=compliance_review_service,
+                selected_candidates=selected_candidates,
+                compliance_evidences=[],
+                warning_code="compliance_evidence_unavailable",
+                warning_message=_format_runtime_error(exc),
+                provider_name=provider_name,
+                model_name=model_name,
+                request_summary=f"selected={len(selected_candidates)}",
+            )
+        state_with_evidence = append_warning(
+            state,
+            stage="compliance_risk_officer",
+            code="compliance_evidence_unavailable",
+            message=_format_runtime_error(exc),
+        )
+
     compliance_facts = (
         {
-            "request_payload": state["request_context"].payload.model_dump(mode="json"),
+            "request_payload": state_with_evidence["request_context"].payload.model_dump(mode="json"),
             "selected_candidates": [
                 {
                     "id": candidate.id,
@@ -512,24 +630,45 @@ def compliance_risk_officer_node(
         }
         if compliance_facts_service is None
         else compliance_facts_service.build_review_facts(  # type: ignore[attr-defined]
-            request_payload=state["request_context"].payload.model_dump(mode="json"),
+            request_payload=state_with_evidence["request_context"].payload.model_dump(mode="json"),
             selected_candidates=selected_candidates,
         )
     )
+    compliance_facts = {
+        **compliance_facts,
+        "retrieved_compliance_evidence": _compliance_evidence_prompt_payload(
+            compliance_evidences
+        ),
+    }
 
     try:
         review_output, metadata = agent_runtime.review_compliance(  # type: ignore[attr-defined]
-            map_user_profile(state["request_context"].payload.riskAssessmentResult.finalProfile),
-            user_profile_insights=_user_profile_output_for_runtime(state),
+            map_user_profile(
+                state_with_evidence["request_context"].payload.riskAssessmentResult.finalProfile
+            ),
+            user_profile_insights=_user_profile_output_for_runtime(state_with_evidence),
             selected_candidates=selected_candidates,
             compliance_facts=compliance_facts,
             prompt_context=_build_compliance_prompt_context(
-                state=state,
+                state=state_with_evidence,
                 selected_candidates=selected_candidates,
                 compliance_facts=compliance_facts,
+                compliance_evidences=compliance_evidences,
             ),
         )
     except Exception as exc:  # noqa: BLE001
+        if compliance_review_service is not None:
+            return _static_compliance_fallback_state(
+                state_with_evidence,
+                compliance_review_service=compliance_review_service,
+                selected_candidates=selected_candidates,
+                compliance_evidences=compliance_evidences,
+                warning_code="agent_compliance_review_failed",
+                warning_message=_format_runtime_error(exc),
+                provider_name=provider_name,
+                model_name=model_name,
+                request_summary=f"selected={len(selected_candidates)}",
+            )
         return _block_state_due_to_agent_failure(
             state,
             node_name="compliance_risk_officer",
@@ -549,6 +688,21 @@ def compliance_risk_officer_node(
         and candidate_id not in {item.product_id for item in retrieval_context.candidates}
     ]
     if invalid_ids:
+        if compliance_review_service is not None:
+            return _static_compliance_fallback_state(
+                state_with_evidence,
+                compliance_review_service=compliance_review_service,
+                selected_candidates=selected_candidates,
+                compliance_evidences=compliance_evidences,
+                warning_code="agent_compliance_invalid_output",
+                warning_message=(
+                    "compliance_risk_officer returned invalid candidate references: "
+                    + ",".join(invalid_ids)
+                ),
+                provider_name=metadata.provider_name,
+                model_name=metadata.model_name,
+                request_summary=f"selected={len(selected_candidates)}",
+            )
         return _block_state_due_to_agent_failure(
             state,
             node_name="compliance_risk_officer",
@@ -564,7 +718,10 @@ def compliance_risk_officer_node(
         )
 
     next_state: RecommendationGraphState = {
-        **state,
+        **state_with_evidence,
+        "compliance_retrieval": ComplianceRetrievalContext(
+            evidences=list(compliance_evidences)
+        ),
         "compliance_review": ComplianceReviewState(
             verdict=review_output.verdict,  # type: ignore[arg-type]
             reason_zh=review_output.reason_summary_zh,
@@ -857,6 +1014,30 @@ def _build_product_match_prompt_context(
     )
 
 
+def _retrieval_context_from_candidates(
+    *,
+    selected_candidates: list[CandidateProduct],
+    recalled_memories: list[str],
+    product_evidences: list[ProductEvidenceBundle],
+    filtered_out_reasons: list[str],
+) -> RetrievalContext:
+    return RetrievalContext(
+        recalled_memories=list(recalled_memories),
+        candidates=[
+            RetrievedCandidate(
+                product_id=candidate.id,
+                category=candidate.category,
+                score=max(0.01, 1.0 - index * 0.08),
+                rationale=candidate.rationale_zh,
+                runtime_candidate=_runtime_snapshot(candidate),
+            )
+            for index, candidate in enumerate(selected_candidates)
+        ],
+        product_evidences=list(product_evidences),
+        filtered_out_reasons=list(filtered_out_reasons),
+    )
+
+
 def _retrieve_product_evidence_bundles(
     *,
     product_knowledge_service: ProductKnowledgeRetrievalService | None,
@@ -899,11 +1080,115 @@ def _product_evidence_prompt_payload(
     return payload
 
 
+def _retrieve_compliance_evidence_bundles(
+    *,
+    compliance_knowledge_service: ComplianceKnowledgeRetrievalService | None,
+    state: RecommendationGraphState,
+    selected_candidates: list[CandidateProduct],
+) -> list[ComplianceEvidenceBundle]:
+    if compliance_knowledge_service is None or not selected_candidates:
+        return []
+    user_intelligence = state["user_intelligence"]
+    if user_intelligence is None:
+        return []
+    query = ComplianceKnowledgeQuery(
+        query_text=_build_compliance_query_text(
+            user_intelligence=user_intelligence,
+            selected_candidates=selected_candidates,
+            user_intent_text=state["request_context"].user_intent_text,
+        ),
+        rule_types=[
+            "suitability",
+            "liquidity_guardrail",
+            "risk_disclosure",
+            "manual_review_trigger",
+        ],
+        categories=list(
+            dict.fromkeys(candidate.category for candidate in selected_candidates)
+        ),
+        risk_tiers=[user_intelligence.risk_tier],
+        audience=_compliance_audience_for_candidates(selected_candidates),
+        jurisdiction="CN",
+        effective_on=f"{date.today().isoformat()}T23:59:59Z",
+    )
+    return compliance_knowledge_service.retrieve_evidence(query)
+
+
+def _build_compliance_query_text(
+    *,
+    user_intelligence: UserIntelligence,
+    selected_candidates: list[CandidateProduct],
+    user_intent_text: str | None,
+) -> str:
+    categories = " ".join(
+        dict.fromkeys(candidate.category for candidate in selected_candidates)
+    )
+    risk_levels = " ".join(
+        dict.fromkeys(candidate.risk_level for candidate in selected_candidates)
+    )
+    liquidity_terms = " ".join(
+        dict.fromkeys(
+            candidate.liquidity
+            for candidate in selected_candidates
+            if candidate.liquidity
+        )
+    )
+    parts = [
+        user_intent_text or "",
+        categories,
+        f"风险等级 {user_intelligence.risk_tier}",
+        f"流动性偏好 {user_intelligence.liquidity_preference}",
+        f"候选风险 {risk_levels}",
+        liquidity_terms,
+        "适当性 风险等级 匹配 流动性 封闭期 披露要求 人工复核",
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _compliance_audience_for_candidates(
+    selected_candidates: list[CandidateProduct],
+) -> str:
+    categories = {candidate.category for candidate in selected_candidates}
+    if "wealth_management" in categories:
+        return "wealth_management"
+    if "fund" in categories:
+        return "fund_sales"
+    return "retail"
+
+
+def _compliance_evidence_prompt_payload(
+    compliance_evidences: list[ComplianceEvidenceBundle],
+) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for bundle in compliance_evidences:
+        payload.append(
+            {
+                "rule_type": bundle.rule_type,
+                "evidences": [
+                    {
+                        "rule_id": evidence.rule_id,
+                        "score": evidence.score,
+                        "snippet": evidence.snippet,
+                        "source_title": evidence.source_title,
+                        "doc_type": evidence.doc_type,
+                        "source_type": evidence.source_type,
+                        "effective_date": evidence.effective_date,
+                        "section_title": evidence.section_title,
+                        "page_number": evidence.page_number,
+                    }
+                    for evidence in bundle.evidences
+                ],
+            }
+        )
+    return payload
+
+
 def _build_compliance_prompt_context(
     *,
     state: RecommendationGraphState,
     selected_candidates: list[CandidateProduct],
     compliance_facts: Mapping[str, object],
+    compliance_evidences: list[ComplianceEvidenceBundle],
 ) -> AgentPromptContext:
     return AgentPromptContext(
         task=(
@@ -931,11 +1216,18 @@ def _build_compliance_prompt_context(
                 title="Compliance facts",
                 body=_render_json(compliance_facts),
             ),
+            AgentPromptSection(
+                title="Retrieved compliance evidence",
+                body=_render_json(
+                    _compliance_evidence_prompt_payload(compliance_evidences)
+                ),
+            ),
         ),
         instructions=(
             "Only reference candidate ids that exist in the selected candidate facts.",
             "Return approved_ids/rejected_ids plus reason_summary_zh/reason_summary_en and required_disclosures_zh/en using the exact field names.",
             "Use applied_rule_ids and blocking_reason_codes when the facts support them.",
+            "Ground compliance decisions in the retrieved compliance evidence when it is available.",
         ),
     )
 
@@ -1206,6 +1498,94 @@ def _route_metadata_if_available(
     return (
         getattr(metadata, "provider_name", None),
         getattr(metadata, "model_name", None),
+    )
+
+
+def _static_compliance_fallback_state(
+    state: RecommendationGraphState,
+    *,
+    compliance_review_service: ComplianceReviewService,
+    selected_candidates: list[CandidateProduct],
+    compliance_evidences: list[ComplianceEvidenceBundle],
+    warning_code: str,
+    warning_message: str,
+    provider_name: str | None,
+    model_name: str | None,
+    request_summary: str,
+) -> RecommendationGraphState:
+    user_intelligence = state["user_intelligence"]
+    retrieval_context = state["retrieval_context"]
+    if user_intelligence is None:
+        raise ValueError("user_intelligence must be present for static compliance fallback")
+
+    fallback_review = compliance_review_service.review(
+        risk_tier=user_intelligence.risk_tier,
+        liquidity_preference=user_intelligence.liquidity_preference,
+        candidates=selected_candidates,
+    )
+    approved_ids = set(
+        compliance_review_service.approved_candidate_ids(
+            risk_tier=user_intelligence.risk_tier,
+            liquidity_preference=user_intelligence.liquidity_preference,
+            candidates=selected_candidates,
+        )
+    )
+
+    next_state = append_warning(
+        state,
+        stage="compliance_risk_officer",
+        code=warning_code,
+        message=warning_message,
+    )
+    next_state = {
+        **next_state,
+        "compliance_retrieval": ComplianceRetrievalContext(
+            evidences=list(compliance_evidences)
+        ),
+        "compliance_review": ComplianceReviewState(
+            verdict=fallback_review.verdict,
+            reason_zh=fallback_review.reason_zh,
+            reason_en=fallback_review.reason_en,
+            disclosures_zh=list(fallback_review.disclosures_zh),
+            disclosures_en=list(fallback_review.disclosures_en),
+            suitability_notes_zh=list(fallback_review.suitability_notes_zh),
+            suitability_notes_en=list(fallback_review.suitability_notes_en),
+            applied_rule_ids=[],
+            blocking_reason_codes=["compliance_fallback_static_review"],
+        ),
+    }
+    if retrieval_context is not None and fallback_review.verdict != "approve":
+        next_state = {
+            **next_state,
+            "retrieval_context": RetrievalContext(
+                recalled_memories=list(retrieval_context.recalled_memories),
+                candidates=[
+                    item
+                    for item in retrieval_context.candidates
+                    if item.product_id in approved_ids
+                ],
+                product_evidences=list(retrieval_context.product_evidences),
+                filtered_out_reasons=[
+                    *list(retrieval_context.filtered_out_reasons),
+                    *[
+                        f"{candidate.id} filtered by static compliance fallback {fallback_review.verdict}"
+                        for candidate in selected_candidates
+                        if candidate.id not in approved_ids
+                    ],
+                ],
+            ),
+        }
+
+    return append_agent_trace_event(
+        next_state,
+        node_name="compliance_risk_officer",
+        request_name="compliance_risk_officer",
+        status="error",
+        provider_name=provider_name,
+        model_name=model_name,
+        request_summary=request_summary,
+        response_summary=warning_code,
+        tool_calls=(),
     )
 
 

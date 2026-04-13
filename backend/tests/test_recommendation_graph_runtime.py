@@ -24,7 +24,14 @@ from financehub_market_api.recommendation.agents.runtime_context import (
     AgentPromptContext,
     AgentToolCallRecord,
 )
-from financehub_market_api.recommendation.compliance import ComplianceFactsService
+from financehub_market_api.recommendation.compliance_knowledge.schemas import (
+    ComplianceEvidenceBundle,
+    RetrievedComplianceEvidence,
+)
+from financehub_market_api.recommendation.compliance import (
+    ComplianceFactsService,
+    ComplianceReviewService,
+)
 from financehub_market_api.recommendation.graph.runtime import (
     GraphServices,
     RecommendationGraphRuntime,
@@ -979,12 +986,149 @@ class _FailingProductKnowledgeService:
         raise RuntimeError("product evidence unavailable")
 
 
+class _StubComplianceKnowledgeService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def retrieve_evidence(
+        self,
+        query,
+        *,
+        total_limit: int = 12,
+    ) -> list[ComplianceEvidenceBundle]:
+        self.calls.append(
+            {
+                "query_text": query.query_text,
+                "rule_types": list(query.rule_types),
+                "categories": list(query.categories),
+                "risk_tiers": list(query.risk_tiers),
+                "audience": query.audience,
+                "jurisdiction": query.jurisdiction,
+                "effective_on": query.effective_on,
+                "total_limit": total_limit,
+            }
+        )
+        return [
+            ComplianceEvidenceBundle(
+                rule_type="suitability",
+                evidences=[
+                    RetrievedComplianceEvidence(
+                        evidence_id="rule-001#1",
+                        score=0.94,
+                        snippet="销售机构应当将产品风险等级与投资者风险承受能力进行匹配。",
+                        source_title="基金销售适当性管理办法",
+                        source_uri="https://example.com/rule-001.pdf",
+                        doc_type="regulation_pdf",
+                        source_type="public_regulation",
+                        jurisdiction="CN",
+                        rule_id="suitability-risk-tier-match",
+                        rule_type="suitability",
+                        audience=query.audience or "fund_sales",
+                        applies_to_categories=list(query.categories),
+                        applies_to_risk_tiers=list(query.risk_tiers),
+                        disclosure_type="suitability_warning",
+                        effective_date=query.effective_on,
+                        section_title="适当性匹配要求",
+                        page_number=6,
+                    )
+                ],
+            ),
+            ComplianceEvidenceBundle(
+                rule_type="risk_disclosure",
+                evidences=[
+                    RetrievedComplianceEvidence(
+                        evidence_id="rule-002#1",
+                        score=0.91,
+                        snippet="销售前应向投资者充分揭示产品风险特征和流动性安排。",
+                        source_title="基金销售风险揭示指引",
+                        source_uri="https://example.com/rule-002.pdf",
+                        doc_type="guideline_pdf",
+                        source_type="public_guideline",
+                        jurisdiction="CN",
+                        rule_id="risk-disclosure-liquidity",
+                        rule_type="risk_disclosure",
+                        audience=query.audience or "fund_sales",
+                        applies_to_categories=list(query.categories),
+                        applies_to_risk_tiers=list(query.risk_tiers),
+                        disclosure_type="general_risk_notice",
+                        effective_date=query.effective_on,
+                        section_title="风险揭示",
+                        page_number=4,
+                    )
+                ],
+            ),
+        ]
+
+
+class _FailingComplianceKnowledgeService:
+    def retrieve_evidence(
+        self,
+        query,
+        *,
+        total_limit: int = 12,
+    ) -> list[ComplianceEvidenceBundle]:
+        del query, total_limit
+        raise RuntimeError("compliance evidence unavailable")
+
+
+class _FailingComplianceRuntime(_CandidatePassthroughRuntime):
+    def review_compliance(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ComplianceReviewAgentOutput, AgentInvocationMetadata]:
+        del (
+            user_profile,
+            user_profile_insights,
+            selected_candidates,
+            compliance_facts,
+            prompt_context,
+        )
+        raise RuntimeError("compliance agent unavailable")
+
+
+class _PermissiveComplianceRuntime(_CandidatePassthroughRuntime):
+    def review_compliance(
+        self,
+        user_profile: UserProfile,
+        *,
+        user_profile_insights: UserProfileAgentOutput,
+        selected_candidates: list[CandidateProduct],
+        compliance_facts: dict[str, object],
+        prompt_context: AgentPromptContext | None = None,
+    ) -> tuple[ComplianceReviewAgentOutput, AgentInvocationMetadata]:
+        del user_profile, user_profile_insights, compliance_facts, prompt_context
+        approved_ids = [candidate.id for candidate in selected_candidates]
+        return (
+            ComplianceReviewAgentOutput(
+                verdict="approve",
+                approved_ids=approved_ids,
+                rejected_ids=[],
+                reason_summary_zh="测试 agent: 直接放行。",
+                reason_summary_en="Test agent: approve everything.",
+                required_disclosures_zh=["测试披露。"],
+                required_disclosures_en=["Test disclosure."],
+                suitability_notes_zh=["测试说明。"],
+                suitability_notes_en=["Test note."],
+                applied_rule_ids=["test:approve_all"],
+                blocking_reason_codes=[],
+            ),
+            self._metadata("compliance_risk_officer"),
+        )
+
+
 def _build_runtime(
     *,
     agent_runtime: object,
     product_candidates: list[CandidateProduct] | None = None,
     product_retrieval_service: ProductRetrievalService | None = None,
     product_knowledge_service: object | None = None,
+    compliance_knowledge_service: object | None = None,
+    compliance_review_service: object | None = None,
     market_data_service=None,
     candidate_repository=None,
 ) -> RecommendationGraphRuntime:
@@ -1008,6 +1152,8 @@ def _build_runtime(
             product_retrieval=product_retrieval_service
             or ProductRetrievalService(vector_store=_SingleVectorStore()),
             product_knowledge=product_knowledge_service,
+            compliance_knowledge=compliance_knowledge_service,
+            compliance_review_service=compliance_review_service,
             compliance_facts_service=ComplianceFactsService(),
             product_candidates=candidates,
             agent_runtime=agent_runtime,
@@ -1369,32 +1515,25 @@ def test_graph_runtime_falls_back_when_user_profile_agent_stage_fails() -> None:
     assert trace_by_request["market_intelligence"].status == "finish"
 
 
-def test_graph_runtime_blocks_when_product_match_fails() -> None:
+def test_graph_runtime_falls_back_to_retrieval_plan_when_product_match_fails() -> None:
     response = RecommendationService(
         graph_runtime=_build_runtime(agent_runtime=_InvalidProductMatchRuntime())
     ).generate_recommendation(_build_generation_request("balanced"))
 
-    assert response.recommendationStatus == "blocked"
-    assert response.sections.funds.items == []
-    assert response.sections.wealthManagement.items == []
-    assert response.sections.stocks.items == []
-    assert response.allocationDisplay.model_dump() == {
-        "fund": 0,
-        "wealthManagement": 0,
-        "stock": 0,
-    }
-    assert response.aggressiveOption is not None
-    assert response.aggressiveOption.allocation.model_dump() == {
-        "fund": 0,
-        "wealthManagement": 0,
-        "stock": 0,
-    }
+    assert response.recommendationStatus in {"ready", "limited"}
+    assert (
+        response.sections.funds.items
+        or response.sections.wealthManagement.items
+        or response.sections.stocks.items
+    )
     assert any(
         warning.stage == "product_match_expert"
         and warning.code == "agent_product_match_failed"
         and "product match unavailable" in warning.message
         for warning in response.warnings
     )
+    trace_by_request = {event.requestName: event for event in response.agentTrace}
+    assert trace_by_request["product_match_expert"].status == "error"
 
 
 def test_graph_runtime_marks_market_intelligence_trace_as_error_when_market_facts_fail() -> None:
@@ -1546,6 +1685,154 @@ def test_graph_runtime_degrades_when_product_evidence_retrieval_fails() -> None:
         and warning.code == "product_evidence_unavailable"
         and "product evidence unavailable" in warning.message
         for warning in response.warnings
+    )
+
+
+def test_graph_runtime_stores_compliance_retrieval_evidence() -> None:
+    knowledge_service = _StubComplianceKnowledgeService()
+    runtime = _build_runtime(
+        agent_runtime=_CurrentAgentRuntime(),
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        compliance_knowledge_service=knowledge_service,
+    )
+
+    final_state = runtime.run(_build_generation_request("balanced"))
+
+    compliance_retrieval = final_state["compliance_retrieval"]
+    assert compliance_retrieval is not None
+    assert [bundle.rule_type for bundle in compliance_retrieval.evidences] == [
+        "suitability",
+        "risk_disclosure",
+    ]
+    assert knowledge_service.calls
+    assert knowledge_service.calls[0]["categories"] == [
+        "wealth_management",
+        "fund",
+        "stock",
+    ]
+    assert knowledge_service.calls[0]["risk_tiers"] == ["R3"]
+
+
+def test_graph_runtime_injects_compliance_evidence_into_compliance_prompt_context() -> None:
+    runtime_double = _RecordingAgentRuntime()
+    runtime = _build_runtime(
+        agent_runtime=runtime_double,
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_MultiCandidateVectorStore()
+        ),
+        compliance_knowledge_service=_StubComplianceKnowledgeService(),
+    )
+
+    runtime.run(_build_generation_request("balanced"))
+
+    assert runtime_double.compliance_prompt_context is not None
+    compliance_prompt = runtime_double.compliance_prompt_context.render_user_prompt()
+    assert "销售机构应当将产品风险等级与投资者风险承受能力进行匹配。" in compliance_prompt
+    assert "销售前应向投资者充分揭示产品风险特征和流动性安排。" in compliance_prompt
+    assert "https://example.com/rule-001.pdf" not in compliance_prompt
+
+
+def test_graph_runtime_falls_back_to_static_review_when_compliance_agent_fails() -> None:
+    candidates = [
+        CandidateProduct(
+            id="fund-locked-001",
+            category="fund",
+            name_zh="封闭基金",
+            name_en="Locked Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试低流动性基金。",
+            rationale_en="Test illiquid fund.",
+            liquidity="180天",
+        ),
+        CandidateProduct(
+            id="fund-liquid-001",
+            category="fund",
+            name_zh="稳健基金",
+            name_en="Liquid Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试稳健基金。",
+            rationale_en="Test liquid fund.",
+            liquidity="T+1",
+        ),
+    ]
+    runtime = _build_runtime(
+        agent_runtime=_FailingComplianceRuntime(),
+        product_candidates=candidates,
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_IlliquidFirstVectorStore()
+        ),
+        compliance_knowledge_service=_StubComplianceKnowledgeService(),
+        compliance_review_service=ComplianceReviewService(),
+    )
+
+    final_state = runtime.run(_build_generation_request("conservative"))
+
+    compliance_review = final_state["compliance_review"]
+    assert compliance_review is not None
+    assert compliance_review.verdict == "revise_conservative"
+    assert "compliance_fallback_static_review" in compliance_review.blocking_reason_codes
+    assert any(
+        warning.stage == "compliance_risk_officer"
+        and warning.code == "agent_compliance_review_failed"
+        and "compliance agent unavailable" in warning.message
+        for warning in final_state["warnings"]
+    )
+
+
+def test_graph_runtime_falls_back_to_static_review_when_compliance_evidence_retrieval_fails() -> None:
+    candidates = [
+        CandidateProduct(
+            id="fund-locked-001",
+            category="fund",
+            name_zh="封闭基金",
+            name_en="Locked Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试低流动性基金。",
+            rationale_en="Test illiquid fund.",
+            liquidity="180天",
+        ),
+        CandidateProduct(
+            id="fund-liquid-001",
+            category="fund",
+            name_zh="稳健基金",
+            name_en="Liquid Fund",
+            risk_level="R2",
+            tags_zh=["测试"],
+            tags_en=["test"],
+            rationale_zh="测试稳健基金。",
+            rationale_en="Test liquid fund.",
+            liquidity="T+1",
+        ),
+    ]
+    runtime = _build_runtime(
+        agent_runtime=_PermissiveComplianceRuntime(),
+        product_candidates=candidates,
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_IlliquidFirstVectorStore()
+        ),
+        compliance_knowledge_service=_FailingComplianceKnowledgeService(),
+        compliance_review_service=ComplianceReviewService(),
+    )
+
+    final_state = runtime.run(_build_generation_request("conservative"))
+
+    compliance_review = final_state["compliance_review"]
+    assert compliance_review is not None
+    assert compliance_review.verdict == "revise_conservative"
+    assert "compliance_fallback_static_review" in compliance_review.blocking_reason_codes
+    assert any(
+        warning.stage == "compliance_risk_officer"
+        and warning.code == "compliance_evidence_unavailable"
+        and "compliance evidence unavailable" in warning.message
+        for warning in final_state["warnings"]
     )
 
 
