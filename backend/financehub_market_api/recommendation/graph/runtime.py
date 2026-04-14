@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from langgraph.graph import END, START, StateGraph
 
 from financehub_market_api.cache import build_snapshot_cache
+from financehub_market_api.market_news import build_market_news_service_from_env
 from financehub_market_api.models import RecommendationGenerationRequest
 from financehub_market_api.recommendation.agents.contracts import (
     ComplianceReviewAgentOutput,
@@ -18,9 +19,17 @@ from financehub_market_api.recommendation.agents.live_runtime import (
     AgentInvocationMetadata,
     RecommendationAgentRuntime,
 )
+from financehub_market_api.chat.recall_service import (
+    ChatHistoryRecallService,
+    build_chat_history_recall_service_from_env,
+)
 from financehub_market_api.recommendation.compliance import (
     ComplianceFactsService,
     ComplianceReviewService,
+)
+from financehub_market_api.recommendation.compliance_knowledge import (
+    ComplianceKnowledgeRetrievalService,
+    build_compliance_knowledge_retrieval_service_from_env,
 )
 from financehub_market_api.recommendation.graph.nodes import (
     compliance_risk_officer_node,
@@ -78,11 +87,13 @@ class GraphServices:
     product_retrieval: ProductRetrievalService
     product_candidates: list[CandidateProduct]
     product_knowledge: ProductKnowledgeRetrievalService | None = None
+    compliance_knowledge: ComplianceKnowledgeRetrievalService | None = None
     compliance_review: ComplianceReviewService | None = None
     compliance_review_service: ComplianceReviewService | None = None
     compliance_facts_service: ComplianceFactsService | None = None
     agent_runtime: object | None = None
     candidate_repository: CandidateRepository | None = None
+    chat_history_recall: ChatHistoryRecallService | None = None
     profile_intelligence: ProfileIntelligenceService = field(
         default_factory=ProfileIntelligenceService
     )
@@ -398,10 +409,11 @@ class RecommendationGraphRuntime:
                 state,
                 profile_intelligence_service=services.profile_intelligence,
                 agent_runtime=services.agent_runtime,
+                chat_history_recall=services.chat_history_recall,
             ),
         )
         graph.add_node(
-            "market_intelligence",
+            "market_intelligence_analyst",
             lambda state: market_intelligence_node(
                 state,
                 market_intelligence_service=services.market_intelligence,
@@ -423,6 +435,7 @@ class RecommendationGraphRuntime:
             "compliance_risk_officer",
             lambda state: compliance_risk_officer_node(
                 state,
+                compliance_knowledge_service=services.compliance_knowledge,
                 compliance_review_service=(
                     services.compliance_review_service or services.compliance_review
                 ),
@@ -441,8 +454,8 @@ class RecommendationGraphRuntime:
         )
 
         graph.add_edge(START, "user_profile_analyst")
-        graph.add_edge("user_profile_analyst", "market_intelligence")
-        graph.add_edge("market_intelligence", "product_match_expert")
+        graph.add_edge("user_profile_analyst", "market_intelligence_analyst")
+        graph.add_edge("market_intelligence_analyst", "product_match_expert")
         graph.add_edge("product_match_expert", "compliance_risk_officer")
         graph.add_conditional_edges(
             "compliance_risk_officer",
@@ -477,8 +490,13 @@ class RecommendationGraphRuntime:
             product_candidates=product_candidates,
         )
 
-    def run(self, payload: RecommendationGenerationRequest) -> RecommendationGraphState:
-        initial_state = build_initial_graph_state(payload)
+    def run(
+        self,
+        payload: RecommendationGenerationRequest,
+        *,
+        user_id: str | None = None,
+    ) -> RecommendationGraphState:
+        initial_state = build_initial_graph_state(payload, user_id=user_id)
         services = self._services_for_request(payload)
         graph = (
             self._graph if services is self._services else self._build_graph(services)
@@ -503,7 +521,8 @@ class RecommendationGraphRuntime:
             GraphServices(
                 market_intelligence=MarketIntelligenceService(
                     market_data_service=market_data_service
-                    or _build_default_market_data_service()
+                    or _build_default_market_data_service(),
+                    market_news_service=build_market_news_service_from_env(),
                 ),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
                 product_retrieval=ProductRetrievalService(
@@ -513,8 +532,10 @@ class RecommendationGraphRuntime:
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=[],
                 product_knowledge=build_product_knowledge_retrieval_service_from_env(),
+                compliance_knowledge=build_compliance_knowledge_retrieval_service_from_env(),
                 agent_runtime=agent_runtime,
                 candidate_repository=candidate_repository,
+                chat_history_recall=build_chat_history_recall_service_from_env(),
             )
         )
 
@@ -523,6 +544,7 @@ class RecommendationGraphRuntime:
         cls,
         *,
         product_knowledge_service: ProductKnowledgeRetrievalService | None = None,
+        compliance_knowledge_service: ComplianceKnowledgeRetrievalService | None = None,
     ) -> RecommendationGraphRuntime:
         candidates = _build_product_candidates(
             StaticCandidateRepository(),
@@ -539,6 +561,7 @@ class RecommendationGraphRuntime:
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=candidates,
                 product_knowledge=product_knowledge_service,
+                compliance_knowledge=compliance_knowledge_service,
                 agent_runtime=_DeterministicAgentRuntime(),
             )
         )
@@ -565,6 +588,7 @@ class RecommendationGraphRuntime:
                 compliance_review_service=ComplianceReviewService(),
                 compliance_facts_service=ComplianceFactsService(),
                 product_candidates=adjusted_candidates,
+                compliance_knowledge=None,
                 agent_runtime=_DeterministicAgentRuntime(),
             )
         )

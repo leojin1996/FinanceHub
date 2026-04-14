@@ -1,0 +1,618 @@
+from __future__ import annotations
+
+import time
+import uuid
+import json
+from collections.abc import Generator
+from typing import Any
+
+import pytest
+from starlette.testclient import TestClient
+
+from financehub_market_api.chat.models import ChatMessage
+from financehub_market_api.chat.agent import ChatAgent
+from financehub_market_api.chat.store import (
+    ChatSessionStore,
+    InMemoryChatSessionStore,
+    build_chat_session_store,
+)
+from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
+from financehub_market_api.main import app
+from financehub_market_api.chat.router import get_chat_session_store, get_chat_agent
+from financehub_market_api.fundamental_analysis import FundamentalAnalysisReport
+from financehub_market_api.market_news import MarketNewsDigest
+
+
+_TEST_USER_ID = "testuser001"
+_TEST_EMAIL = "test@example.com"
+
+
+# ---------------------------------------------------------------------------
+# FakeChatRedis — satisfies ChatRedisLike (hash + list + sorted set)
+# ---------------------------------------------------------------------------
+
+class FakeChatRedis:
+    """In-memory Redis fake that correctly merges fields on hset."""
+
+    def __init__(self) -> None:
+        self._hashes: dict[str, dict[bytes, bytes]] = {}
+        self._lists: dict[str, list[bytes]] = {}
+        self._zsets: dict[str, dict[str, float]] = {}
+
+    # -- hash ----------------------------------------------------------------
+
+    def hset(self, key: str, mapping: dict[bytes, bytes]) -> int:
+        existing = self._hashes.setdefault(key, {})
+        existing.update(mapping)
+        return len(mapping)
+
+    def hgetall(self, key: str) -> dict[bytes, bytes]:
+        value = self._hashes.get(key)
+        if value is None:
+            return {}
+        return dict(value)
+
+    # -- generic -------------------------------------------------------------
+
+    def delete(self, key: str) -> int:
+        removed = 0
+        if self._hashes.pop(key, None) is not None:
+            removed = 1
+        if self._lists.pop(key, None) is not None:
+            removed = 1
+        return removed
+
+    # -- list ----------------------------------------------------------------
+
+    def rpush(self, key: str, *values: bytes) -> int:
+        lst = self._lists.setdefault(key, [])
+        lst.extend(values)
+        return len(lst)
+
+    def lrange(self, key: str, start: int, stop: int) -> list[bytes]:
+        lst = self._lists.get(key, [])
+        if stop == -1:
+            return list(lst[start:])
+        return list(lst[start : stop + 1])
+
+    # -- sorted set ----------------------------------------------------------
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> int:
+        zset = self._zsets.setdefault(key, {})
+        added = 0
+        for member, score in mapping.items():
+            if member not in zset:
+                added += 1
+            zset[member] = score
+        return added
+
+    def zrevrange(self, key: str, start: int, stop: int) -> list[bytes]:
+        zset = self._zsets.get(key, {})
+        sorted_members = sorted(zset, key=lambda m: zset[m], reverse=True)
+        return [m.encode("utf-8") for m in sorted_members[start : stop + 1]]
+
+    def zrem(self, key: str, *members: str) -> int:
+        zset = self._zsets.get(key, {})
+        removed = 0
+        for m in members:
+            if zset.pop(m, None) is not None:
+                removed += 1
+        return removed
+
+
+# ---------------------------------------------------------------------------
+# ChatSessionStore unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_store() -> ChatSessionStore:
+    return ChatSessionStore(FakeChatRedis())
+
+
+def test_create_session_returns_session_with_id_and_timestamps() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID)
+
+    assert session.id
+    assert session.title == "New Chat"
+    assert session.created_at
+    assert session.updated_at
+    assert session.created_at == session.updated_at
+
+
+def test_list_sessions_returns_sessions_in_reverse_order() -> None:
+    store = _make_store()
+    s1 = store.create_session(_TEST_USER_ID, title="first")
+    time.sleep(0.01)
+    s2 = store.create_session(_TEST_USER_ID, title="second")
+    time.sleep(0.01)
+    s3 = store.create_session(_TEST_USER_ID, title="third")
+
+    sessions = store.list_sessions(_TEST_USER_ID)
+    assert len(sessions) == 3
+    assert sessions[0].id == s3.id
+    assert sessions[1].id == s2.id
+    assert sessions[2].id == s1.id
+
+
+def test_list_sessions_respects_limit() -> None:
+    store = _make_store()
+    store.create_session(_TEST_USER_ID, title="a")
+    time.sleep(0.01)
+    store.create_session(_TEST_USER_ID, title="b")
+    time.sleep(0.01)
+    store.create_session(_TEST_USER_ID, title="c")
+
+    sessions = store.list_sessions(_TEST_USER_ID, limit=2)
+    assert len(sessions) == 2
+
+
+def test_list_sessions_user_isolation() -> None:
+    store = _make_store()
+    store.create_session("user_a", title="a")
+    store.create_session("user_b", title="b")
+
+    assert len(store.list_sessions("user_a")) == 1
+    assert len(store.list_sessions("user_b")) == 1
+    assert len(store.list_sessions("user_c")) == 0
+
+
+def test_get_session_returns_none_for_unknown_id() -> None:
+    store = _make_store()
+    assert store.get_session("nonexistent-id") is None
+
+
+def test_delete_session_removes_session_and_messages() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID)
+
+    msg = ChatMessage(
+        id=uuid.uuid4().hex,
+        role="user",
+        content="hello",
+        created_at="2026-04-13T00:00:00+00:00",
+    )
+    store.add_message(session.id, msg, _TEST_USER_ID)
+    assert len(store.get_messages(session.id)) == 1
+
+    deleted = store.delete_session(session.id, _TEST_USER_ID)
+    assert deleted is True
+    assert store.get_session(session.id) is None
+    assert store.get_messages(session.id) == []
+
+
+def test_delete_session_returns_false_for_unknown_id() -> None:
+    store = _make_store()
+    assert store.delete_session("nonexistent-id", _TEST_USER_ID) is False
+
+
+def test_add_message_and_get_messages_roundtrip() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID)
+
+    m1 = ChatMessage(
+        id=uuid.uuid4().hex,
+        role="user",
+        content="hi",
+        created_at="2026-04-13T00:00:00+00:00",
+    )
+    m2 = ChatMessage(
+        id=uuid.uuid4().hex,
+        role="assistant",
+        content="hello!",
+        created_at="2026-04-13T00:00:01+00:00",
+    )
+    store.add_message(session.id, m1, _TEST_USER_ID)
+    store.add_message(session.id, m2, _TEST_USER_ID)
+
+    messages = store.get_messages(session.id)
+    assert len(messages) == 2
+    assert messages[0].role == "user"
+    assert messages[0].content == "hi"
+    assert messages[1].role == "assistant"
+    assert messages[1].content == "hello!"
+
+
+def test_add_message_raises_for_unknown_session() -> None:
+    store = _make_store()
+    msg = ChatMessage(
+        id=uuid.uuid4().hex,
+        role="user",
+        content="hello",
+        created_at="2026-04-13T00:00:00+00:00",
+    )
+    with pytest.raises(ValueError, match="Unknown chat session"):
+        store.add_message("nonexistent-id", msg, _TEST_USER_ID)
+
+
+def test_update_session_title_changes_title() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID, title="Old Title")
+
+    store.update_session_title(session.id, "New Title", _TEST_USER_ID)
+
+    updated = store.get_session(session.id)
+    assert updated is not None
+    assert updated.title == "New Title"
+
+
+def test_update_session_title_bumps_updated_at() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID)
+    original_updated_at = session.updated_at
+
+    time.sleep(0.01)
+    store.update_session_title(session.id, "Changed", _TEST_USER_ID)
+
+    updated = store.get_session(session.id)
+    assert updated is not None
+    assert updated.updated_at != original_updated_at
+
+
+# ---------------------------------------------------------------------------
+# Chat Router tests (FastAPI TestClient)
+# ---------------------------------------------------------------------------
+
+
+class _FakeChatAgent:
+    """Minimal agent stub that satisfies the ``ChatAgent`` interface for non-SSE tests."""
+
+    def stream(self, messages: list[dict[str, Any]]) -> Generator[Any, None, None]:
+        yield from ()
+
+
+def _fake_current_user() -> AuthenticatedUser:
+    return AuthenticatedUser(user_id=_TEST_USER_ID, email=_TEST_EMAIL)
+
+
+@pytest.fixture()
+def _override_dependencies():
+    """Inject FakeChatRedis-backed store, a stub agent, and a fake auth user."""
+    redis = FakeChatRedis()
+    store = ChatSessionStore(redis)
+    agent = _FakeChatAgent()
+
+    app.dependency_overrides[get_chat_session_store] = lambda: store
+    app.dependency_overrides[get_chat_agent] = lambda: agent
+    app.dependency_overrides[get_current_user] = _fake_current_user
+    try:
+        yield store
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_session_endpoint(_override_dependencies: ChatSessionStore) -> None:
+    client = TestClient(app)
+    resp = client.post("/api/chat/sessions")
+    assert resp.status_code == 200
+
+    body = resp.json()
+    assert "id" in body
+    assert body["title"] == "New Chat"
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_list_sessions_endpoint(_override_dependencies: ChatSessionStore) -> None:
+    client = TestClient(app)
+    client.post("/api/chat/sessions")
+    client.post("/api/chat/sessions")
+
+    resp = client.get("/api/chat/sessions")
+    assert resp.status_code == 200
+
+    body = resp.json()
+    assert len(body["sessions"]) == 2
+
+
+def test_get_messages_returns_404_for_unknown_session(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    client = TestClient(app)
+    resp = client.get("/api/chat/sessions/bad-id/messages")
+    assert resp.status_code == 404
+
+
+def test_delete_session_returns_404_for_unknown_session(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    client = TestClient(app)
+    resp = client.delete("/api/chat/sessions/bad-id")
+    assert resp.status_code == 404
+
+
+def test_in_memory_chat_session_store_roundtrip() -> None:
+    store = InMemoryChatSessionStore()
+    s = store.create_session(_TEST_USER_ID, title="T")
+    assert s.title == "T"
+    msg = ChatMessage(
+        id="1",
+        role="user",
+        content="hi",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    store.add_message(s.id, msg, _TEST_USER_ID)
+    assert len(store.get_messages(s.id)) == 1
+    listed = store.list_sessions(_TEST_USER_ID, limit=10)
+    assert len(listed) == 1
+    assert listed[0].id == s.id
+
+
+class _FakeChatHistoryRecallService:
+    def __init__(self) -> None:
+        self.index_calls: list[dict[str, str]] = []
+
+    def index_user_message(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        message_id: str,
+        content: str,
+        created_at: str,
+    ) -> None:
+        self.index_calls.append(
+            {
+                "user_id": user_id,
+                "session_id": session_id,
+                "message_id": message_id,
+                "content": content,
+                "created_at": created_at,
+            }
+        )
+
+
+def test_send_chat_message_indexes_user_message_best_effort(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    from financehub_market_api.chat.router import get_chat_history_recall_service
+
+    recall_service = _FakeChatHistoryRecallService()
+    app.dependency_overrides[get_chat_history_recall_service] = lambda: recall_service
+    client = TestClient(app)
+    created = client.post("/api/chat/sessions").json()
+
+    response = client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "我想要更高流动性"},
+    )
+
+    assert response.status_code == 200
+    assert len(recall_service.index_calls) == 1
+    assert recall_service.index_calls[0]["user_id"] == _TEST_USER_ID
+    assert recall_service.index_calls[0]["session_id"] == created["id"]
+    assert recall_service.index_calls[0]["content"] == "我想要更高流动性"
+
+
+def test_build_chat_session_store_forces_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FINANCEHUB_CHAT_STORE_BACKEND", "memory")
+    store = build_chat_session_store()
+    assert isinstance(store, InMemoryChatSessionStore)
+
+
+class _FakeMarketNewsService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def fetch_digest(
+        self,
+        *,
+        query: str,
+        time_range: str,
+        max_results: int,
+    ) -> MarketNewsDigest:
+        self.calls.append(
+            {
+                "query": query,
+                "time_range": time_range,
+                "max_results": max_results,
+            }
+        )
+        return MarketNewsDigest(
+            query=query,
+            asOf="2026-04-14T00:00:00+00:00",
+            positiveCount=1,
+            negativeCount=0,
+            neutralCount=0,
+            temperature="偏多",
+            items=[],
+            summaryZh="新闻聚合：共 1 条，情绪温度 偏多。新闻情绪仅供参考。",
+        )
+
+
+class _FailingMarketNewsService:
+    def fetch_digest(
+        self,
+        *,
+        query: str,
+        time_range: str,
+        max_results: int,
+    ) -> MarketNewsDigest:
+        del query, time_range, max_results
+        raise RuntimeError("tavily unavailable")
+
+
+class _FakeFundamentalAnalysisService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        self.calls.append({"symbol": symbol, "peer_symbols": peer_symbols})
+        return FundamentalAnalysisReport(
+            symbol="600519.SH",
+            name="贵州茅台",
+            asOf="2025-09-30",
+            industry="酿酒行业",
+            dataCoverage={"provider": "akshare", "quarters": 8},
+            scorecard={"综合": {"score": 4.5, "summary": "质量较强"}},
+            companyProfile={"businessModel": "A股上市公司，行业归属：酿酒行业"},
+            financialQuality={"operatingCashFlowToNetProfit": 1.1},
+            profitability={"roe": 24.8},
+            growth={"revenueGrowth": 0.3},
+            valuation={"pe": 22.5},
+            peerComparison={"inferred": False, "peers": []},
+            dcf={"calculated": True, "fairValue": 1000.0},
+            riskFlags=[],
+            conclusionZh="贵州茅台：基本面质量较强，值得继续重点跟踪。",
+            followUpWatchlist=["跟踪季报"],
+            warnings=[],
+            disclaimer="本分析仅供参考，不构成任何投资建议。",
+        )
+
+
+class _FailingFundamentalAnalysisService:
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        del symbol, peer_symbols
+        raise RuntimeError("akshare unavailable")
+
+
+class _SlowFundamentalAnalysisService:
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        del symbol, peer_symbols
+        time.sleep(0.2)
+        return _FakeFundamentalAnalysisService().analyze(symbol="600519")
+
+
+def test_chat_agent_executes_market_news_tool_with_default_arguments() -> None:
+    news_service = _FakeMarketNewsService()
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        market_news_service=news_service,
+    )
+
+    result = agent._execute_tool("get_market_news", {"query": "半导体"})
+
+    assert news_service.calls == [
+        {
+            "query": "半导体",
+            "time_range": "week",
+            "max_results": 10,
+        }
+    ]
+    assert result["summaryZh"] == "新闻聚合：共 1 条，情绪温度 偏多。新闻情绪仅供参考。"
+    assert result["temperature"] == "偏多"
+
+
+def test_chat_agent_executes_fundamental_analysis_tool_with_peer_symbols() -> None:
+    fundamental_service = _FakeFundamentalAnalysisService()
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=fundamental_service,
+    )
+
+    result = agent._execute_tool(
+        "analyze_fundamentals",
+        {"symbol": "贵州茅台", "peer_symbols": ["000858", "000568.SZ"]},
+    )
+
+    assert fundamental_service.calls == [
+        {"symbol": "贵州茅台", "peer_symbols": ["000858", "000568.SZ"]}
+    ]
+    assert result["symbol"] == "600519.SH"
+    assert result["name"] == "贵州茅台"
+    assert result["scorecard"]["综合"]["score"] == 4.5
+    assert "不构成任何投资建议" in result["disclaimer"]
+
+
+def test_chat_agent_market_news_tool_error_is_reported_without_stopping_tool_node() -> None:
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        market_news_service=_FailingMarketNewsService(),
+    )
+    state = {"messages": []}
+    tool_calls = [
+        {
+            "id": "call_market_news",
+            "type": "function",
+            "function": {
+                "name": "get_market_news",
+                "arguments": json.dumps({"query": "A股"}),
+            },
+        }
+    ]
+
+    events = list(agent._tool_node(state, tool_calls))
+
+    assert events[0].event == "error"
+    assert "tavily unavailable" in events[0].data["message"]
+    assert events[1].event == "tool_call"
+    assert events[1].data["result"] == {"error": "tavily unavailable"}
+    assert state["messages"][0]["role"] == "tool"
+
+
+def test_chat_agent_fundamental_tool_error_is_reported_without_stopping_tool_node() -> None:
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=_FailingFundamentalAnalysisService(),
+    )
+    state = {"messages": []}
+    tool_calls = [
+        {
+            "id": "call_fundamental",
+            "type": "function",
+            "function": {
+                "name": "analyze_fundamentals",
+                "arguments": json.dumps({"symbol": "600519"}),
+            },
+        }
+    ]
+
+    events = list(agent._tool_node(state, tool_calls))
+
+    assert events[0].event == "error"
+    assert "akshare unavailable" in events[0].data["message"]
+    assert events[1].event == "tool_call"
+    assert events[1].data["result"] == {"error": "akshare unavailable"}
+
+
+def test_chat_agent_fundamental_tool_times_out_without_blocking_sse() -> None:
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=_SlowFundamentalAnalysisService(),
+        fundamental_analysis_timeout_seconds=0.01,
+    )
+    state = {"messages": []}
+    tool_calls = [
+        {
+            "id": "call_fundamental",
+            "type": "function",
+            "function": {
+                "name": "analyze_fundamentals",
+                "arguments": json.dumps({"symbol": "600519"}),
+            },
+        }
+    ]
+
+    start = time.perf_counter()
+    events = list(agent._tool_node(state, tool_calls))
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.15
+    assert events[0].event == "error"
+    assert "基本面分析超时" in events[0].data["message"]
+    assert events[1].data["result"] == {"error": "基本面分析超时，请稍后重试"}

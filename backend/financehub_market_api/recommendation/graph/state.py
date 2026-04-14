@@ -13,6 +13,9 @@ from financehub_market_api.models import (
     RecommendationGenerationRequest,
     RecommendationWarning,
 )
+from financehub_market_api.recommendation.compliance_knowledge import (
+    ComplianceEvidenceBundle,
+)
 from financehub_market_api.recommendation.product_knowledge import ProductEvidenceBundle
 
 
@@ -20,6 +23,7 @@ class RequestContext(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     trace_id: str = Field(default_factory=lambda: uuid4().hex)
     user_intent_text: str | None = None
+    user_id: str | None = None
     payload: RecommendationGenerationRequest
 
 
@@ -100,6 +104,10 @@ class RetrievalContext(BaseModel):
     filtered_out_reasons: list[str] = Field(default_factory=list)
 
 
+class ComplianceRetrievalContext(BaseModel):
+    evidences: list[ComplianceEvidenceBundle] = Field(default_factory=list)
+
+
 class ComplianceReviewState(BaseModel):
     verdict: Literal["approve", "revise_conservative", "block"]
     reason_zh: str
@@ -133,6 +141,7 @@ class RecommendationGraphState(TypedDict):
     agent_market_summary: AgentMarketSummaryState | None
     market_intelligence: MarketIntelligenceState | None
     retrieval_context: RetrievalContext | None
+    compliance_retrieval: ComplianceRetrievalContext | None
     compliance_review: ComplianceReviewState | None
     final_response: FinalResponseState | None
     product_strategy: ProductStrategy | None
@@ -144,10 +153,13 @@ class RecommendationGraphState(TypedDict):
 
 def build_initial_graph_state(
     payload: RecommendationGenerationRequest,
+    *,
+    user_id: str | None = None,
 ) -> RecommendationGraphState:
     return {
         "request_context": RequestContext(
             user_intent_text=payload.userIntentText,
+            user_id=user_id,
             payload=payload.model_copy(deep=True),
         ),
         "user_intelligence": None,
@@ -155,6 +167,7 @@ def build_initial_graph_state(
         "agent_market_summary": None,
         "market_intelligence": None,
         "retrieval_context": None,
+        "compliance_retrieval": None,
         "compliance_review": None,
         "final_response": None,
         "product_strategy": None,

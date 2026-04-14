@@ -7,6 +7,7 @@ from financehub_market_api.models import (
     OverviewStockSummary,
     TrendPoint,
 )
+from financehub_market_api.market_news import MarketNewsDigest, MarketNewsItem
 from financehub_market_api.recommendation.intelligence import MarketIntelligenceService
 from financehub_market_api.recommendation.memory import MemoryRecallService
 
@@ -219,6 +220,58 @@ class _NegativeMarketDataService:
         )
 
 
+class _NegativeMarketNewsService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def fetch_digest(
+        self,
+        *,
+        query: str,
+        time_range: str,
+        max_results: int,
+    ) -> MarketNewsDigest:
+        self.calls.append(
+            {
+                "query": query,
+                "time_range": time_range,
+                "max_results": max_results,
+            }
+        )
+        return MarketNewsDigest(
+            query=query,
+            asOf="2026-04-14T00:00:00+00:00",
+            positiveCount=0,
+            negativeCount=2,
+            neutralCount=0,
+            temperature="偏空",
+            items=[
+                MarketNewsItem(
+                    title="监管处罚引发市场承压",
+                    url="https://risk.example/news/a",
+                    source="risk.example",
+                    publishedAt="2026-04-14T09:00:00Z",
+                    contentSnippet="处罚和下滑消息拖累风险偏好。",
+                    sentiment="negative",
+                    topic=query,
+                )
+            ],
+            summaryZh="新闻聚合：共 1 条，利好 0 条，利空 2 条，中性 0 条，情绪温度 偏空。新闻情绪仅供参考。",
+        )
+
+
+class _FailingMarketNewsService:
+    def fetch_digest(
+        self,
+        *,
+        query: str,
+        time_range: str,
+        max_results: int,
+    ) -> MarketNewsDigest:
+        del query, time_range, max_results
+        raise RuntimeError("tavily unavailable")
+
+
 def test_market_intelligence_service_normalizes_live_and_fallback_sources() -> None:
     service = MarketIntelligenceService()
 
@@ -275,6 +328,49 @@ def test_market_intelligence_service_builds_negative_defensive_snapshot() -> Non
     assert snapshot.stance == "defensive"
     assert snapshot.preferred_categories == ["wealth_management", "fund"]
     assert snapshot.avoided_categories == ["stock"]
+
+
+def test_market_intelligence_service_includes_news_digest_and_negative_news_turns_defensive() -> None:
+    market_news_service = _NegativeMarketNewsService()
+    service = MarketIntelligenceService(
+        market_data_service=_FakeMarketDataService(),
+        market_news_service=market_news_service,
+    )
+
+    snapshot = service.build_recommendation_snapshot()
+
+    assert market_news_service.calls == [
+        {
+            "query": "A股 市场 今日 要闻",
+            "time_range": "week",
+            "max_results": 10,
+        }
+    ]
+    assert snapshot.sentiment == "negative"
+    assert snapshot.stance == "defensive"
+    assert snapshot.preferred_categories == ["wealth_management", "fund"]
+    assert snapshot.avoided_categories == ["stock"]
+    assert "新闻要点" in snapshot.summary_zh
+    assert snapshot.evidence[-1].source == "news_digest"
+    assert snapshot.evidence[-1].asOf == "2026-04-14T00:00:00+00:00"
+    assert "情绪温度 偏空" in snapshot.evidence[-1].summary.zh
+
+
+def test_market_intelligence_service_ignores_news_failures_without_blocking_market_snapshot() -> None:
+    service = MarketIntelligenceService(
+        market_data_service=_FakeMarketDataService(),
+        market_news_service=_FailingMarketNewsService(),
+    )
+
+    snapshot = service.build_recommendation_snapshot()
+
+    assert snapshot.sentiment == "positive"
+    assert snapshot.stance == "offensive"
+    assert [item.source for item in snapshot.evidence] == [
+        "market_overview",
+        "indices",
+        "market_leadership",
+    ]
 
 
 def test_memory_recall_service_returns_ranked_memories() -> None:

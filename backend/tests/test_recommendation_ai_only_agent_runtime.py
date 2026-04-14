@@ -528,6 +528,23 @@ def test_user_profile_output_normalizes_profile_alias_risk_tier() -> None:
     assert output.risk_tier == "R2"
 
 
+def test_user_profile_output_normalizes_textual_risk_tier_alias() -> None:
+    output = UserProfileAgentOutput.model_validate(
+        {
+            "risk_tier": "high",
+            "liquidity_preference": "medium",
+            "investment_horizon": "medium_term",
+            "return_objective": "capital_appreciation",
+            "drawdown_sensitivity": "low",
+            "profile_focus_zh": "偏高风险承受，接受波动。",
+            "profile_focus_en": "High risk tolerance with volatility acceptance.",
+            "derived_signals": [],
+        }
+    )
+
+    assert output.risk_tier == "R4"
+
+
 @pytest.mark.parametrize(
     "raw_stance",
     [

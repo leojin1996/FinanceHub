@@ -123,12 +123,12 @@ _ZH_TOKEN_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"\bbalanced\b", "均衡"),
     (r"\brisk_on\b", "偏进取"),
     (r"\brisk_off\b", "偏防守"),
-    (r"\bwealth_management\b", "银行理财"),
-    (r"\bwealth management\b", "银行理财"),
-    (r"\bfunds\b", "基金"),
-    (r"\bfund\b", "基金"),
-    (r"\bstocks\b", "股票"),
-    (r"\bstock\b", "股票"),
+    (r"\bwealth_management\b(?!-)", "银行理财"),
+    (r"\bwealth management\b(?!-)", "银行理财"),
+    (r"\bfunds\b(?!-)", "基金"),
+    (r"\bfund\b(?!-)", "基金"),
+    (r"\bstocks\b(?!-)", "股票"),
+    (r"\bstock\b(?!-)", "股票"),
 )
 
 
@@ -182,6 +182,11 @@ class UserProfileAgentOutput(BaseModel):
                 "r3": "R3",
                 "r4": "R4",
                 "r5": "R5",
+                "low": "R2",
+                "medium": "R3",
+                "medium_high": "R4",
+                "high": "R4",
+                "very_high": "R5",
                 "conservative": "R2",
                 "stable": "R2",
                 "balanced": "R3",
@@ -524,12 +529,14 @@ class ComplianceReviewAgentOutput(BaseModel):
         normalized["reason_summary_zh"] = _sanitize_user_facing_zh_text(
             normalized.get("reason_summary_zh")
         )
-        normalized["required_disclosures_zh"] = _sanitize_user_facing_zh_list(
-            normalized.get("required_disclosures_zh")
-        )
-        normalized["suitability_notes_zh"] = _sanitize_user_facing_zh_list(
-            normalized.get("suitability_notes_zh")
-        )
+        if "required_disclosures_zh" in normalized:
+            normalized["required_disclosures_zh"] = _sanitize_user_facing_zh_list(
+                normalized.get("required_disclosures_zh")
+            )
+        if "suitability_notes_zh" in normalized:
+            normalized["suitability_notes_zh"] = _sanitize_user_facing_zh_list(
+                normalized.get("suitability_notes_zh")
+            )
 
         return normalized
 

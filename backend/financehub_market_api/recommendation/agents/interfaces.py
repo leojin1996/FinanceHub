@@ -30,6 +30,20 @@ class StructuredOutputProvider(Protocol):
     ) -> dict[str, object]:
         """Execute one structured-output chat request and parse JSON content."""
 
+    def chat_with_tools(
+        self,
+        *,
+        model_name: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        timeout_seconds: float,
+        request_name: str | None = None,
+    ) -> dict[str, object]:
+        """Execute a chat request with function calling tools.
+
+        Returns the response message dict containing either tool_calls or content.
+        """
+
 
 class OpenAIProvider(StructuredOutputProvider, Protocol):
     """OpenAI structured-output provider interface."""

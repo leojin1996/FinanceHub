@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
 from financehub_market_api.main import (
     app,
     get_product_detail_service,
@@ -29,6 +30,10 @@ _SEED_DOCUMENTS_PATH = (
     / "fixtures"
     / "product_knowledge"
     / "seed_documents.json"
+)
+_TEST_USER = AuthenticatedUser(
+    user_id="product-rag-e2e-user",
+    email="rag@example.com",
 )
 
 
@@ -179,6 +184,7 @@ def test_product_rag_api_e2e_keeps_internal_evidence_hidden() -> None:
 
     app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
     app.dependency_overrides[get_product_detail_service] = lambda: product_detail_service
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     client = TestClient(app)
 
     try:

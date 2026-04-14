@@ -63,6 +63,34 @@ class ComplianceFactsService:
 
 
 class ComplianceReviewService:
+    def approved_candidate_ids(
+        self,
+        *,
+        risk_tier: str,
+        liquidity_preference: str | None = None,
+        candidates: list[CandidateProduct],
+    ) -> list[str]:
+        allowed_risk_level = _RISK_ORDER.get(risk_tier)
+        if allowed_risk_level is None:
+            return []
+
+        approved_candidates = [
+            candidate
+            for candidate in candidates
+            if (candidate_risk_level := _RISK_ORDER.get(candidate.risk_level)) is not None
+            and candidate_risk_level <= allowed_risk_level
+        ]
+        if self._requires_conservative_liquidity_guardrail(
+            risk_tier=risk_tier,
+            liquidity_preference=liquidity_preference,
+        ):
+            approved_candidates = [
+                candidate
+                for candidate in approved_candidates
+                if self._matches_low_risk_liquidity_requirement(candidate.liquidity)
+            ]
+        return [candidate.id for candidate in approved_candidates]
+
     def review(
         self,
         *,

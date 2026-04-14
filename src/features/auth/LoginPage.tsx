@@ -5,19 +5,25 @@ import { LanguageSwitcher } from "../../app/layout/LanguageSwitcher";
 import { useAppState } from "../../app/state/app-state";
 import { BrandMark, LockIcon, MailIcon } from "../../components/AppIcons";
 import { getMessages } from "../../i18n/messages";
+import { login, register } from "../../services/authApi";
 
 interface LoginLocationState {
   from?: string;
   protected?: boolean;
 }
 
+type AuthMode = "login" | "register";
+
 export function LoginPage() {
   const { locale, session, signIn } = useAppState();
   const messages = getMessages(locale).auth;
   const location = useLocation();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("demo@financehub.com");
-  const [password, setPassword] = useState("demo1234");
+  const [mode, setMode] = useState<AuthMode>("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [returnToRequestedRoute, setReturnToRequestedRoute] = useState(false);
 
   const locationState = location.state as LoginLocationState | null;
@@ -28,8 +34,9 @@ export function LoginPage() {
     return <Navigate replace to={returnToRequestedRoute || isProtectedRedirect ? redirectTo : "/"} />;
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setError("");
 
     const normalizedEmail = email.trim();
     const normalizedPassword = password.trim();
@@ -37,16 +44,42 @@ export function LoginPage() {
       return;
     }
 
-    setReturnToRequestedRoute(true);
-    signIn({ email: normalizedEmail });
-    navigate(redirectTo, { replace: true });
+    setLoading(true);
+    try {
+      const authFn = mode === "register" ? register : login;
+      const result = await authFn(normalizedEmail, normalizedPassword);
+      setReturnToRequestedRoute(true);
+      signIn({ userId: result.user.id, email: result.user.email });
+      navigate(redirectTo, { replace: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      const lower = msg.toLowerCase();
+      if (mode === "register" && lower.includes("already registered")) {
+        setError(messages.errorEmailRegistered);
+      } else if (mode === "login" && lower.includes("invalid email or password")) {
+        setError(messages.errorInvalidCredentials);
+      } else if (/failed to fetch|networkerror|load failed|network request failed/i.test(msg)) {
+        setError(messages.errorNetwork);
+      } else if (msg.trim()) {
+        setError(msg.trim());
+      } else {
+        setError(messages.errorGeneric);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDemoSignIn = () => {
-    setReturnToRequestedRoute(true);
-    signIn({ email: "demo@financehub.com" });
-    navigate(redirectTo, { replace: true });
+  const toggleMode = () => {
+    setMode((prev) => (prev === "login" ? "register" : "login"));
+    setError("");
   };
+
+  const isRegister = mode === "register";
+  const title = isRegister ? messages.registerTitle : messages.title;
+  const subtitle = isRegister ? messages.registerSubtitle : messages.subtitle;
+  const primaryAction = isRegister ? messages.registerAction : messages.signInAction;
+  const switchText = isRegister ? messages.switchToLogin : messages.switchToRegister;
 
   const highlights = [
     messages.highlightMarkets,
@@ -64,8 +97,8 @@ export function LoginPage() {
         <article className="login-card">
           <div className="login-card__header">
             <div>
-              <h1 id="login-title">{messages.title}</h1>
-              <p>{messages.subtitle}</p>
+              <h1 id="login-title">{title}</h1>
+              <p>{subtitle}</p>
             </div>
             <LanguageSwitcher />
           </div>
@@ -94,11 +127,12 @@ export function LoginPage() {
                 />
               </span>
             </label>
-            <button className="login-card__primary-action" type="submit">
-              {messages.signInAction}
+            {error && <p className="login-card__error">{error}</p>}
+            <button className="login-card__primary-action" disabled={loading} type="submit">
+              {loading ? "..." : primaryAction}
             </button>
-            <button className="login-card__secondary-action" onClick={handleDemoSignIn} type="button">
-              {messages.demoAction}
+            <button className="login-card__secondary-action" onClick={toggleMode} type="button">
+              {switchText}
             </button>
           </form>
         </article>

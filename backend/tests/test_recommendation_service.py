@@ -19,8 +19,8 @@ from financehub_market_api.recommendations import RecommendationService
 
 
 class _FailingGraphRuntime:
-    def run(self, payload: RecommendationGenerationRequest) -> None:
-        del payload
+    def run(self, payload: RecommendationGenerationRequest, *, user_id: str | None = None) -> None:
+        del payload, user_id
         raise RuntimeError("graph runtime crashed")
 
 

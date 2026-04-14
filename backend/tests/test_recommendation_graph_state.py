@@ -85,6 +85,18 @@ def test_build_initial_graph_state_includes_funnel_state_placeholders() -> None:
     assert state["recommendation_draft"] is None
 
 
+def test_build_initial_graph_state_stores_user_id() -> None:
+    payload = _build_payload()
+    state = build_initial_graph_state(payload, user_id="user-123")
+    assert state["request_context"].user_id == "user-123"
+
+
+def test_build_initial_graph_state_defaults_user_id_to_none() -> None:
+    payload = _build_payload()
+    state = build_initial_graph_state(payload)
+    assert state["request_context"].user_id is None
+
+
 def test_append_helpers_preserve_existing_state() -> None:
     state = build_initial_graph_state(_build_payload())
     original_warnings = state["warnings"]
