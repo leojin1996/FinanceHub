@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
@@ -15,6 +16,10 @@ from ..recommendation.agents.provider import (
     _clean_env_value,
     _normalize_base_url,
     _parse_request_timeout_seconds,
+)
+from ..fundamental_analysis import (
+    FundamentalAnalysisService,
+    build_fundamental_analysis_service_from_env,
 )
 from ..market_news import MarketNewsService, build_market_news_service_from_env
 from ..service import MarketDataService
@@ -89,6 +94,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "analyze_fundamentals",
+            "description": (
+                "Analyze A-share company fundamentals using public financial data. "
+                "Use this for questions about 基本面, 财报质量, 盈利能力, 成长性, "
+                "估值贵不贵, DCF, or 同行比较."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": (
+                            "A-share code or company name, e.g. '600519', "
+                            "'600519.SH', 'SH600519', or '贵州茅台'."
+                        ),
+                    },
+                    "peer_symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional peer A-share symbols that override automatic "
+                            "industry peer inference."
+                        ),
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_stocks",
             "description": (
                 "Search for stocks by code or name. "
@@ -139,6 +176,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 MAX_TOOL_ROUNDS = 10
 CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT = 120.0
+FUNDAMENTAL_ANALYSIS_TIMEOUT_DEFAULT = 30.0
+_FUNDAMENTAL_ANALYSIS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="fundamental-analysis",
+)
 
 
 class ChatAgentState(TypedDict):
@@ -152,7 +194,7 @@ class ChatStreamEvent:
 
 
 class ChatAgent:
-    """ReAct chat agent backed by OpenAI streaming and three financial tools."""
+    """ReAct chat agent backed by OpenAI streaming and financial tools."""
 
     def __init__(
         self,
@@ -161,12 +203,18 @@ class ChatAgent:
         market_data_service: MarketDataService,
         *,
         market_news_service: MarketNewsService | None = None,
+        fundamental_analysis_service: FundamentalAnalysisService | None = None,
+        fundamental_analysis_timeout_seconds: float = FUNDAMENTAL_ANALYSIS_TIMEOUT_DEFAULT,
         stream_timeout_seconds: float = CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT,
     ) -> None:
         self._openai_client = openai_client
         self._model_name = model_name
         self._market_data_service = market_data_service
         self._market_news_service = market_news_service or MarketNewsService()
+        self._fundamental_analysis_service = (
+            fundamental_analysis_service or FundamentalAnalysisService()
+        )
+        self._fundamental_analysis_timeout_seconds = fundamental_analysis_timeout_seconds
         self._stream_timeout_seconds = stream_timeout_seconds
         self._tool_definitions = TOOL_DEFINITIONS
 
@@ -326,6 +374,21 @@ class ChatAgent:
             )
             return digest.model_dump(mode="json")
 
+        if name == "analyze_fundamentals":
+            future = _FUNDAMENTAL_ANALYSIS_EXECUTOR.submit(
+                self._fundamental_analysis_service.analyze,
+                symbol=_string_arg(args.get("symbol"), default=""),
+                peer_symbols=_string_list_arg(args.get("peer_symbols")),
+            )
+            try:
+                report = future.result(
+                    timeout=self._fundamental_analysis_timeout_seconds
+                )
+            except FutureTimeoutError:
+                future.cancel()
+                raise RuntimeError("基本面分析超时，请稍后重试") from None
+            return report.model_dump(mode="json")
+
         if name == "generate_recommendations":
             risk_profile = args.get("risk_profile", "balanced")
             return {
@@ -352,6 +415,7 @@ def build_chat_agent(
     market_data_service: MarketDataService,
     environ: Mapping[str, str] | None = None,
     market_news_service: MarketNewsService | None = None,
+    fundamental_analysis_service: FundamentalAnalysisService | None = None,
 ) -> ChatAgent:
     """Factory: build a ChatAgent from environment configuration."""
     env = _build_env_values(environ=environ)
@@ -369,6 +433,10 @@ def build_chat_agent(
 
     openai_client = OpenAI(api_key=api_key, base_url=base_url)
     stream_timeout_seconds = _chat_stream_openai_timeout_seconds(env)
+    fundamental_analysis_timeout_seconds = _float_arg(
+        env.get("FINANCEHUB_FUNDAMENTAL_ANALYSIS_TIMEOUT_SECONDS"),
+        default=FUNDAMENTAL_ANALYSIS_TIMEOUT_DEFAULT,
+    )
     return ChatAgent(
         openai_client,
         model_name,
@@ -376,6 +444,11 @@ def build_chat_agent(
         market_news_service=market_news_service or build_market_news_service_from_env(
             environ=env
         ),
+        fundamental_analysis_service=(
+            fundamental_analysis_service
+            or build_fundamental_analysis_service_from_env(environ=env)
+        ),
+        fundamental_analysis_timeout_seconds=fundamental_analysis_timeout_seconds,
         stream_timeout_seconds=stream_timeout_seconds,
     )
 
@@ -395,3 +468,25 @@ def _int_arg(value: object, *, default: int) -> int:
         except ValueError:
             return default
     return default
+
+
+def _float_arg(value: object, *, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+    elif isinstance(value, str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            return default
+    else:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _string_list_arg(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    cleaned = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return cleaned or None

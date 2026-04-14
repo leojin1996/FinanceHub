@@ -181,6 +181,120 @@ def _json_ready(value: object) -> object:
     return value
 
 
+def _legacy_action_payload_to_tool_response(payload: Mapping[str, object]) -> dict[str, object]:
+    if "tool_calls" in payload:
+        return dict(payload)
+
+    action = payload.get("action")
+    if action == "tool_call":
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise RuntimeError("legacy tool_call payload missing tool_name")
+        tool_arguments = payload.get("tool_arguments")
+        arguments = tool_arguments if isinstance(tool_arguments, Mapping) else {}
+        return _single_tool_call_response(tool_name, arguments)
+
+    if action == "final":
+        final_payload = payload.get("final_payload")
+        arguments = final_payload if isinstance(final_payload, Mapping) else {}
+        return _single_tool_call_response(_SUBMIT_RESULT_FUNCTION_NAME, arguments)
+
+    if action == "return_decision":
+        decision = payload.get("decision")
+        arguments = (
+            decision
+            if isinstance(decision, Mapping)
+            else {key: value for key, value in payload.items() if key != "action"}
+        )
+        return _single_tool_call_response(_SUBMIT_RESULT_FUNCTION_NAME, arguments)
+
+    return _single_tool_call_response(_SUBMIT_RESULT_FUNCTION_NAME, payload)
+
+
+def _single_tool_call_response(
+    function_name: str,
+    arguments: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": f"call_{_uuid4().hex[:12]}",
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "arguments": json.dumps(_json_ready(arguments), ensure_ascii=False),
+                },
+            }
+        ],
+    }
+
+
+def _legacy_chat_json_messages(
+    messages: Sequence[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    system_content = ""
+    user_content = ""
+    tool_names_by_id: dict[str, str] = {}
+    tool_outputs: list[str] = []
+    validation_errors: list[str] = []
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system" and not system_content:
+            system_content = str(message.get("content") or "")
+            continue
+        if role == "user" and not user_content:
+            user_content = str(message.get("content") or "")
+            continue
+        if role == "assistant":
+            raw_tool_calls = message.get("tool_calls")
+            if isinstance(raw_tool_calls, Sequence) and not isinstance(
+                raw_tool_calls,
+                (str, bytes, bytearray),
+            ):
+                for raw_tool_call in raw_tool_calls:
+                    if not isinstance(raw_tool_call, Mapping):
+                        continue
+                    tool_call_id = raw_tool_call.get("id")
+                    function_info = raw_tool_call.get("function")
+                    if not isinstance(tool_call_id, str) or not isinstance(
+                        function_info,
+                        Mapping,
+                    ):
+                        continue
+                    function_name = function_info.get("name")
+                    if isinstance(function_name, str):
+                        tool_names_by_id[tool_call_id] = function_name
+            continue
+        if role == "tool":
+            content = str(message.get("content") or "")
+            if content.startswith("Validation error:"):
+                validation_errors.append(content)
+                continue
+            tool_call_id = message.get("tool_call_id")
+            tool_name = (
+                tool_names_by_id.get(tool_call_id)
+                if isinstance(tool_call_id, str)
+                else None
+            ) or "unknown_tool"
+            tool_outputs.append(f"{len(tool_outputs) + 1}. {tool_name}\n{content}")
+
+    parts = [user_content]
+    if tool_outputs:
+        parts.append("Tool outputs so far\n" + "\n\n".join(tool_outputs))
+    if validation_errors:
+        parts.append(
+            "Previous response was invalid\n"
+            + "\n".join(validation_errors)
+            + "\nCandidate pool is not empty. Valid supplied candidate ids are listed in Candidate pool facts."
+        )
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": "\n\n".join(part for part in parts if part)},
+    ]
+
+
 def _serialize_candidate(candidate: CandidateProduct) -> dict[str, object]:
     return {
         "id": candidate.id,
@@ -358,12 +472,10 @@ class _BaseStructuredOutputAgent:
             )
 
         for _ in range(_MAX_TOOL_CALLS + _MAX_VALIDATION_RETRIES + 1):
-            response = self._provider.chat_with_tools(
-                model_name=self._model_name,
+            response = self._request_tool_response(
                 messages=messages,
                 tools=openai_tools,
-                timeout_seconds=self._request_timeout_seconds,
-                request_name=self._request_name,
+                output_model_class=output_model_class,
             )
 
             raw_tool_calls = response.get("tool_calls")
@@ -444,6 +556,32 @@ class _BaseStructuredOutputAgent:
                 )
 
         raise RuntimeError(f"[{self._request_name}] tool loop exhausted")
+
+    def _request_tool_response(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        output_model_class: type[BaseModel],
+    ) -> dict[str, object]:
+        chat_with_tools = getattr(self._provider, "chat_with_tools", None)
+        if callable(chat_with_tools):
+            return chat_with_tools(
+                model_name=self._model_name,
+                messages=messages,
+                tools=tools,
+                timeout_seconds=self._request_timeout_seconds,
+                request_name=self._request_name,
+            )
+
+        payload = self._provider.chat_json(
+            model_name=self._model_name,
+            messages=_legacy_chat_json_messages(messages),  # type: ignore[arg-type]
+            response_schema=output_model_class.model_json_schema(),
+            timeout_seconds=self._request_timeout_seconds,
+            request_name=self._request_name,
+        )
+        return _legacy_action_payload_to_tool_response(payload)
 
 
 class UserProfileRuntimeAgent(_BaseStructuredOutputAgent):

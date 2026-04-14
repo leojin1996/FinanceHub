@@ -19,6 +19,7 @@ from financehub_market_api.chat.store import (
 from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
 from financehub_market_api.main import app
 from financehub_market_api.chat.router import get_chat_session_store, get_chat_agent
+from financehub_market_api.fundamental_analysis import FundamentalAnalysisReport
 from financehub_market_api.market_news import MarketNewsDigest
 
 
@@ -431,6 +432,62 @@ class _FailingMarketNewsService:
         raise RuntimeError("tavily unavailable")
 
 
+class _FakeFundamentalAnalysisService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        self.calls.append({"symbol": symbol, "peer_symbols": peer_symbols})
+        return FundamentalAnalysisReport(
+            symbol="600519.SH",
+            name="贵州茅台",
+            asOf="2025-09-30",
+            industry="酿酒行业",
+            dataCoverage={"provider": "akshare", "quarters": 8},
+            scorecard={"综合": {"score": 4.5, "summary": "质量较强"}},
+            companyProfile={"businessModel": "A股上市公司，行业归属：酿酒行业"},
+            financialQuality={"operatingCashFlowToNetProfit": 1.1},
+            profitability={"roe": 24.8},
+            growth={"revenueGrowth": 0.3},
+            valuation={"pe": 22.5},
+            peerComparison={"inferred": False, "peers": []},
+            dcf={"calculated": True, "fairValue": 1000.0},
+            riskFlags=[],
+            conclusionZh="贵州茅台：基本面质量较强，值得继续重点跟踪。",
+            followUpWatchlist=["跟踪季报"],
+            warnings=[],
+            disclaimer="本分析仅供参考，不构成任何投资建议。",
+        )
+
+
+class _FailingFundamentalAnalysisService:
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        del symbol, peer_symbols
+        raise RuntimeError("akshare unavailable")
+
+
+class _SlowFundamentalAnalysisService:
+    def analyze(
+        self,
+        *,
+        symbol: str,
+        peer_symbols: list[str] | None = None,
+    ) -> FundamentalAnalysisReport:
+        del symbol, peer_symbols
+        time.sleep(0.2)
+        return _FakeFundamentalAnalysisService().analyze(symbol="600519")
+
+
 def test_chat_agent_executes_market_news_tool_with_default_arguments() -> None:
     news_service = _FakeMarketNewsService()
     agent = ChatAgent(
@@ -451,6 +508,29 @@ def test_chat_agent_executes_market_news_tool_with_default_arguments() -> None:
     ]
     assert result["summaryZh"] == "新闻聚合：共 1 条，情绪温度 偏多。新闻情绪仅供参考。"
     assert result["temperature"] == "偏多"
+
+
+def test_chat_agent_executes_fundamental_analysis_tool_with_peer_symbols() -> None:
+    fundamental_service = _FakeFundamentalAnalysisService()
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=fundamental_service,
+    )
+
+    result = agent._execute_tool(
+        "analyze_fundamentals",
+        {"symbol": "贵州茅台", "peer_symbols": ["000858", "000568.SZ"]},
+    )
+
+    assert fundamental_service.calls == [
+        {"symbol": "贵州茅台", "peer_symbols": ["000858", "000568.SZ"]}
+    ]
+    assert result["symbol"] == "600519.SH"
+    assert result["name"] == "贵州茅台"
+    assert result["scorecard"]["综合"]["score"] == 4.5
+    assert "不构成任何投资建议" in result["disclaimer"]
 
 
 def test_chat_agent_market_news_tool_error_is_reported_without_stopping_tool_node() -> None:
@@ -479,3 +559,60 @@ def test_chat_agent_market_news_tool_error_is_reported_without_stopping_tool_nod
     assert events[1].event == "tool_call"
     assert events[1].data["result"] == {"error": "tavily unavailable"}
     assert state["messages"][0]["role"] == "tool"
+
+
+def test_chat_agent_fundamental_tool_error_is_reported_without_stopping_tool_node() -> None:
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=_FailingFundamentalAnalysisService(),
+    )
+    state = {"messages": []}
+    tool_calls = [
+        {
+            "id": "call_fundamental",
+            "type": "function",
+            "function": {
+                "name": "analyze_fundamentals",
+                "arguments": json.dumps({"symbol": "600519"}),
+            },
+        }
+    ]
+
+    events = list(agent._tool_node(state, tool_calls))
+
+    assert events[0].event == "error"
+    assert "akshare unavailable" in events[0].data["message"]
+    assert events[1].event == "tool_call"
+    assert events[1].data["result"] == {"error": "akshare unavailable"}
+
+
+def test_chat_agent_fundamental_tool_times_out_without_blocking_sse() -> None:
+    agent = ChatAgent(
+        openai_client=object(),
+        model_name="test-model",
+        market_data_service=object(),
+        fundamental_analysis_service=_SlowFundamentalAnalysisService(),
+        fundamental_analysis_timeout_seconds=0.01,
+    )
+    state = {"messages": []}
+    tool_calls = [
+        {
+            "id": "call_fundamental",
+            "type": "function",
+            "function": {
+                "name": "analyze_fundamentals",
+                "arguments": json.dumps({"symbol": "600519"}),
+            },
+        }
+    ]
+
+    start = time.perf_counter()
+    events = list(agent._tool_node(state, tool_calls))
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.15
+    assert events[0].event == "error"
+    assert "基本面分析超时" in events[0].data["message"]
+    assert events[1].data["result"] == {"error": "基本面分析超时，请稍后重试"}
