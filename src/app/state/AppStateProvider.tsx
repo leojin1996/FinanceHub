@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { RecommendationResponse } from "../../services/chinaMarketApi";
 import type { RiskAssessmentResult } from "../../features/risk-assessment/risk-scoring";
+import { clearStoredToken } from "../../services/authApi";
 
 import {
   AppStateContext,
@@ -34,9 +35,12 @@ function parseSession(rawSession: string | null): AuthSession | null {
       typeof parsedSession === "object" &&
       "email" in parsedSession &&
       typeof parsedSession.email === "string" &&
-      parsedSession.email.trim()
+      parsedSession.email.trim() &&
+      "userId" in parsedSession &&
+      typeof parsedSession.userId === "string" &&
+      parsedSession.userId.trim()
     ) {
-      return { email: parsedSession.email };
+      return { userId: parsedSession.userId, email: parsedSession.email };
     }
   } catch {
     return null;
@@ -131,6 +135,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   const signOut = () => {
     setSession(null);
     clearRecommendationCache();
+    clearStoredToken();
     const storage = getSafeStorage();
     if (!storage) {
       return;

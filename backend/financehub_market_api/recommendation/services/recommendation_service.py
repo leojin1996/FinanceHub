@@ -22,9 +22,12 @@ class RecommendationService:
         self._orchestrator = None
 
     def generate_recommendation(
-        self, payload: RecommendationGenerationRequest
+        self,
+        payload: RecommendationGenerationRequest,
+        *,
+        user_id: str | None = None,
     ) -> RecommendationResponse:
-        graph_state = self._graph_runtime.run(payload)
+        graph_state = self._graph_runtime.run(payload, user_id=user_id)
         return assemble_graph_recommendation_response(
             graph_state,
             include_aggressive_option=payload.includeAggressiveOption,

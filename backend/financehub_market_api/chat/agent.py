@@ -16,6 +16,7 @@ from ..recommendation.agents.provider import (
     _normalize_base_url,
     _parse_request_timeout_seconds,
 )
+from ..market_news import MarketNewsService, build_market_news_service_from_env
 from ..service import MarketDataService
 
 LOGGER = logging.getLogger(__name__)
@@ -51,6 +52,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "changes, top gainers and losers."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_market_news",
+            "description": (
+                "Aggregate recent financial market news and sentiment for a market, "
+                "sector, stock, or theme. Use this for questions about 消息面, 新闻面, "
+                "舆情, 事件驱动, or market sentiment."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Market news query, e.g. 'A股 市场 今日 要闻' or '半导体 最新消息'.",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "Recent time range for Tavily news search.",
+                        "enum": ["day", "week", "month", "year"],
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of news items to return, 0-20.",
+                        "minimum": 0,
+                        "maximum": 20,
+                    },
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -127,11 +160,13 @@ class ChatAgent:
         model_name: str,
         market_data_service: MarketDataService,
         *,
+        market_news_service: MarketNewsService | None = None,
         stream_timeout_seconds: float = CHAT_STREAM_OPENAI_TIMEOUT_DEFAULT,
     ) -> None:
         self._openai_client = openai_client
         self._model_name = model_name
         self._market_data_service = market_data_service
+        self._market_news_service = market_news_service or MarketNewsService()
         self._stream_timeout_seconds = stream_timeout_seconds
         self._tool_definitions = TOOL_DEFINITIONS
 
@@ -283,6 +318,14 @@ class ChatAgent:
             stocks = self._market_data_service.get_stocks(query=query)
             return stocks.model_dump(mode="json")
 
+        if name == "get_market_news":
+            digest = self._market_news_service.fetch_digest(
+                query=_string_arg(args.get("query"), default="A股 市场 今日 要闻"),
+                time_range=_string_arg(args.get("time_range"), default="week"),
+                max_results=_int_arg(args.get("max_results"), default=10),
+            )
+            return digest.model_dump(mode="json")
+
         if name == "generate_recommendations":
             risk_profile = args.get("risk_profile", "balanced")
             return {
@@ -308,6 +351,7 @@ def _chat_stream_openai_timeout_seconds(env: Mapping[str, str]) -> float:
 def build_chat_agent(
     market_data_service: MarketDataService,
     environ: Mapping[str, str] | None = None,
+    market_news_service: MarketNewsService | None = None,
 ) -> ChatAgent:
     """Factory: build a ChatAgent from environment configuration."""
     env = _build_env_values(environ=environ)
@@ -329,5 +373,25 @@ def build_chat_agent(
         openai_client,
         model_name,
         market_data_service,
+        market_news_service=market_news_service or build_market_news_service_from_env(
+            environ=env
+        ),
         stream_timeout_seconds=stream_timeout_seconds,
     )
+
+
+def _string_arg(value: object, *, default: str) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else default
+
+
+def _int_arg(value: object, *, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default

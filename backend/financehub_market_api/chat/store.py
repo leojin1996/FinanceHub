@@ -34,7 +34,8 @@ def _messages_list_key(session_id: str) -> str:
     return f"financehub:chat:messages:{session_id}"
 
 
-USER_SESSIONS_ZSET_KEY = "financehub:chat:user_sessions"
+def _user_sessions_zset_key(user_id: str) -> str:
+    return f"financehub:chat:user_sessions:{user_id}"
 
 
 class ChatRedisLike(Protocol):
@@ -65,19 +66,19 @@ class ChatSessionStore:
     def __init__(self, redis_client: ChatRedisLike) -> None:
         self._redis = redis_client
 
-    def _touch_session(self, session_id: str) -> None:
+    def _touch_session(self, session_id: str, user_id: str) -> None:
         updated_at = _utc_iso_now()
         try:
             self._redis.hset(
                 _session_hash_key(session_id),
                 mapping={b"updated_at": updated_at.encode("utf-8")},
             )
-            self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+            self._redis.zadd(_user_sessions_zset_key(user_id), {session_id: time.time()})
         except RedisError as exc:
             msg = f"Failed to update session timestamp in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
 
-    def create_session(self, title: str = "New Chat") -> ChatSession:
+    def create_session(self, user_id: str, title: str = "New Chat") -> ChatSession:
         session_id = uuid.uuid4().hex
         created_at = _utc_iso_now()
         updated_at = created_at
@@ -89,9 +90,10 @@ class ChatSessionStore:
                     b"title": title.encode("utf-8"),
                     b"created_at": created_at.encode("utf-8"),
                     b"updated_at": updated_at.encode("utf-8"),
+                    b"user_id": user_id.encode("utf-8"),
                 },
             )
-            self._redis.zadd(USER_SESSIONS_ZSET_KEY, {session_id: time.time()})
+            self._redis.zadd(_user_sessions_zset_key(user_id), {session_id: time.time()})
         except RedisError as exc:
             msg = f"Failed to create chat session in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
@@ -102,11 +104,11 @@ class ChatSessionStore:
             updated_at=updated_at,
         )
 
-    def list_sessions(self, limit: int = 50) -> list[ChatSession]:
+    def list_sessions(self, user_id: str, limit: int = 50) -> list[ChatSession]:
         if limit <= 0:
             return []
         try:
-            raw_ids = self._redis.zrevrange(USER_SESSIONS_ZSET_KEY, 0, limit - 1)
+            raw_ids = self._redis.zrevrange(_user_sessions_zset_key(user_id), 0, limit - 1)
         except RedisError:
             LOGGER.warning(
                 "Redis error while listing chat sessions; returning empty list",
@@ -148,7 +150,7 @@ class ChatSessionStore:
         except UnicodeDecodeError:
             return None
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: str) -> bool:
         session_key = _session_hash_key(session_id)
         try:
             raw = self._redis.hgetall(session_key)
@@ -160,13 +162,13 @@ class ChatSessionStore:
         try:
             self._redis.delete(session_key)
             self._redis.delete(_messages_list_key(session_id))
-            self._redis.zrem(USER_SESSIONS_ZSET_KEY, session_id)
+            self._redis.zrem(_user_sessions_zset_key(user_id), session_id)
         except RedisError as exc:
             msg = f"Failed to delete chat session from Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
         return True
 
-    def add_message(self, session_id: str, message: ChatMessage) -> None:
+    def add_message(self, session_id: str, message: ChatMessage, user_id: str = "") -> None:
         session_key = _session_hash_key(session_id)
         try:
             raw = self._redis.hgetall(session_key)
@@ -186,7 +188,7 @@ class ChatSessionStore:
         except RedisError as exc:
             msg = f"Failed to append chat message in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
-        self._touch_session(session_id)
+        self._touch_session(session_id, user_id)
 
     def get_messages(self, session_id: str) -> list[ChatMessage]:
         try:
@@ -214,7 +216,7 @@ class ChatSessionStore:
             messages.append(ChatMessage.model_validate(body))
         return messages
 
-    def update_session_title(self, session_id: str, title: str) -> None:
+    def update_session_title(self, session_id: str, title: str, user_id: str = "") -> None:
         session_key = _session_hash_key(session_id)
         try:
             raw = self._redis.hgetall(session_key)
@@ -232,7 +234,7 @@ class ChatSessionStore:
         except RedisError as exc:
             msg = f"Failed to update chat session title in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
-        self._touch_session(session_id)
+        self._touch_session(session_id, user_id)
 
 
 class InMemoryChatSessionStore:
@@ -241,12 +243,13 @@ class InMemoryChatSessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, ChatSession] = {}
         self._messages: dict[str, list[ChatMessage]] = {}
-        self._recent: list[str] = []
+        self._user_recent: dict[str, list[str]] = {}
 
-    def _bump_recent(self, session_id: str) -> None:
-        self._recent = [session_id] + [x for x in self._recent if x != session_id]
+    def _bump_recent(self, user_id: str, session_id: str) -> None:
+        recent = self._user_recent.get(user_id, [])
+        self._user_recent[user_id] = [session_id] + [x for x in recent if x != session_id]
 
-    def create_session(self, title: str = "New Chat") -> ChatSession:
+    def create_session(self, user_id: str, title: str = "New Chat") -> ChatSession:
         session_id = uuid.uuid4().hex
         now = _utc_iso_now()
         session = ChatSession(
@@ -257,14 +260,15 @@ class InMemoryChatSessionStore:
         )
         self._sessions[session_id] = session
         self._messages[session_id] = []
-        self._bump_recent(session_id)
+        self._bump_recent(user_id, session_id)
         return session
 
-    def list_sessions(self, limit: int = 50) -> list[ChatSession]:
+    def list_sessions(self, user_id: str, limit: int = 50) -> list[ChatSession]:
         if limit <= 0:
             return []
+        recent = self._user_recent.get(user_id, [])
         out: list[ChatSession] = []
-        for sid in self._recent[:limit]:
+        for sid in recent[:limit]:
             s = self._sessions.get(sid)
             if s is not None:
                 out.append(s)
@@ -273,38 +277,39 @@ class InMemoryChatSessionStore:
     def get_session(self, session_id: str) -> ChatSession | None:
         return self._sessions.get(session_id)
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: str) -> bool:
         if session_id not in self._sessions:
             return False
         del self._sessions[session_id]
         self._messages.pop(session_id, None)
-        self._recent = [x for x in self._recent if x != session_id]
+        recent = self._user_recent.get(user_id, [])
+        self._user_recent[user_id] = [x for x in recent if x != session_id]
         return True
 
-    def _touch_session(self, session_id: str) -> None:
+    def _touch_session(self, session_id: str, user_id: str) -> None:
         s = self._sessions[session_id]
         now = _utc_iso_now()
         self._sessions[session_id] = s.model_copy(update={"updated_at": now})
-        self._bump_recent(session_id)
+        self._bump_recent(user_id, session_id)
 
-    def add_message(self, session_id: str, message: ChatMessage) -> None:
+    def add_message(self, session_id: str, message: ChatMessage, user_id: str = "") -> None:
         if session_id not in self._sessions:
             msg = f"Unknown chat session: {session_id}"
             raise ValueError(msg)
         self._messages.setdefault(session_id, []).append(message)
-        self._touch_session(session_id)
+        self._touch_session(session_id, user_id)
 
     def get_messages(self, session_id: str) -> list[ChatMessage]:
         return list(self._messages.get(session_id, []))
 
-    def update_session_title(self, session_id: str, title: str) -> None:
+    def update_session_title(self, session_id: str, title: str, user_id: str = "") -> None:
         if session_id not in self._sessions:
             msg = f"Unknown chat session: {session_id}"
             raise ValueError(msg)
         s = self._sessions[session_id]
         now = _utc_iso_now()
         self._sessions[session_id] = s.model_copy(update={"title": title, "updated_at": now})
-        self._bump_recent(session_id)
+        self._bump_recent(user_id, session_id)
 
 
 def build_chat_session_store(

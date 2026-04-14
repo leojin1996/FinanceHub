@@ -9,13 +9,18 @@ description = "Lightweight API for FinanceHub China market pages"
 requires-python = ">=3.11"
 dependencies = [
   "akshare>=1.17,<2.0",
+  "bcrypt>=4.2,<5.0",
+  "cryptography>=42,<46",
   "fastapi>=0.116,<1.0",
   "httpx>=0.28,<0.29",
   "langgraph>=0.2,<0.4",
   "openai>=1.82,<2.0",
   "pydantic>=2.11,<3.0",
+  "pyjwt>=2.9,<3.0",
+  "pymysql>=1.1,<2.0",
   "qdrant-client>=1.12,<2.0",
   "redis>=5.2,<6.0",
+  "sqlalchemy>=2.0,<3.0",
   "uvicorn>=0.35,<0.36",
 ]
 

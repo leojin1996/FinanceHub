@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -14,6 +13,12 @@ from uuid import uuid4
 
 import httpx
 from openai import OpenAI as OpenAIClient
+
+from financehub_market_api.env import (
+    build_env_values as _build_shared_env_values,
+    iter_env_file_candidates as _iter_shared_env_file_candidates,
+    parse_env_file as _parse_shared_env_file,
+)
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
@@ -60,45 +65,21 @@ class LLMInvalidResponseError(LLMProviderError):
 
 
 def _iter_env_file_candidates() -> list[Path]:
-    search_roots = [
-        Path.cwd(),
-        Path(__file__).resolve().parents[3],
-        Path(__file__).resolve().parents[4],
-    ]
-    candidates: list[Path] = []
-    seen: set[Path] = set()
-    for root in search_roots:
-        for filename in (".env.local", ".env"):
-            candidate = root / filename
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            candidates.append(candidate)
-    return candidates
+    return _iter_shared_env_file_candidates()
 
 
 def _parse_env_file(env_file: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not env_file.is_file():
-        return values
-    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, raw_value = line.split("=", 1)
-        values[key.strip()] = raw_value.strip().strip("\"'")
-    return values
+    return _parse_shared_env_file(env_file)
 
 
 def _build_env_values(
     environ: Mapping[str, str] | None = None,
     env_files: Sequence[Path] | None = None,
 ) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for env_file in env_files if env_files is not None else _iter_env_file_candidates():
-        values.update(_parse_env_file(env_file))
-    values.update(dict(os.environ if environ is None else environ))
-    return values
+    return _build_shared_env_values(
+        environ=environ,
+        env_files=env_files if env_files is not None else _iter_env_file_candidates(),
+    )
 
 
 def _normalize_base_url(base_url: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from financehub_market_api.models import (
     IndexCard,
@@ -218,6 +219,24 @@ class _NegativeMarketDataSource:
                 ),
             ],
         )
+
+
+def test_graph_runtime_default_services_wire_market_news_service(monkeypatch) -> None:
+    fake_news_service = object()
+    monkeypatch.setattr(
+        "financehub_market_api.recommendation.graph.runtime.build_market_news_service_from_env",
+        lambda: fake_news_service,
+        raising=False,
+    )
+
+    runtime = RecommendationGraphRuntime.with_default_services(
+        repository=StaticCandidateRepository(),
+        market_data_service=_NegativeMarketDataSource(),
+    )
+
+    assert (
+        runtime._services.market_intelligence._market_news_service is fake_news_service
+    )
 
 
 class _SingleMemoryStore:
@@ -1918,3 +1937,97 @@ def test_graph_runtime_passes_rich_prompt_contexts_and_tool_calls() -> None:
     assert trace_by_request["product_match_expert"].toolCalls[0].toolName == "list_candidate_products"
     assert trace_by_request["compliance_risk_officer"].toolCalls[0].toolName == "get_rule_snapshot"
     assert trace_by_request["manager_coordinator"].toolCalls[0].result["selected_ids"]
+
+
+def test_runtime_run_threads_user_id_into_request_context() -> None:
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    state = runtime.run(_build_generation_request("balanced"), user_id="user-123")
+    assert state["request_context"].user_id == "user-123"
+
+
+def test_runtime_run_defaults_user_id_to_none() -> None:
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    state = runtime.run(_build_generation_request("balanced"))
+    assert state["request_context"].user_id is None
+
+
+class _FakeChatHistoryRecallService:
+    def __init__(self, snippets: list[str]) -> None:
+        self._snippets = snippets
+        self.calls: list[dict[str, object]] = []
+
+    def recall(
+        self,
+        *,
+        user_id: str,
+        risk_profile: str,
+        user_intent_text: str | None,
+        latest_user_message: str | None,
+        limit: int = 10,
+    ) -> list[str]:
+        self.calls.append(
+            {
+                "user_id": user_id,
+                "risk_profile": risk_profile,
+                "user_intent_text": user_intent_text,
+                "latest_user_message": latest_user_message,
+                "limit": limit,
+            }
+        )
+        return list(self._snippets)
+
+
+def test_user_profile_prompt_includes_recalled_chat_snippets() -> None:
+    recall_service = _FakeChatHistoryRecallService(
+        ["我更看重流动性", "我计划持有三到五年"]
+    )
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    runtime = RecommendationGraphRuntime(
+        replace(runtime._services, chat_history_recall=recall_service)
+    )
+
+    payload = _build_generation_request(
+        "balanced",
+        conversation_messages=[
+            {
+                "role": "user",
+                "content": "最近市场波动很大",
+                "occurredAt": "2026-04-13T10:00:00Z",
+            }
+        ],
+    )
+    state = runtime.run(payload, user_id="user-123")
+
+    assert len(recall_service.calls) == 1
+    assert recall_service.calls[0]["user_id"] == "user-123"
+    assert recall_service.calls[0]["risk_profile"] == "balanced"
+    assert recall_service.calls[0]["latest_user_message"] == "最近市场波动很大"
+    assert state["user_intelligence"] is not None
+
+
+def test_graph_continues_when_chat_recall_fails() -> None:
+    class _FailingRecallService:
+        def recall(self, **_: object) -> list[str]:
+            raise RuntimeError("qdrant unavailable")
+
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    runtime = RecommendationGraphRuntime(
+        replace(runtime._services, chat_history_recall=_FailingRecallService())
+    )
+
+    state = runtime.run(_build_generation_request("balanced"), user_id="user-123")
+
+    assert state["final_response"] is not None
+
+
+def test_chat_recall_skipped_when_no_user_id() -> None:
+    recall_service = _FakeChatHistoryRecallService(["snippet"])
+    runtime = RecommendationGraphRuntime.with_deterministic_services()
+    runtime = RecommendationGraphRuntime(
+        replace(runtime._services, chat_history_recall=recall_service)
+    )
+
+    state = runtime.run(_build_generation_request("balanced"))
+
+    assert recall_service.calls == []
+    assert state["user_intelligence"] is not None

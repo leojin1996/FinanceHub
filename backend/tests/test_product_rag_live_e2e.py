@@ -5,6 +5,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
 from financehub_market_api.main import (
     app,
     get_product_detail_service,
@@ -26,6 +27,10 @@ from financehub_market_api.recommendations import RecommendationService
 
 LIVE_PRODUCT_RAG_E2E_ENV = "FINANCEHUB_RUN_PRODUCT_RAG_LIVE_E2E"
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+_TEST_USER = AuthenticatedUser(
+    user_id="product-rag-live-e2e-user",
+    email="rag@example.com",
+)
 
 
 class _StaticProductDetailSnapshotCache:
@@ -144,6 +149,7 @@ def test_live_product_rag_e2e_returns_public_detail_evidence() -> None:
 
     app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
     app.dependency_overrides[get_product_detail_service] = lambda: product_detail_service
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     client = TestClient(app)
 
     try:

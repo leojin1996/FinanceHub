@@ -20,6 +20,7 @@ from financehub_market_api.models import (
     StocksResponse,
     TrendPoint,
 )
+from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
 from financehub_market_api.service import DataUnavailableError
 
 _PRODUCT_KNOWLEDGE_ENV_KEYS = [
@@ -39,6 +40,7 @@ _COMPLIANCE_KNOWLEDGE_ENV_KEYS = [
     "FINANCEHUB_COMPLIANCE_KNOWLEDGE_OPENAI_BASE_URL",
     "FINANCEHUB_COMPLIANCE_KNOWLEDGE_EMBEDDING_MODEL",
 ]
+_TEST_USER = AuthenticatedUser(user_id="api-test-user", email="api@test.local")
 
 
 @pytest.fixture(autouse=True)
@@ -120,8 +122,12 @@ class FakeRecommendationService:
         self.last_risk_profile: str | None = None
 
     def generate_recommendation(
-        self, payload: RecommendationGenerationRequest
+        self,
+        payload: RecommendationGenerationRequest,
+        *,
+        user_id: str | None = None,
     ) -> RecommendationResponse:
+        del user_id
         self.last_generation_request = payload
         return self._response
 
@@ -595,6 +601,7 @@ def _install_override(
         get_recommendation_service,
     )
 
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     app.dependency_overrides[get_market_data_service] = lambda: service
     if recommendation_service is not None:
         app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
@@ -960,9 +967,13 @@ def test_post_recommendations_alias_accepts_new_payload() -> None:
 def test_get_recommendation_product_detail_returns_standard_detail_payload() -> None:
     from financehub_market_api.main import app
 
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     client = TestClient(app)
 
-    response = client.get("/api/recommendations/products/fund-001")
+    try:
+        response = client.get("/api/recommendations/products/fund-001")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     payload = response.json()
@@ -1231,8 +1242,8 @@ def test_generate_recommendations_raises_when_graph_runtime_fails() -> None:
     from financehub_market_api.recommendations import RecommendationService
 
     class _FailingGraphRuntime:
-        def run(self, payload: object) -> object:
-            del payload
+        def run(self, payload: object, *, user_id: str | None = None) -> object:
+            del payload, user_id
             raise RuntimeError("graph runtime crashed")
 
     recommendation_service = RecommendationService(graph_runtime=_FailingGraphRuntime())

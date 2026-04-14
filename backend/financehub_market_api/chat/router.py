@@ -8,9 +8,10 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from ..auth.dependencies import AuthenticatedUser, get_current_user
 from .agent import ChatAgent, ChatStreamEvent, build_chat_agent
 from .models import (
     ChatMessage,
@@ -18,6 +19,10 @@ from .models import (
     ChatSession,
     ChatSessionListResponse,
     SendMessageRequest,
+)
+from .recall_service import (
+    ChatHistoryRecallService,
+    build_chat_history_recall_service_from_env,
 )
 from .store import (
     ChatSessionStore,
@@ -40,8 +45,12 @@ def get_chat_session_store() -> ChatSessionStoreLike:
 
 
 @lru_cache(maxsize=1)
+def get_chat_history_recall_service() -> ChatHistoryRecallService | None:
+    return build_chat_history_recall_service_from_env()
+
+
+@lru_cache(maxsize=1)
 def get_chat_agent() -> ChatAgent:
-    # Import after app module load to avoid circular import with main.
     from ..main import get_market_data_service
 
     return build_chat_agent(get_market_data_service())
@@ -61,6 +70,7 @@ def _chat_sse_stream(
     agent_stream: Generator[ChatStreamEvent, None, None],
     store: ChatSessionStoreLike,
     session_id: str,
+    user_id: str,
 ) -> Generator[str, None, None]:
     """Format ChatAgent stream as SSE, accumulate assistant text, persist when done."""
     content_parts: list[str] = []
@@ -82,7 +92,7 @@ def _chat_sse_stream(
             created_at=datetime.now(UTC).isoformat(),
         )
         try:
-            store.add_message(session_id, assistant)
+            store.add_message(session_id, assistant, user_id)
         except ChatStoreError:
             LOGGER.exception(
                 "Failed to persist assistant message after stream for session %s",
@@ -95,12 +105,14 @@ def _streaming_chat_response(
     agent_stream: Generator[ChatStreamEvent, None, None],
     store: ChatSessionStoreLike,
     session_id: str,
+    user_id: str,
 ) -> StreamingResponse:
     return StreamingResponse(
         _chat_sse_stream(
             agent_stream=agent_stream,
             store=store,
             session_id=session_id,
+            user_id=user_id,
         ),
         media_type="text/event-stream",
     )
@@ -108,21 +120,23 @@ def _streaming_chat_response(
 
 @chat_router.post("/sessions", response_model=ChatSession)
 def create_chat_session(
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> ChatSession:
     try:
-        return store.create_session()
+        return store.create_session(user.user_id)
     except ChatStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @chat_router.get("/sessions", response_model=ChatSessionListResponse)
 def list_chat_sessions(
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
     limit: int = Query(default=50, ge=0, le=500),
 ) -> ChatSessionListResponse:
     try:
-        sessions = store.list_sessions(limit)
+        sessions = store.list_sessions(user.user_id, limit)
     except ChatStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return ChatSessionListResponse(sessions=sessions)
@@ -134,6 +148,7 @@ def list_chat_sessions(
 )
 def get_chat_messages(
     session_id: str,
+    _user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> ChatMessageListResponse:
     if store.get_session(session_id) is None:
@@ -145,12 +160,41 @@ def get_chat_messages(
     return ChatMessageListResponse(messages=messages)
 
 
+def _index_user_chat_message(
+    recall_service: ChatHistoryRecallService | None,
+    *,
+    user_id: str,
+    session_id: str,
+    message: ChatMessage,
+) -> None:
+    if recall_service is None or message.role != "user":
+        return
+    try:
+        recall_service.index_user_message(
+            user_id=user_id,
+            session_id=session_id,
+            message_id=message.id,
+            content=message.content,
+            created_at=message.created_at,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Failed to index user chat message for recall",
+            extra={"session_id": session_id, "user_id": user_id},
+        )
+
+
 @chat_router.post("/sessions/{session_id}/messages")
 def send_chat_message(
     session_id: str,
     body: SendMessageRequest,
+    background_tasks: BackgroundTasks,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
     agent: Annotated[ChatAgent, Depends(get_chat_agent)],
+    recall_service: Annotated[
+        ChatHistoryRecallService | None, Depends(get_chat_history_recall_service)
+    ],
 ) -> StreamingResponse:
     if store.get_session(session_id) is None:
         raise HTTPException(status_code=404, detail="chat session not found")
@@ -162,11 +206,19 @@ def send_chat_message(
         created_at=datetime.now(UTC).isoformat(),
     )
     try:
-        store.add_message(session_id, user_message)
+        store.add_message(session_id, user_message, user.user_id)
     except ChatStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="chat session not found") from exc
+
+    background_tasks.add_task(
+        _index_user_chat_message,
+        recall_service,
+        user_id=user.user_id,
+        session_id=session_id,
+        message=user_message,
+    )
 
     history = store.get_messages(session_id)
     openai_messages = _messages_to_openai_format(history)
@@ -175,16 +227,18 @@ def send_chat_message(
         agent_stream=stream,
         store=store,
         session_id=session_id,
+        user_id=user.user_id,
     )
 
 
 @chat_router.delete("/sessions/{session_id}")
 def delete_chat_session(
     session_id: str,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     store: Annotated[ChatSessionStoreLike, Depends(get_chat_session_store)],
 ) -> dict[str, bool]:
     try:
-        deleted = store.delete_session(session_id)
+        deleted = store.delete_session(session_id, user.user_id)
     except ChatStoreError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not deleted:

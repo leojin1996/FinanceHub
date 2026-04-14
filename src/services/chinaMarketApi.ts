@@ -1,5 +1,6 @@
 import type { Locale } from "../app/state/app-state";
 import type { RiskAssessmentResult } from "../features/risk-assessment/risk-scoring";
+import { authFetch } from "./authApi";
 
 export interface MetricCardData {
   label: string;
@@ -229,16 +230,16 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 export function fetchMarketOverview(): Promise<MarketOverviewResponse> {
-  return fetch("/api/market-overview").then(readJson<MarketOverviewResponse>);
+  return authFetch("/api/market-overview").then(readJson<MarketOverviewResponse>);
 }
 
 export function fetchIndices(): Promise<IndicesResponse> {
-  return fetch("/api/indices").then(readJson<IndicesResponse>);
+  return authFetch("/api/indices").then(readJson<IndicesResponse>);
 }
 
 export function fetchStocks(query?: string): Promise<StocksResponse> {
   const url = query ? `/api/stocks?query=${encodeURIComponent(query)}` : "/api/stocks";
-  return fetch(url).then(readJson<StocksResponse>);
+  return authFetch(url).then(readJson<StocksResponse>);
 }
 
 export function buildRecommendationGenerationPayload(
@@ -268,7 +269,7 @@ export function fetchRecommendations(
   locale: Locale,
   riskAssessmentResult: RiskAssessmentResult,
 ): Promise<RecommendationResponse> {
-  return fetch("/api/recommendations/generate", {
+  return authFetch("/api/recommendations/generate", {
     body: JSON.stringify(buildRecommendationGenerationPayload(locale, riskAssessmentResult)),
     headers: { "Content-Type": "application/json" },
     method: "POST",
@@ -278,7 +279,7 @@ export function fetchRecommendations(
 export function fetchRecommendationProductDetail(
   productId: string,
 ): Promise<RecommendationProductDetailResponse> {
-  return fetch(`/api/recommendations/products/${encodeURIComponent(productId)}`).then(
+  return authFetch(`/api/recommendations/products/${encodeURIComponent(productId)}`).then(
     readJson<RecommendationProductDetailResponse>,
   );
 }

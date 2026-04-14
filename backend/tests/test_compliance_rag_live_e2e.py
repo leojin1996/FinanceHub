@@ -5,6 +5,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from financehub_market_api.auth.dependencies import AuthenticatedUser, get_current_user
 from financehub_market_api.main import app, get_recommendation_service
 from financehub_market_api.models import RecommendationGenerationRequest
 from financehub_market_api.recommendation.compliance_knowledge import (
@@ -17,6 +18,10 @@ from financehub_market_api.recommendations import RecommendationService
 
 LIVE_COMPLIANCE_RAG_E2E_ENV = "FINANCEHUB_RUN_COMPLIANCE_RAG_LIVE_E2E"
 _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+_TEST_USER = AuthenticatedUser(
+    user_id="compliance-rag-live-e2e-user",
+    email="rag@example.com",
+)
 
 
 def _enabled(env_key: str) -> bool:
@@ -77,6 +82,7 @@ def test_live_compliance_rag_e2e_keeps_regulatory_evidence_backend_only() -> Non
     )
 
     app.dependency_overrides[get_recommendation_service] = lambda: recommendation_service
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     client = TestClient(app)
 
     try:

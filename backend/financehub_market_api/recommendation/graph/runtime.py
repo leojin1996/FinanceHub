@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from langgraph.graph import END, START, StateGraph
 
 from financehub_market_api.cache import build_snapshot_cache
+from financehub_market_api.market_news import build_market_news_service_from_env
 from financehub_market_api.models import RecommendationGenerationRequest
 from financehub_market_api.recommendation.agents.contracts import (
     ComplianceReviewAgentOutput,
@@ -17,6 +18,10 @@ from financehub_market_api.recommendation.agents.contracts import (
 from financehub_market_api.recommendation.agents.live_runtime import (
     AgentInvocationMetadata,
     RecommendationAgentRuntime,
+)
+from financehub_market_api.chat.recall_service import (
+    ChatHistoryRecallService,
+    build_chat_history_recall_service_from_env,
 )
 from financehub_market_api.recommendation.compliance import (
     ComplianceFactsService,
@@ -88,6 +93,7 @@ class GraphServices:
     compliance_facts_service: ComplianceFactsService | None = None
     agent_runtime: object | None = None
     candidate_repository: CandidateRepository | None = None
+    chat_history_recall: ChatHistoryRecallService | None = None
     profile_intelligence: ProfileIntelligenceService = field(
         default_factory=ProfileIntelligenceService
     )
@@ -403,6 +409,7 @@ class RecommendationGraphRuntime:
                 state,
                 profile_intelligence_service=services.profile_intelligence,
                 agent_runtime=services.agent_runtime,
+                chat_history_recall=services.chat_history_recall,
             ),
         )
         graph.add_node(
@@ -483,8 +490,13 @@ class RecommendationGraphRuntime:
             product_candidates=product_candidates,
         )
 
-    def run(self, payload: RecommendationGenerationRequest) -> RecommendationGraphState:
-        initial_state = build_initial_graph_state(payload)
+    def run(
+        self,
+        payload: RecommendationGenerationRequest,
+        *,
+        user_id: str | None = None,
+    ) -> RecommendationGraphState:
+        initial_state = build_initial_graph_state(payload, user_id=user_id)
         services = self._services_for_request(payload)
         graph = (
             self._graph if services is self._services else self._build_graph(services)
@@ -509,7 +521,8 @@ class RecommendationGraphRuntime:
             GraphServices(
                 market_intelligence=MarketIntelligenceService(
                     market_data_service=market_data_service
-                    or _build_default_market_data_service()
+                    or _build_default_market_data_service(),
+                    market_news_service=build_market_news_service_from_env(),
                 ),
                 memory_recall=MemoryRecallService(store=_StaticMemoryStore()),
                 product_retrieval=ProductRetrievalService(
@@ -522,6 +535,7 @@ class RecommendationGraphRuntime:
                 compliance_knowledge=build_compliance_knowledge_retrieval_service_from_env(),
                 agent_runtime=agent_runtime,
                 candidate_repository=candidate_repository,
+                chat_history_recall=build_chat_history_recall_service_from_env(),
             )
         )
 

@@ -10,6 +10,7 @@ from financehub_market_api.models import (
     MarketEvidenceItem,
     MarketOverviewResponse,
 )
+from financehub_market_api.market_news import MarketNewsDigest
 
 _DEFAULT_MARKET_OVERVIEW_SUMMARY = "A股宽基震荡，红利与固收风格相对占优。"
 _DEFAULT_MACRO_SUMMARY = "宏观修复温和，政策基调保持稳增长。"
@@ -18,12 +19,25 @@ _DEFAULT_NEWS_SUMMARIES = [
     "公募资金净申购延续，低波动产品关注度提升",
     "龙头权益估值分化，建议保持行业分散",
 ]
+_DEFAULT_MARKET_NEWS_QUERY = "A股 市场 今日 要闻"
+_DEFAULT_MARKET_NEWS_TIME_RANGE = "week"
+_DEFAULT_MARKET_NEWS_MAX_RESULTS = 10
 
 
 class MarketDataSnapshotSource(Protocol):
     def get_market_overview(self) -> MarketOverviewResponse: ...
 
     def get_indices(self) -> IndicesResponse: ...
+
+
+class MarketNewsDigestSource(Protocol):
+    def fetch_digest(
+        self,
+        *,
+        query: str,
+        time_range: str,
+        max_results: int,
+    ) -> MarketNewsDigest: ...
 
 
 class MarketSnapshot(BaseModel):
@@ -40,8 +54,10 @@ class MarketIntelligenceService:
     def __init__(
         self,
         market_data_service: MarketDataSnapshotSource | None = None,
+        market_news_service: MarketNewsDigestSource | None = None,
     ) -> None:
         self._market_data_service = market_data_service
+        self._market_news_service = market_news_service
 
     def build_snapshot(
         self,
@@ -198,6 +214,37 @@ class MarketIntelligenceService:
             ),
         ]
 
+        news_digest = self._fetch_market_news_digest()
+        if news_digest is not None and news_digest.items:
+            summary_zh = f"{summary_zh}；新闻要点：{news_digest.summaryZh}"
+            summary_en = (
+                f"{summary_en} News digest was included as an additional market signal."
+            )
+            evidence.append(
+                MarketEvidenceItem(
+                    source="news_digest",
+                    asOf=news_digest.asOf,
+                    summary=LocalizedText(
+                        zh=news_digest.summaryZh,
+                        en=(
+                            "Market news digest signal. News sentiment is for "
+                            "reference only."
+                        ),
+                    ),
+                )
+            )
+            sentiment, stance = _apply_news_signal(
+                sentiment=sentiment,
+                stance=stance,
+                news_digest=news_digest,
+            )
+            preferred_categories = (
+                ["wealth_management", "fund"]
+                if stance == "defensive"
+                else ["fund", "stock"]
+            )
+            avoided_categories = ["stock"] if stance == "defensive" else []
+
         return MarketSnapshot(
             sentiment=sentiment,
             stance=stance,
@@ -207,6 +254,18 @@ class MarketIntelligenceService:
             summary_en=summary_en,
             evidence=evidence,
         )
+
+    def _fetch_market_news_digest(self) -> MarketNewsDigest | None:
+        if self._market_news_service is None:
+            return None
+        try:
+            return self._market_news_service.fetch_digest(
+                query=_DEFAULT_MARKET_NEWS_QUERY,
+                time_range=_DEFAULT_MARKET_NEWS_TIME_RANGE,
+                max_results=_DEFAULT_MARKET_NEWS_MAX_RESULTS,
+            )
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def _sentiment_from_text(
@@ -258,3 +317,27 @@ def _stance_from_change(
     if average_change_percent < -0.2 and negative_count > positive_count:
         return "defensive"
     return "balanced"
+
+
+def _apply_news_signal(
+    *,
+    sentiment: Literal["negative", "neutral", "positive"],
+    stance: Literal["defensive", "balanced", "offensive"],
+    news_digest: MarketNewsDigest,
+) -> tuple[
+    Literal["negative", "neutral", "positive"],
+    Literal["defensive", "balanced", "offensive"],
+]:
+    if (
+        news_digest.negativeCount > news_digest.positiveCount
+        and news_digest.negativeCount > 0
+    ):
+        return "negative", "defensive"
+    if (
+        news_digest.positiveCount > news_digest.negativeCount
+        and news_digest.positiveCount > 0
+        and sentiment != "negative"
+        and stance != "defensive"
+    ):
+        return "positive", "offensive"
+    return sentiment, stance

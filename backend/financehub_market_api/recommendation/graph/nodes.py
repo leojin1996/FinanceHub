@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 from collections.abc import Mapping, Sequence
 from datetime import date
@@ -59,6 +60,7 @@ _BLOCKED_REASON_EN = "The AI multi-agent review did not complete, so the recomme
 _BLOCKED_DISCLOSURES_ZH = ["理财非存款，投资需谨慎。"]
 _BLOCKED_DISCLOSURES_EN = ["Investing involves risk. Proceed prudently."]
 _RISK_ORDER = {"R1": 1, "R2": 2, "R3": 3, "R4": 4, "R5": 5}
+_LOGGER = logging.getLogger(__name__)
 _FALLBACK_RISK_TIER_BY_PROFILE = {
     "conservative": "R2",
     "stable": "R2",
@@ -77,6 +79,7 @@ def user_profile_analyst_node(
     *,
     profile_intelligence_service: object | None,
     agent_runtime: object | None = None,
+    chat_history_recall: object | None = None,
 ) -> RecommendationGraphState:
     del profile_intelligence_service
     if _is_blocked(state):
@@ -88,6 +91,7 @@ def user_profile_analyst_node(
         )
 
     payload = state["request_context"].payload
+    request_context = state["request_context"]
     user_profile = map_user_profile(payload.riskAssessmentResult.finalProfile)
     provider_name, model_name = _route_metadata_if_available(
         agent_runtime,
@@ -105,10 +109,37 @@ def user_profile_analyst_node(
             model_name=model_name,
         )
 
+    recalled_snippets: list[str] = []
+    if request_context.user_id and chat_history_recall is not None:
+        latest_user_message = next(
+            (
+                message.content
+                for message in reversed(payload.conversationMessages)
+                if message.role == "user"
+            ),
+            None,
+        )
+        try:
+            recalled_snippets = chat_history_recall.recall(
+                user_id=request_context.user_id,
+                risk_profile=payload.riskAssessmentResult.finalProfile,
+                user_intent_text=payload.userIntentText,
+                latest_user_message=latest_user_message,
+                limit=10,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to recall historical chat snippets",
+                extra={"user_id": request_context.user_id},
+            )
+
     try:
         profile_output, metadata = agent_runtime.analyze_user_profile(  # type: ignore[attr-defined]
             user_profile,
-            prompt_context=_build_user_profile_prompt_context(state=state),
+            prompt_context=_build_user_profile_prompt_context(
+                state=state,
+                chat_history_snippets=recalled_snippets,
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         fallback_output = UserProfileAgentOutput(
@@ -880,6 +911,7 @@ def manager_coordinator_node(
 def _build_user_profile_prompt_context(
     *,
     state: RecommendationGraphState,
+    chat_history_snippets: Sequence[str] = (),
 ) -> AgentPromptContext:
     payload = state["request_context"].payload
     user_messages = [
@@ -926,6 +958,13 @@ def _build_user_profile_prompt_context(
             ),
         )
     )
+    if chat_history_snippets:
+        sections.append(
+            AgentPromptSection(
+                title="Historical chat insights (vector recalled)",
+                body=_render_json(list(chat_history_snippets)),
+            )
+        )
     return AgentPromptContext(
         task=(
             "Analyze the user's questionnaire, intent text, conversation, holdings, and transactions. "

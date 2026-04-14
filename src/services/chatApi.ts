@@ -1,3 +1,5 @@
+import { authFetch } from "./authApi";
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -39,25 +41,25 @@ interface MessagesListResponse {
 }
 
 export async function createChatSession(): Promise<ChatSession> {
-  return fetch("/api/chat/sessions", { method: "POST" }).then(readJson<ChatSession>);
+  return authFetch("/api/chat/sessions", { method: "POST" }).then(readJson<ChatSession>);
 }
 
 export async function listChatSessions(limit?: number): Promise<ChatSession[]> {
   const url =
     limit !== undefined ? `/api/chat/sessions?limit=${encodeURIComponent(String(limit))}` : "/api/chat/sessions";
-  const body = await fetch(url).then(readJson<SessionsListResponse>);
+  const body = await authFetch(url).then(readJson<SessionsListResponse>);
   return body.sessions;
 }
 
 export async function getChatMessages(sessionId: string): Promise<ChatMessage[]> {
-  const body = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`).then(
+  const body = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`).then(
     readJson<MessagesListResponse>,
   );
   return body.messages;
 }
 
 export async function deleteChatSession(sessionId: string): Promise<void> {
-  const response = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+  const response = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
   if (!response.ok) {
@@ -169,7 +171,7 @@ export async function* sendChatMessage(
   sessionId: string,
   content: string,
 ): AsyncGenerator<ChatStreamEvent> {
-  const response = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+  const response = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
     body: JSON.stringify({ content }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

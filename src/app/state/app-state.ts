@@ -11,6 +11,7 @@ export type RiskProfile =
   | "aggressive";
 
 export interface AuthSession {
+  userId: string;
   email: string;
 }
 

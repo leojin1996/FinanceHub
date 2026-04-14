@@ -23,6 +23,7 @@ class RequestContext(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     trace_id: str = Field(default_factory=lambda: uuid4().hex)
     user_intent_text: str | None = None
+    user_id: str | None = None
     payload: RecommendationGenerationRequest
 
 
@@ -152,10 +153,13 @@ class RecommendationGraphState(TypedDict):
 
 def build_initial_graph_state(
     payload: RecommendationGenerationRequest,
+    *,
+    user_id: str | None = None,
 ) -> RecommendationGraphState:
     return {
         "request_context": RequestContext(
             user_intent_text=payload.userIntentText,
+            user_id=user_id,
             payload=payload.model_copy(deep=True),
         ),
         "user_intelligence": None,

@@ -24,12 +24,21 @@ export interface Messages {
   auth: {
     demoAction: string;
     emailLabel: string;
+    errorEmailRegistered: string;
+    errorInvalidCredentials: string;
+    errorGeneric: string;
+    errorNetwork: string;
     highlightData: string;
     highlightInsights: string;
     highlightMarkets: string;
     passwordLabel: string;
+    registerAction: string;
+    registerSubtitle: string;
+    registerTitle: string;
     signInAction: string;
     subtitle: string;
+    switchToLogin: string;
+    switchToRegister: string;
     title: string;
   };
   dataState: {
