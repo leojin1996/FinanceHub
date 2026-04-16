@@ -261,6 +261,15 @@ class _FakeChatAgent:
         yield from ()
 
 
+class _CapturingChatAgent:
+    def __init__(self) -> None:
+        self.stream_calls: list[list[dict[str, Any]]] = []
+
+    def stream(self, messages: list[dict[str, Any]]) -> Generator[Any, None, None]:
+        self.stream_calls.append([dict(message) for message in messages])
+        yield from ()
+
+
 def _fake_current_user() -> AuthenticatedUser:
     return AuthenticatedUser(user_id=_TEST_USER_ID, email=_TEST_EMAIL)
 
@@ -339,8 +348,10 @@ def test_in_memory_chat_session_store_roundtrip() -> None:
 
 
 class _FakeChatHistoryRecallService:
-    def __init__(self) -> None:
+    def __init__(self, recall_snippets: list[str] | None = None) -> None:
         self.index_calls: list[dict[str, str]] = []
+        self.recall_calls: list[dict[str, object]] = []
+        self._snippets = recall_snippets or []
 
     def index_user_message(
         self,
@@ -360,6 +371,31 @@ class _FakeChatHistoryRecallService:
                 "created_at": created_at,
             }
         )
+
+    def recall(
+        self,
+        *,
+        user_id: str,
+        risk_profile: str,
+        user_intent_text: str | None,
+        latest_user_message: str | None,
+        limit: int = 10,
+        recent_user_messages: tuple[str, ...] = (),
+        active_session_id: str | None = None,
+    ) -> list[str]:
+        payload: dict[str, object] = {
+            "user_id": user_id,
+            "risk_profile": risk_profile,
+            "user_intent_text": user_intent_text,
+            "latest_user_message": latest_user_message,
+            "limit": limit,
+        }
+        if recent_user_messages:
+            payload["recent_user_messages"] = list(recent_user_messages)
+        if active_session_id is not None:
+            payload["active_session_id"] = active_session_id
+        self.recall_calls.append(payload)
+        return list(self._snippets)
 
 
 def test_send_chat_message_indexes_user_message_best_effort(
@@ -382,6 +418,89 @@ def test_send_chat_message_indexes_user_message_best_effort(
     assert recall_service.index_calls[0]["user_id"] == _TEST_USER_ID
     assert recall_service.index_calls[0]["session_id"] == created["id"]
     assert recall_service.index_calls[0]["content"] == "我想要更高流动性"
+
+
+def test_send_chat_message_recalls_history_and_injects_system_context(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    from financehub_market_api.chat.router import get_chat_history_recall_service
+
+    recall_service = _FakeChatHistoryRecallService(
+        recall_snippets=["我更看重流动性", "我计划持有三到五年", "我更看重流动性"]
+    )
+    agent = _CapturingChatAgent()
+    app.dependency_overrides[get_chat_history_recall_service] = lambda: recall_service
+    app.dependency_overrides[get_chat_agent] = lambda: agent
+    client = TestClient(app)
+    created = client.post("/api/chat/sessions").json()
+
+    first_response = client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "我更看重流动性"},
+    )
+    assert first_response.status_code == 200
+
+    response = client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "结合我的历史偏好继续分析"},
+    )
+
+    assert response.status_code == 200
+    assert len(recall_service.recall_calls) == 2
+    assert recall_service.recall_calls[1] == {
+        "user_id": _TEST_USER_ID,
+        "risk_profile": "unknown",
+        "user_intent_text": "结合我的历史偏好继续分析",
+        "latest_user_message": "结合我的历史偏好继续分析",
+        "limit": 5,
+        "recent_user_messages": ["我更看重流动性", "结合我的历史偏好继续分析"],
+        "active_session_id": created["id"],
+    }
+    assert len(agent.stream_calls) == 2
+    assert agent.stream_calls[1][0]["role"] == "system"
+    assert "Historical user memory" in str(agent.stream_calls[1][0]["content"])
+    assert "我计划持有三到五年" in str(agent.stream_calls[1][0]["content"])
+    assert "我更看重流动性" not in str(agent.stream_calls[1][0]["content"])
+    assert agent.stream_calls[1][1:] == [
+        {"role": "user", "content": "我更看重流动性"},
+        {"role": "user", "content": "结合我的历史偏好继续分析"},
+    ]
+
+
+def test_send_chat_message_passes_recent_user_messages_and_active_session_to_recall(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    from financehub_market_api.chat.router import get_chat_history_recall_service
+
+    recall_service = _FakeChatHistoryRecallService(
+        recall_snippets=["我计划持有三到五年", "我更看重流动性"]
+    )
+    agent = _CapturingChatAgent()
+    app.dependency_overrides[get_chat_history_recall_service] = lambda: recall_service
+    app.dependency_overrides[get_chat_agent] = lambda: agent
+    client = TestClient(app)
+    created = client.post("/api/chat/sessions").json()
+
+    client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "我更看重流动性"},
+    )
+    client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "我的持有期大概一年到两年"},
+    )
+    client.post(
+        f"/api/chat/sessions/{created['id']}/messages",
+        json={"content": "结合我的历史偏好继续分析"},
+    )
+
+    latest_call = recall_service.recall_calls[-1]
+    assert latest_call["active_session_id"] == created["id"]
+    assert latest_call["recent_user_messages"] == [
+        "我更看重流动性",
+        "我的持有期大概一年到两年",
+        "结合我的历史偏好继续分析",
+    ]
 
 
 def test_build_chat_session_store_forces_memory(monkeypatch: pytest.MonkeyPatch) -> None:

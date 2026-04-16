@@ -36,6 +36,13 @@ LOGGER = logging.getLogger(__name__)
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 ChatSessionStoreLike = ChatSessionStore | InMemoryChatSessionStore
+CHAT_HISTORY_RECALL_LIMIT = 5
+CHAT_HISTORY_UNKNOWN_RISK_PROFILE = "unknown"
+CHAT_HISTORY_SYSTEM_CONTEXT_PREFIX = (
+    "Historical user memory recalled from previous chats. "
+    "Use these notes only when they are relevant to the current request. "
+    "Do not mention the retrieval process or present them as certain facts.\n"
+)
 
 
 @lru_cache(maxsize=1)
@@ -63,6 +70,70 @@ def _messages_to_openai_format(messages: list[ChatMessage]) -> list[dict[str, An
         if msg.role in ("user", "assistant"):
             out.append({"role": msg.role, "content": msg.content})
     return out
+
+
+def _recall_chat_history_snippets(
+    recall_service: ChatHistoryRecallService | None,
+    *,
+    user_id: str,
+    session_id: str,
+    history: list[ChatMessage],
+    latest_user_message: str,
+) -> list[str]:
+    if recall_service is None or not latest_user_message.strip():
+        return []
+    recent_user_messages = tuple(
+        message.content
+        for message in history
+        if message.role == "user" and message.content.strip()
+    )[-3:]
+    try:
+        return recall_service.recall(
+            user_id=user_id,
+            risk_profile=CHAT_HISTORY_UNKNOWN_RISK_PROFILE,
+            user_intent_text=latest_user_message,
+            latest_user_message=latest_user_message,
+            limit=CHAT_HISTORY_RECALL_LIMIT,
+            recent_user_messages=recent_user_messages,
+            active_session_id=session_id,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Failed to recall historical chat snippets for chat assistant",
+            extra={"user_id": user_id},
+        )
+        return []
+
+
+def _build_recalled_history_context_message(
+    *,
+    history: list[ChatMessage],
+    recalled_snippets: list[str],
+) -> dict[str, str] | None:
+    session_user_messages = {
+        message.content.strip()
+        for message in history
+        if message.role == "user" and message.content.strip()
+    }
+    filtered_snippets: list[str] = []
+    seen: set[str] = set()
+    for snippet in recalled_snippets:
+        normalized = snippet.strip()
+        if (
+            not normalized
+            or normalized in seen
+            or normalized in session_user_messages
+        ):
+            continue
+        seen.add(normalized)
+        filtered_snippets.append(normalized)
+    if not filtered_snippets:
+        return None
+    return {
+        "role": "system",
+        "content": CHAT_HISTORY_SYSTEM_CONTEXT_PREFIX
+        + json.dumps(filtered_snippets, ensure_ascii=False),
+    }
 
 
 def _chat_sse_stream(
@@ -222,6 +293,18 @@ def send_chat_message(
 
     history = store.get_messages(session_id)
     openai_messages = _messages_to_openai_format(history)
+    recalled_context_message = _build_recalled_history_context_message(
+        history=history,
+        recalled_snippets=_recall_chat_history_snippets(
+            recall_service,
+            user_id=user.user_id,
+            session_id=session_id,
+            history=history,
+            latest_user_message=user_message.content,
+        ),
+    )
+    if recalled_context_message is not None:
+        openai_messages = [recalled_context_message, *openai_messages]
     stream = agent.stream(openai_messages)
     return _streaming_chat_response(
         agent_stream=stream,

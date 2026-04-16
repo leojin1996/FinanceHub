@@ -16,6 +16,14 @@ class ChatMessageVectorStore(Protocol):
         content: str,
         created_at: str,
         vector: list[float],
+        content_normalized: str,
+        content_fingerprint: str,
+        preference_tags: list[str],
+        topic_tags: list[str],
+        symbol_mentions: list[str],
+        is_preference_memory: bool,
+        information_density: float,
+        recency_bucket: str,
     ) -> None: ...
 
     def search(
@@ -24,6 +32,7 @@ class ChatMessageVectorStore(Protocol):
         user_id: str,
         query_vector: list[float],
         limit: int,
+        exclude_session_id: str | None = None,
     ) -> list[dict[str, object]]: ...
 
 
@@ -52,6 +61,14 @@ class QdrantChatMessageStore:
         content: str,
         created_at: str,
         vector: list[float],
+        content_normalized: str,
+        content_fingerprint: str,
+        preference_tags: list[str],
+        topic_tags: list[str],
+        symbol_mentions: list[str],
+        is_preference_memory: bool,
+        information_density: float,
+        recency_bucket: str,
     ) -> None:
         point_id = str(uuid5(NAMESPACE_URL, f"chat-message:{message_id}"))
         self._client().put(
@@ -68,7 +85,15 @@ class QdrantChatMessageStore:
                             "message_id": message_id,
                             "role": "user",
                             "content": content,
+                            "content_normalized": content_normalized,
+                            "content_fingerprint": content_fingerprint,
                             "created_at": created_at,
+                            "preference_tags": preference_tags,
+                            "topic_tags": topic_tags,
+                            "symbol_mentions": symbol_mentions,
+                            "is_preference_memory": is_preference_memory,
+                            "information_density": information_density,
+                            "recency_bucket": recency_bucket,
                         },
                     }
                 ]
@@ -82,7 +107,15 @@ class QdrantChatMessageStore:
         user_id: str,
         query_vector: list[float],
         limit: int,
+        exclude_session_id: str | None = None,
     ) -> list[dict[str, object]]:
+        filter_payload: dict[str, object] = {
+            "must": [{"key": "user_id", "match": {"value": user_id}}],
+        }
+        if exclude_session_id:
+            filter_payload["must_not"] = [
+                {"key": "session_id", "match": {"value": exclude_session_id}}
+            ]
         response = self._client().post(
             f"{self._base_url}/collections/{self._collection_name}/points/query",
             headers=self._headers(),
@@ -90,9 +123,7 @@ class QdrantChatMessageStore:
                 "query": query_vector,
                 "limit": limit,
                 "with_payload": True,
-                "filter": {
-                    "must": [{"key": "user_id", "match": {"value": user_id}}],
-                },
+                "filter": filter_payload,
             },
             timeout=self._timeout_seconds,
         )

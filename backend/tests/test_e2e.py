@@ -257,11 +257,12 @@ def test_recommendation_with_user_id_and_conversation_context(user_a: dict[str, 
             "totalScore": 60,
         },
     }
-    resp = client.post(
+    resp = integration_support.request_via_testclient(
+        client,
+        "POST",
         "/api/recommendations/generate",
         json=payload,
         headers=headers,
-        timeout=600.0,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

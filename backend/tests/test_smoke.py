@@ -242,8 +242,12 @@ def test_recommendation_generate_real_agents(registered_user: dict[str, Any]) ->
             "totalScore": 60,
         },
     }
-    resp = client.post(
-        "/api/recommendations/generate", json=payload, headers=headers, timeout=600.0
+    resp = integration_support.request_via_testclient(
+        client,
+        "POST",
+        "/api/recommendations/generate",
+        json=payload,
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

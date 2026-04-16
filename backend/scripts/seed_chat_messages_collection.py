@@ -4,14 +4,14 @@ from collections.abc import Mapping
 
 import httpx
 
+from financehub_market_api.chat.qdrant_collection_bootstrap import (
+    DEFAULT_CHAT_RECALL_COLLECTION_NAME,
+    ensure_chat_recall_qdrant_collection,
+    resolve_chat_recall_vector_size,
+)
 from financehub_market_api.env import build_env_values
 
-_DEFAULT_COLLECTION_NAME = "chat_messages"
-_PAYLOAD_INDEX_SCHEMAS: tuple[tuple[str, str], ...] = (
-    ("user_id", "keyword"),
-    ("session_id", "keyword"),
-    ("created_at", "datetime"),
-)
+_DEFAULT_COLLECTION_NAME = DEFAULT_CHAT_RECALL_COLLECTION_NAME
 
 
 def main(
@@ -25,26 +25,16 @@ def main(
         "FINANCEHUB_CHAT_RECALL_COLLECTION", _DEFAULT_COLLECTION_NAME
     )
     api_key = config.get("FINANCEHUB_CHAT_RECALL_QDRANT_API_KEY")
-    headers = {"content-type": "application/json"}
-    if api_key:
-        headers["api-key"] = api_key
-
+    vector_size = resolve_chat_recall_vector_size(env=config)
     client = http_client if http_client is not None else httpx.Client()
-    client.put(
-        f"{base_url}/collections/{collection}",
-        headers=headers,
-        json={
-            "vectors": {"size": 1536, "distance": "Cosine"},
-        },
-        timeout=30.0,
-    ).raise_for_status()
-    for field_name, field_schema in _PAYLOAD_INDEX_SCHEMAS:
-        client.put(
-            f"{base_url}/collections/{collection}/index",
-            headers=headers,
-            json={"field_name": field_name, "field_schema": field_schema},
-            timeout=30.0,
-        ).raise_for_status()
+    ensure_chat_recall_qdrant_collection(
+        base_url=base_url,
+        collection_name=collection,
+        api_key=api_key,
+        vector_size=vector_size,
+        http_client=client,
+        timeout_seconds=30.0,
+    )
 
 
 if __name__ == "__main__":

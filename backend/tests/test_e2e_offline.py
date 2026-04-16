@@ -165,16 +165,21 @@ class _FakeChatHistoryRecallService:
         user_intent_text: str | None,
         latest_user_message: str | None,
         limit: int = 10,
+        recent_user_messages: tuple[str, ...] = (),
+        active_session_id: str | None = None,
     ) -> list[str]:
-        self.recall_calls.append(
-            {
-                "user_id": user_id,
-                "risk_profile": risk_profile,
-                "user_intent_text": user_intent_text,
-                "latest_user_message": latest_user_message,
-                "limit": limit,
-            }
-        )
+        payload: dict[str, object] = {
+            "user_id": user_id,
+            "risk_profile": risk_profile,
+            "user_intent_text": user_intent_text,
+            "latest_user_message": latest_user_message,
+            "limit": limit,
+        }
+        if recent_user_messages:
+            payload["recent_user_messages"] = list(recent_user_messages)
+        if active_session_id is not None:
+            payload["active_session_id"] = active_session_id
+        self.recall_calls.append(payload)
         return list(self._snippets)
 
 
@@ -433,8 +438,12 @@ def test_chat_index_then_recommendation_recall_pipeline() -> None:
         )
         assert resp.status_code == 200
 
-        assert len(recall_service.recall_calls) == 1
-        recall_call = recall_service.recall_calls[0]
+        assert len(recall_service.recall_calls) == 3
+        assert recall_service.recall_calls[0]["risk_profile"] == "unknown"
+        assert recall_service.recall_calls[0]["latest_user_message"] == "我更看重流动性"
+        assert recall_service.recall_calls[1]["risk_profile"] == "unknown"
+        assert recall_service.recall_calls[1]["latest_user_message"] == "我的持有期大概三到五年"
+        recall_call = recall_service.recall_calls[2]
         assert recall_call["user_id"]
         assert recall_call["risk_profile"] == "balanced"
         assert recall_call["user_intent_text"] == "我想要稳健投资，关注流动性"

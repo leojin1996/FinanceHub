@@ -25,13 +25,32 @@ Before first run, create the chat recall collection::
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import httpx
+
+from financehub_market_api.chat.qdrant_collection_bootstrap import (
+    DEFAULT_CHAT_RECALL_COLLECTION_NAME,
+    ensure_chat_recall_qdrant_collection,
+    resolve_chat_recall_vector_size,
+)
+from financehub_market_api.env import build_env_values
 
 
 def integration_enabled() -> bool:
     raw = os.environ.get("FINANCEHUB_INTEGRATION_TESTS", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def request_via_testclient(
+    client: Any,
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> httpx.Response | Any:
+    # Starlette deprecates passing per-request timeout into TestClient methods.
+    kwargs.pop("timeout", None)
+    return client.request(method, url, **kwargs)
 
 
 def collect_integration_prerequisite_errors() -> list[str]:
@@ -120,37 +139,30 @@ def qdrant_headers() -> dict[str, str]:
 
 
 def chat_recall_collection_name() -> str:
-    return os.environ.get("FINANCEHUB_CHAT_RECALL_COLLECTION", "chat_messages").strip() or "chat_messages"
+    config = build_env_values(environ=os.environ)
+    return (
+        config.get("FINANCEHUB_CHAT_RECALL_COLLECTION", DEFAULT_CHAT_RECALL_COLLECTION_NAME).strip()
+        or DEFAULT_CHAT_RECALL_COLLECTION_NAME
+    )
 
 
 def ensure_chat_messages_qdrant_collection() -> None:
     """Idempotent: create collection + payload indexes (same as seed script)."""
-    base = qdrant_base_url()
+    config = build_env_values(environ=os.environ)
+    base = config.get("FINANCEHUB_CHAT_RECALL_QDRANT_URL", "").strip().rstrip("/")
     if not base:
         raise RuntimeError("FINANCEHUB_CHAT_RECALL_QDRANT_URL not set")
     collection = chat_recall_collection_name()
-    headers = qdrant_headers()
+    vector_size = resolve_chat_recall_vector_size(env=config)
     with httpx.Client(timeout=30.0) as client:
-        client.put(
-            f"{base}/collections/{collection}",
-            headers=headers,
-            json={"vectors": {"size": 1536, "distance": "Cosine"}},
-        ).raise_for_status()
-        for field_name, field_schema in (
-            ("user_id", "keyword"),
-            ("session_id", "keyword"),
-            ("created_at", "datetime"),
-        ):
-            index_resp = client.put(
-                f"{base}/collections/{collection}/index",
-                headers=headers,
-                json={"field_name": field_name, "field_schema": field_schema},
-            )
-            if index_resp.is_success:
-                continue
-            if index_resp.status_code == 409:
-                continue
-            index_resp.raise_for_status()
+        ensure_chat_recall_qdrant_collection(
+            base_url=base,
+            collection_name=collection,
+            api_key=config.get("FINANCEHUB_CHAT_RECALL_QDRANT_API_KEY"),
+            vector_size=vector_size,
+            http_client=client,
+            timeout_seconds=30.0,
+        )
 
 
 def clear_app_lru_caches() -> None:
