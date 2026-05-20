@@ -6,74 +6,98 @@ FinanceHub 是一个面向中国市场的投研与工具型 Web 应用：**React
 
 ### 多 Agent 推荐系统架构图
 
+核心协作方式：`RecommendationGraphRuntime` 用 LangGraph 维护共享状态，每个 Agent 只负责一个判断环节，把结构化结果写回状态后交给下一位 Agent 继续推理。
+
 ```mermaid
-flowchart TD
-    UI[前端推荐页 / 风险测评] --> API[FastAPI 推荐接口<br/>/api/recommendations/generate]
-    API --> Service[RecommendationService]
-    Service --> Runtime[RecommendationGraphRuntime<br/>LangGraph 状态机]
+sequenceDiagram
+    autonumber
+    participant UI as 前端推荐页
+    participant API as FastAPI 推荐接口
+    participant G as LangGraph 共享状态
+    participant P as 用户画像 Agent
+    participant M as 市场情报 Agent
+    participant R as 产品匹配 Agent
+    participant C as 合规风控 Agent
+    participant GM as 总协调 Agent
+    participant OUT as 响应组装
 
-    Runtime --> Profile[User Profile Analyst<br/>用户画像分析]
-    Profile --> Market[Market Intelligence Analyst<br/>市场情报分析]
-    Market --> Match[Product Match Expert<br/>产品匹配]
-    Match --> Compliance[Compliance Risk Officer<br/>合规与风险审查]
-    Compliance --> Manager[Manager Coordinator<br/>组合与解释汇总]
-    Manager --> Assembler[Response Assembler<br/>组装推荐响应]
-    Assembler --> UI
+    UI->>API: 提交风险测评、持仓/交易、用户意图
+    API->>G: 创建 RecommendationGraphState
 
-    CandidateScheduler[候选池定时刷新<br/>stock / fund / wealth] --> SnapshotCache[SnapshotCache / Redis]
-    SnapshotCache --> PrefetchedRepo[PrefetchedCandidateRepository]
-    PrefetchedRepo --> Runtime
+    Note over P,GM: RecommendationAgentRuntime 统一调用 LLM，并记录 agentTrace
 
-    MarketData[MarketDataService<br/>DoltHub / IndexData / Redis] --> Market
-    MarketNews[MarketNewsService] --> Market
-    ChatRecall[ChatHistoryRecallService<br/>历史偏好召回] --> Profile
-    ProductKnowledge[ProductKnowledgeRetrievalService<br/>产品知识 Qdrant] --> Match
-    ComplianceKnowledge[ComplianceKnowledgeRetrievalService<br/>合规知识 Qdrant] --> Compliance
-    ComplianceFacts[ComplianceFactsService] --> Compliance
-    AgentRuntime[RecommendationAgentRuntime<br/>OpenAI 兼容 LLM] --> Profile
-    AgentRuntime --> Market
-    AgentRuntime --> Match
-    AgentRuntime --> Compliance
-    AgentRuntime --> Manager
+    G->>P: 问卷画像 + 用户意图 + 历史聊天偏好
+    Note right of P: ChatHistoryRecallService 补充长期偏好
+    P-->>G: 风险层级、流动性、期限、回撤敏感度
 
-    Compliance -- approve / limited / blocked --> Manager
+    G->>M: 用户画像结论 + 市场数据请求
+    Note right of M: MarketDataService 与 MarketNewsService 提供行情和新闻证据
+    M-->>G: 市场情绪、配置立场、偏好/规避品类
+
+    G->>R: 画像 + 市场立场 + 候选产品池
+    Note right of R: PrefetchedCandidateRepository 提供 stock/fund/wealth 候选；产品知识 Qdrant 补证据
+    R-->>G: 推荐候选、排序、产品理由
+
+    G->>C: 候选组合 + 用户风险层级 + 产品证据
+    Note right of C: 合规知识 Qdrant 与 ComplianceFactsService 做适当性校验
+    C-->>G: 合规结论 approve / limited / blocked
+
+    alt approve 或 limited
+        G->>GM: 汇总画像、市场、产品、合规意见
+        GM-->>G: 最终组合说明、whyThisPlan、风险提示
+    else blocked
+        G->>GM: 汇总阻断原因
+        GM-->>G: 人工复核提示与阻断响应
+    end
+
+    G->>OUT: 组装 RecommendationResponse
+    OUT-->>UI: 返回推荐组合、解释、风险披露、agentTrace
 ```
 
 ### 财经助手架构图
 
+核心协作方式：`ChatAgent` 每次回复前先合并短期会话历史和长期偏好记忆，再进入 ReAct 循环；模型需要事实时发起工具调用，工具结果写回上下文后继续推理，最终用 SSE 流式返回并持久化助手回复。
+
 ```mermaid
-flowchart TD
-    ChatUI[前端 ChatWidget / ChatStateProvider] --> ChatAPI[FastAPI Chat Router<br/>/api/chat/sessions/*]
-    ChatAPI --> Auth[JWT Auth]
-    ChatAPI --> Store[ChatSessionStore<br/>Redis 或内存回退]
-    Store --> History[当前会话消息历史]
+sequenceDiagram
+    autonumber
+    participant UI as 前端 ChatWidget
+    participant API as Chat Router
+    participant S as 短期记忆<br/>ChatSessionStore
+    participant R as 长期记忆<br/>ChatHistoryRecallService
+    participant V as Qdrant<br/>chat_messages_v2
+    participant A as 财经助手 Agent<br/>ChatAgent
+    participant L as LLM
+    participant T as 金融工具
 
-    ChatAPI --> Recall[ChatHistoryRecallService]
-    Recall --> Embedding[Embedding Client]
-    Embedding --> ChatVectorStore[Qdrant chat_messages_v2]
-    ChatVectorStore --> Recall
-    Recall --> Context[历史偏好 System Context]
+    UI->>API: 发送用户消息
+    API->>S: 写入用户消息，读取当前会话历史
+    API-->>R: 后台索引用户消息
+    R->>V: embedding + preference/topic/symbol 元数据入库
 
-    History --> OpenAIMessages[OpenAI 消息序列]
-    Context --> OpenAIMessages
-    OpenAIMessages --> Agent[ChatAgent<br/>ReAct 流式工具调用]
-    Agent --> LLM[OpenAI 兼容 Chat Completion]
+    API->>R: 用当前问题 + 最近用户消息召回长期偏好
+    R->>V: 向量搜索并按偏好标签、主题、标的、时效重排
+    V-->>R: 返回相关历史片段
+    R-->>API: 生成历史偏好 System Context
 
-    Agent --> MarketTool[get_market_overview / search_stocks]
-    Agent --> NewsTool[get_market_news]
-    Agent --> FundamentalTool[analyze_fundamentals]
-    Agent --> RecommendTool[generate_recommendations]
+    API->>A: System Prompt + 长期偏好 + 当前会话历史
 
-    MarketTool --> MarketData[MarketDataService]
-    NewsTool --> MarketNews[MarketNewsService]
-    FundamentalTool --> Fundamental[FundamentalAnalysisService]
+    loop ReAct 工具循环，最多 MAX_TOOL_ROUNDS
+        A->>L: 请求下一步回复或工具调用
+        alt 模型需要实时事实
+            L-->>A: tool_call
+            A->>T: 调用工具
+            Note right of T: get_market_overview / search_stocks<br/>get_market_news<br/>analyze_fundamentals<br/>generate_recommendations
+            T-->>A: 工具 JSON 结果
+            A->>L: 将工具结果写回上下文继续推理
+        else 模型可以直接回答
+            L-->>A: assistant delta
+        end
+    end
 
-    LLM --> SSE[SSE: delta / tool_call / done / error]
-    SSE --> ChatUI
-    SSE --> PersistAssistant[持久化助手回复]
-    PersistAssistant --> Store
-
-    ChatAPI -.后台索引用户消息.-> Recall
+    A-->>API: SSE: delta / tool_call / done / error
+    API-->>UI: 流式展示回复和工具状态
+    API->>S: 完整助手回复落库
 ```
 
 ## 仓库结构
