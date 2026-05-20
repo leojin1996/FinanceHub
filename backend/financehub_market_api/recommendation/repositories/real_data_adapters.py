@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime
 from math import isfinite
+from typing import Protocol, TypeVar
 
 import akshare as ak
 
@@ -18,9 +19,10 @@ from financehub_market_api.watchlist import WATCHLIST
 DataRow = Mapping[str, object]
 DataFetcher = Callable[[], object]
 SymbolDataFetcher = Callable[[str], object]
-_DEFAULT_FUND_POOL_MAX_ITEMS = 20
-_DEFAULT_WEALTH_POOL_MAX_ITEMS = 20
-_PREMIUM_STOCK_POOL_MAX_ITEMS = 60
+T = TypeVar("T")
+_DEFAULT_FUND_POOL_MAX_ITEMS = 40
+_DEFAULT_WEALTH_POOL_MAX_ITEMS = 40
+_PREMIUM_STOCK_POOL_MAX_ITEMS = 120
 _STOCK_R4_WEEKLY_RANGE_THRESHOLD = 8.0
 _STOCK_R5_WEEKLY_RANGE_THRESHOLD = 18.0
 _STOCK_R4_DAILY_CHANGE_THRESHOLD = 4.0
@@ -244,17 +246,56 @@ def _candidate_to_detail_snapshot(
     )
 
 
-class BondFundCandidateAdapter:
-    """Fetches low-risk bond fund candidates from public AkShare data."""
+def _interleave_sequences(
+    sequences: Sequence[Sequence[T]],
+    *,
+    max_items: int,
+) -> list[T]:
+    iterators: list[Iterator[T]] = [iter(sequence) for sequence in sequences if sequence]
+    merged: list[T] = []
+    while iterators and len(merged) < max_items:
+        active_iterators: list[Iterator[T]] = []
+        for iterator in iterators:
+            if len(merged) >= max_items:
+                break
+            try:
+                merged.append(next(iterator))
+            except StopIteration:
+                continue
+            active_iterators.append(iterator)
+        iterators = active_iterators
+    return merged
 
+
+class FundCandidateProvider(Protocol):
+    def list_candidates(self, user_profile: UserProfile) -> list[CandidateProduct]:
+        ...
+
+
+class _PublicFundCandidateAdapter:
     def __init__(
         self,
-        fetcher: DataFetcher | None = None,
         *,
-        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
+        upstream_symbol: str,
+        fetcher: DataFetcher | None,
+        max_items: int,
+        candidate_id_prefix: str,
+        risk_level: str,
+        tags_zh: Sequence[str],
+        tags_en: Sequence[str],
+        rationale_template_zh: str,
+        rationale_template_en: str,
     ) -> None:
-        self._fetcher = fetcher or (lambda: ak.fund_open_fund_rank_em(symbol="债券型"))
+        self._fetcher = fetcher or (
+            lambda: ak.fund_open_fund_rank_em(symbol=upstream_symbol)
+        )
         self._max_items = max_items
+        self._candidate_id_prefix = candidate_id_prefix
+        self._risk_level = risk_level
+        self._tags_zh = list(tags_zh)
+        self._tags_en = list(tags_en)
+        self._rationale_template_zh = rationale_template_zh
+        self._rationale_template_en = rationale_template_en
 
     def list_candidates(self, user_profile: UserProfile) -> list[CandidateProduct]:
         del user_profile
@@ -281,21 +322,94 @@ class BondFundCandidateAdapter:
             as_of_date = _extract_date(row.get("日期"))
             candidates.append(
                 CandidateProduct(
-                    id=f"fund-{len(candidates) + 1:03d}",
+                    id=f"{self._candidate_id_prefix}-{code}",
                     category="fund",
                     code=code,
                     name_zh=name,
                     name_en=name,
-                    risk_level="R2",
-                    tags_zh=["债券型公募", "稳健底仓", "低风险优先"],
-                    tags_en=["Public bond fund", "Stable core", "Low-risk focused"],
-                    rationale_zh=f"基于公开债券基金数据筛选，作为稳健型底仓候选（数据日期：{as_of_date}）。",
-                    rationale_en=f"Selected from public bond-fund data as a stable core candidate (as of {as_of_date}).",
+                    risk_level=self._risk_level,
+                    tags_zh=list(self._tags_zh),
+                    tags_en=list(self._tags_en),
+                    rationale_zh=self._rationale_template_zh.format(
+                        as_of_date=as_of_date
+                    ),
+                    rationale_en=self._rationale_template_en.format(
+                        as_of_date=as_of_date
+                    ),
                     liquidity="T+1",
                 )
             )
 
         return candidates
+
+
+class BondFundCandidateAdapter(_PublicFundCandidateAdapter):
+    """Fetches low-risk bond fund candidates from public AkShare data."""
+
+    def __init__(
+        self,
+        fetcher: DataFetcher | None = None,
+        *,
+        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
+    ) -> None:
+        super().__init__(
+            upstream_symbol="债券型",
+            fetcher=fetcher,
+            max_items=max_items,
+            candidate_id_prefix="fund-bond",
+            risk_level="R2",
+            tags_zh=("债券型公募", "稳健底仓", "低风险优先"),
+            tags_en=("Public bond fund", "Stable core", "Low-risk focused"),
+            rationale_template_zh="基于公开债券基金数据筛选，作为稳健型底仓候选（数据日期：{as_of_date}）。",
+            rationale_template_en="Selected from public bond-fund data as a stable core candidate (as of {as_of_date}).",
+        )
+
+
+class EquityFundCandidateAdapter(_PublicFundCandidateAdapter):
+    """Fetches equity-fund candidates from public AkShare data."""
+
+    def __init__(
+        self,
+        fetcher: DataFetcher | None = None,
+        *,
+        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
+    ) -> None:
+        super().__init__(
+            upstream_symbol="股票型",
+            fetcher=fetcher,
+            max_items=max_items,
+            candidate_id_prefix="fund-equity",
+            risk_level="R4",
+            tags_zh=("股票型公募", "权益增强", "成长弹性"),
+            tags_en=("Public equity fund", "Equity upside", "Growth-oriented"),
+            rationale_template_zh="基于公开股票型基金数据筛选，作为成长型和进取型基金候选（数据日期：{as_of_date}）。",
+            rationale_template_en="Selected from public equity-fund data as a growth-oriented candidate (as of {as_of_date}).",
+        )
+
+
+class MultiSourceFundCandidateAdapter:
+    def __init__(
+        self,
+        *,
+        bond_adapter: FundCandidateProvider | None = None,
+        equity_adapter: FundCandidateProvider | None = None,
+        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
+    ) -> None:
+        self._bond_adapter = bond_adapter or BondFundCandidateAdapter(
+            max_items=max_items
+        )
+        self._equity_adapter = equity_adapter or EquityFundCandidateAdapter(
+            max_items=max_items
+        )
+        self._max_items = max_items
+
+    def list_candidates(self, user_profile: UserProfile) -> list[CandidateProduct]:
+        bond_candidates = self._bond_adapter.list_candidates(user_profile)
+        equity_candidates = self._equity_adapter.list_candidates(user_profile)
+        return _interleave_sequences(
+            [bond_candidates, equity_candidates],
+            max_items=self._max_items,
+        )
 
 
 class MoneyFundWealthProxyAdapter:
@@ -360,15 +474,27 @@ class MoneyFundWealthProxyAdapter:
             return ak.fund_money_fund_daily_em()
 
 
-class BondFundDetailAdapter:
+class _BaseFundDetailAdapter:
     def __init__(
         self,
-        adapter: BondFundCandidateAdapter | None = None,
         *,
-        trend_fetcher: SymbolDataFetcher | None = None,
+        adapter: FundCandidateProvider,
+        trend_fetcher: SymbolDataFetcher | None,
+        source: str,
+        provider_name: str,
+        summary_zh: str,
+        summary_en: str,
+        fit_for_profile_zh: str,
+        fit_for_profile_en: str,
     ) -> None:
-        self._adapter = adapter or BondFundCandidateAdapter()
+        self._adapter = adapter
         self._trend_fetcher = trend_fetcher or self._fetch_default_trend
+        self._source = source
+        self._provider_name = provider_name
+        self._summary_zh = summary_zh
+        self._summary_en = summary_en
+        self._fit_for_profile_zh = fit_for_profile_zh
+        self._fit_for_profile_en = fit_for_profile_en
 
     def list_product_details(self) -> list[ProductDetailSnapshot]:
         default_profile = UserProfile(
@@ -392,14 +518,16 @@ class BondFundDetailAdapter:
                 _candidate_to_detail_snapshot(
                     candidate,
                     as_of_date=datetime.now().strftime("%Y-%m-%d"),
-                    source="public_bond_fund_refresh",
-                    provider_name="Public bond fund universe",
-                    summary_zh="公开债券基金底仓候选，强调稳健与流动性。",
-                    summary_en="Public bond-fund candidate focused on stability and liquidity.",
+                    source=self._source,
+                    provider_name=self._provider_name,
+                    summary_zh=self._summary_zh,
+                    summary_en=self._summary_en,
                     chart_label_zh="近1月累计收益率",
                     chart_label_en="1M cumulative return",
                     chart=chart,
                     yield_metrics=yield_metrics,
+                    fit_for_profile_zh=self._fit_for_profile_zh,
+                    fit_for_profile_en=self._fit_for_profile_en,
                 )
             )
         return details
@@ -448,6 +576,65 @@ class BondFundDetailAdapter:
             for point in nav_points
         ]
         return cumulative_from_nav, cumulative_from_nav[-1].value
+
+
+class BondFundDetailAdapter(_BaseFundDetailAdapter):
+    def __init__(
+        self,
+        adapter: BondFundCandidateAdapter | None = None,
+        *,
+        trend_fetcher: SymbolDataFetcher | None = None,
+    ) -> None:
+        super().__init__(
+            adapter=adapter or BondFundCandidateAdapter(),
+            trend_fetcher=trend_fetcher,
+            source="public_bond_fund_refresh",
+            provider_name="Public bond fund universe",
+            summary_zh="公开债券基金底仓候选，强调稳健与流动性。",
+            summary_en="Public bond-fund candidate focused on stability and liquidity.",
+            fit_for_profile_zh="适合作为稳健底仓与波动缓冲。",
+            fit_for_profile_en="Fits as a steady core holding and volatility buffer.",
+        )
+
+
+class EquityFundDetailAdapter(_BaseFundDetailAdapter):
+    def __init__(
+        self,
+        adapter: EquityFundCandidateAdapter | None = None,
+        *,
+        trend_fetcher: SymbolDataFetcher | None = None,
+    ) -> None:
+        super().__init__(
+            adapter=adapter or EquityFundCandidateAdapter(),
+            trend_fetcher=trend_fetcher,
+            source="public_equity_fund_refresh",
+            provider_name="Public equity fund universe",
+            summary_zh="公开股票型基金候选，强调权益暴露与成长弹性。",
+            summary_en="Public equity-fund candidate focused on equity exposure and growth upside.",
+            fit_for_profile_zh="更适合作为成长型和进取型用户的基金配置。",
+            fit_for_profile_en="Fits growth and aggressive users as the fund sleeve.",
+        )
+
+
+class MultiSourceFundDetailAdapter:
+    def __init__(
+        self,
+        *,
+        bond_adapter: BondFundDetailAdapter | None = None,
+        equity_adapter: EquityFundDetailAdapter | None = None,
+        max_items: int = _DEFAULT_FUND_POOL_MAX_ITEMS,
+    ) -> None:
+        self._bond_adapter = bond_adapter or BondFundDetailAdapter()
+        self._equity_adapter = equity_adapter or EquityFundDetailAdapter()
+        self._max_items = max_items
+
+    def list_product_details(self) -> list[ProductDetailSnapshot]:
+        bond_details = self._bond_adapter.list_product_details()
+        equity_details = self._equity_adapter.list_product_details()
+        return _interleave_sequences(
+            [bond_details, equity_details],
+            max_items=self._max_items,
+        )
 
 
 class PublicWealthManagementDetailAdapter:

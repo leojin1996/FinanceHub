@@ -12,6 +12,7 @@ class ChatSession(BaseModel):
     title: str
     created_at: str
     updated_at: str
+    summary: str | None = None
 
 
 class ChatMessage(BaseModel):

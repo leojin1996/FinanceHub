@@ -50,10 +50,12 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-uvicorn financehub_market_api.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn financehub_market_api.main:app --reload --host 127.0.0.1 --port 8010
 ```
 
-默认监听 **http://127.0.0.1:8000**。交互式 API 文档：**http://127.0.0.1:8000/docs**。
+默认监听 **http://127.0.0.1:8010**（避免与本机其他常用服务抢占 **8000**）。交互式 API 文档：**http://127.0.0.1:8010/docs**。
+
+若必须以 **8000** 启动后端，请在仓库根目录创建 `.env.development.local`，设置 `VITE_FINANCEHUB_API=http://127.0.0.1:8000`，并把前端代理指向同一地址。
 
 ### 2. 初始化向量数据（首次）
 
@@ -65,13 +67,27 @@ python -m scripts.seed_product_knowledge_collection
 python -m scripts.seed_compliance_knowledge_collection
 ```
 
-推荐候选池刷新（也可配置为定时任务，参考 `scripts/refresh_recommendation_candidate_pool.crontab.example`）：
+推荐候选池刷新：
 
 ```bash
 python -m scripts.refresh_recommendation_candidate_pool
 ```
 
-> 不执行上述脚本时 API 仍可启动，但聊天召回与推荐等功能将不可用。
+后端启动后会自动在应用内触发推荐候选池刷新任务：
+
+- `stock`：每 10 分钟刷新一次
+- `fund`：每 60 分钟刷新一次
+- `wealth_management`：每 60 分钟刷新一次
+
+首次启动默认会立即执行一次刷新。若需要关闭或调整周期，可通过环境变量配置：
+
+- `FINANCEHUB_RECOMMENDATION_REFRESH_ENABLED`
+- `FINANCEHUB_RECOMMENDATION_REFRESH_RUN_ON_STARTUP`
+- `FINANCEHUB_RECOMMENDATION_REFRESH_STOCK_INTERVAL_SECONDS`
+- `FINANCEHUB_RECOMMENDATION_REFRESH_FUND_INTERVAL_SECONDS`
+- `FINANCEHUB_RECOMMENDATION_REFRESH_WEALTH_INTERVAL_SECONDS`
+
+上面的脚本仍可用于手动补刷新或排查问题。
 
 ### 3. 前端（Vite）
 
@@ -82,7 +98,7 @@ npm install
 npm run dev
 ```
 
-开发服务器会把以 **`/api` 开头的请求**代理到 **http://127.0.0.1:8000**（见 `vite.config.ts`），因此需先启动后端，前端才能正常调用登录、行情、推荐、聊天等接口。
+开发服务器会把以 **`/api` 开头的请求**代理到 **`VITE_FINANCEHUB_API`**（默认见根目录 `.env.development`，现为 **http://127.0.0.1:8010**），因此需先启动后端且端口一致，前端才能正常调用登录、行情、推荐、聊天等接口。
 
 生产构建与预览：
 
@@ -116,4 +132,4 @@ pytest
 | `upstreams/` | 上游数据源适配（DoltHub、IndexData 等） |
 | `cache.py` | 市场快照缓存（Redis） |
 
-运行中查看完整 HTTP 契约与模型：**http://127.0.0.1:8000/docs**（Swagger）。
+运行中查看完整 HTTP 契约与模型：**http://127.0.0.1:8010/docs**（Swagger）。

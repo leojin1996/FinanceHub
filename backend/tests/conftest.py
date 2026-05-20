@@ -67,3 +67,15 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "integration: real Redis, MySQL, Qdrant, OpenAI (set FINANCEHUB_INTEGRATION_TESTS=1)",
     )
+
+
+@pytest.fixture(autouse=True)
+def _disable_recommendation_refresh_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financehub_market_api.main import get_recommendation_refresh_scheduler
+
+    monkeypatch.setenv("FINANCEHUB_RECOMMENDATION_REFRESH_ENABLED", "0")
+    get_recommendation_refresh_scheduler.cache_clear()
+    yield
+    get_recommendation_refresh_scheduler.cache_clear()

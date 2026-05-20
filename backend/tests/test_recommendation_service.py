@@ -14,7 +14,16 @@ from financehub_market_api.recommendation.intelligence import MarketIntelligence
 from financehub_market_api.recommendation.graph.runtime import RecommendationGraphRuntime
 from financehub_market_api.recommendation.repositories import StaticCandidateRepository
 from financehub_market_api.recommendation.rules import map_user_profile
+from financehub_market_api.recommendation.schemas import (
+    AllocationPlan,
+    CandidateProduct,
+    ExecutionTrace,
+    FinalRecommendation,
+    MarketContext,
+    RiskReviewResult,
+)
 from financehub_market_api.recommendation.services import RecommendationService as DomainRecommendationService
+from financehub_market_api.recommendation.services.assembler import assemble_domain_recommendation_response
 from financehub_market_api.recommendations import RecommendationService
 
 
@@ -195,6 +204,53 @@ def test_conservative_profile_zeroes_stock_allocation_when_no_stock_candidates_s
     assert response.recommendationStatus == "limited"
     assert response.complianceReview is not None
     assert response.sections.stocks.items == []
+    assert "股票" not in response.summary.subtitleZh
+    assert "stock" not in response.summary.subtitleEn.lower()
+    assert "equity" not in response.summary.subtitleEn.lower()
+    assert all("股票" not in notice for notice in response.riskNotice.zh)
+    assert all("stock" not in notice.lower() for notice in response.riskNotice.en)
+
+
+def test_domain_assembler_prunes_stock_section_when_stock_allocation_is_zero() -> None:
+    recommendation = FinalRecommendation(
+        user_profile=map_user_profile("aggressive"),
+        market_context=MarketContext(
+            summary_zh="市场信号偏谨慎。",
+            summary_en="Market signals are cautious.",
+        ),
+        allocation_plan=AllocationPlan(fund=35, wealth_management=65, stock=0),
+        aggressive_allocation_plan=AllocationPlan(fund=35, wealth_management=65, stock=0),
+        fund_items=[],
+        wealth_management_items=[],
+        stock_items=[
+            CandidateProduct(
+                id="stock-hidden-001",
+                category="stock",
+                code="600036",
+                name_zh="不应展示的股票候选",
+                name_en="Hidden Equity Candidate",
+                rationale_zh="股票配置为 0 时不应展示该候选。",
+                rationale_en="This stock should be hidden because the stock allocation is zero.",
+                risk_level="R3",
+                tags_zh=["不展示"],
+                tags_en=["Hidden"],
+            )
+        ],
+        risk_review_result=RiskReviewResult(review_status="pass"),
+        why_this_plan_zh=["当前更适合先控制组合波动。"],
+        why_this_plan_en=["This plan should first control portfolio volatility."],
+        execution_trace=ExecutionTrace(),
+    )
+
+    response = assemble_domain_recommendation_response(recommendation)
+
+    assert response.allocationDisplay.stock == 0
+    assert response.sections.stocks.items == []
+    assert "股票" not in response.summary.subtitleZh
+    assert "stock" not in response.summary.subtitleEn.lower()
+    assert "equity" not in response.summary.subtitleEn.lower()
+    assert all("股票" not in notice for notice in response.riskNotice.zh)
+    assert all("stock" not in notice.lower() for notice in response.riskNotice.en)
 
 
 def test_balanced_profile_returns_grouped_sections_and_aggressive_option() -> None:

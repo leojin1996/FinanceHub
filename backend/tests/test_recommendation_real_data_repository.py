@@ -7,8 +7,12 @@ from dataclasses import replace
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
     BondFundDetailAdapter,
     BondFundCandidateAdapter,
+    EquityFundCandidateAdapter,
+    EquityFundDetailAdapter,
     MoneyFundWealthProxyDetailAdapter,
     MoneyFundWealthProxyAdapter,
+    MultiSourceFundCandidateAdapter,
+    MultiSourceFundDetailAdapter,
     PremiumStockDetailAdapter,
     PublicWealthManagementDetailAdapter,
 )
@@ -114,11 +118,37 @@ def test_bond_fund_adapter_maps_public_rows_into_candidate_products() -> None:
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.category == "fund"
-    assert candidate.id == "fund-001"
+    assert candidate.id == "fund-bond-000001"
     assert candidate.code == "000001"
     assert candidate.name_zh == "稳健债券A"
     assert candidate.name_en == "稳健债券A"
     assert candidate.risk_level == "R2"
+
+
+def test_equity_fund_adapter_maps_public_rows_into_candidate_products() -> None:
+    adapter = EquityFundCandidateAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "161725",
+                    "基金简称": "招商中证白酒指数A",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.6789",
+                    "手续费": "0.15%",
+                }
+            ]
+        )
+    )
+
+    candidates = adapter.list_candidates(map_user_profile("growth"))
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.category == "fund"
+    assert candidate.id == "fund-equity-161725"
+    assert candidate.code == "161725"
+    assert candidate.risk_level == "R4"
+    assert "股票型公募" in candidate.tags_zh
 
 
 def test_bond_fund_adapter_keeps_broader_default_candidate_pool() -> None:
@@ -130,13 +160,70 @@ def test_bond_fund_adapter_keeps_broader_default_candidate_pool() -> None:
             "单位净值": "1.1234",
             "手续费": "0.15%",
         }
-        for index in range(25)
+        for index in range(45)
     ]
     adapter = BondFundCandidateAdapter(fetcher=lambda: FakeFrame(rows))
 
     candidates = adapter.list_candidates(map_user_profile("balanced"))
 
-    assert len(candidates) == 20
+    assert len(candidates) == 40
+
+
+def test_multi_source_fund_adapter_interleaves_equity_and_bond_candidates() -> None:
+    bond_adapter = BondFundCandidateAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "100001",
+                    "基金简称": "稳健债券01",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.0234",
+                    "手续费": "0.15%",
+                },
+                {
+                    "基金代码": "100002",
+                    "基金简称": "稳健债券02",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.0266",
+                    "手续费": "0.15%",
+                },
+            ]
+        )
+    )
+    equity_adapter = EquityFundCandidateAdapter(
+        fetcher=lambda: FakeFrame(
+            [
+                {
+                    "基金代码": "200001",
+                    "基金简称": "成长权益01",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.5234",
+                    "手续费": "0.15%",
+                },
+                {
+                    "基金代码": "200002",
+                    "基金简称": "成长权益02",
+                    "日期": "2026-04-02",
+                    "单位净值": "1.5566",
+                    "手续费": "0.15%",
+                },
+            ]
+        )
+    )
+    adapter = MultiSourceFundCandidateAdapter(
+        bond_adapter=bond_adapter,
+        equity_adapter=equity_adapter,
+        max_items=4,
+    )
+
+    candidates = adapter.list_candidates(map_user_profile("balanced"))
+
+    assert [candidate.id for candidate in candidates] == [
+        "fund-bond-100001",
+        "fund-equity-200001",
+        "fund-bond-100002",
+        "fund-equity-200002",
+    ]
 
 
 def test_money_fund_proxy_adapter_maps_public_rows_into_candidate_products() -> None:
@@ -176,13 +263,13 @@ def test_money_fund_proxy_adapter_keeps_broader_default_candidate_pool() -> None
             "年化收益率7日": "1.88%",
             "手续费": "0.00%",
         }
-        for index in range(25)
+        for index in range(45)
     ]
     adapter = MoneyFundWealthProxyAdapter(fetcher=lambda: FakeFrame(rows))
 
     candidates = adapter.list_candidates(map_user_profile("balanced"))
 
-    assert len(candidates) == 20
+    assert len(candidates) == 40
 
 
 def test_money_fund_proxy_adapter_accepts_daily_fallback_columns() -> None:
@@ -222,13 +309,13 @@ def test_public_wealth_management_detail_adapter_keeps_broader_default_pool() ->
             "近1月年化收益率": "2.10%",
             "管理费": "0.25%",
         }
-        for index in range(25)
+        for index in range(45)
     ]
     adapter = PublicWealthManagementDetailAdapter(fetcher=lambda: FakeFrame(rows))
 
     details = adapter.list_product_details()
 
-    assert len(details) == 20
+    assert len(details) == 40
 
 
 def test_bond_fund_detail_adapter_populates_chart_and_yield_metrics() -> None:
@@ -273,6 +360,69 @@ def test_bond_fund_detail_adapter_populates_chart_and_yield_metrics() -> None:
         "2026-04-09",
     ]
     assert detail.chart[-1].value == 1.56
+
+
+def test_multi_source_fund_detail_adapter_combines_equity_and_bond_details() -> None:
+    bond_detail_adapter = BondFundDetailAdapter(
+        adapter=BondFundCandidateAdapter(
+            fetcher=lambda: FakeFrame(
+                [
+                    {
+                        "基金代码": "000001",
+                        "基金简称": "稳健债券A",
+                        "日期": "2026-04-02",
+                        "单位净值": "1.1234",
+                        "手续费": "0.15%",
+                    }
+                ]
+            )
+        ),
+        trend_fetcher=lambda symbol: FakeFrame(
+            [
+                {"日期": "2026-04-01", "累计收益率": "0.12"},
+                {"日期": "2026-04-09", "累计收益率": "1.56"},
+            ]
+        )
+        if symbol == "000001"
+        else FakeFrame([]),
+    )
+    equity_detail_adapter = EquityFundDetailAdapter(
+        adapter=EquityFundCandidateAdapter(
+            fetcher=lambda: FakeFrame(
+                [
+                    {
+                        "基金代码": "161725",
+                        "基金简称": "招商中证白酒指数A",
+                        "日期": "2026-04-02",
+                        "单位净值": "1.6789",
+                        "手续费": "0.15%",
+                    }
+                ]
+            )
+        ),
+        trend_fetcher=lambda symbol: FakeFrame(
+            [
+                {"日期": "2026-04-01", "累计收益率": "0.42"},
+                {"日期": "2026-04-09", "累计收益率": "3.18"},
+            ]
+        )
+        if symbol == "161725"
+        else FakeFrame([]),
+    )
+    detail_adapter = MultiSourceFundDetailAdapter(
+        bond_adapter=bond_detail_adapter,
+        equity_adapter=equity_detail_adapter,
+        max_items=2,
+    )
+
+    details = detail_adapter.list_product_details()
+
+    assert [detail.id for detail in details] == [
+        "fund-bond-000001",
+        "fund-equity-161725",
+    ]
+    assert details[0].source == "public_bond_fund_refresh"
+    assert details[1].source == "public_equity_fund_refresh"
 
 
 def test_money_fund_detail_adapter_populates_annualized_return_and_chart() -> None:
@@ -360,17 +510,17 @@ def test_premium_stock_detail_adapter_batches_large_snapshot_requests() -> None:
 def test_premium_stock_detail_adapter_keeps_broader_default_stock_pool() -> None:
     rows = [
         {"代码": f"{600000 + index}", "名称": f"股票{index:03d}"}
-        for index in range(90)
+        for index in range(140)
     ]
     adapter = PremiumStockDetailAdapter(
         constituent_fetchers=(("CSI300", lambda: FakeFrame(rows)),),
         price_snapshot_fetcher=_build_stock_snapshot,
-        max_universe_size=90,
+        max_universe_size=140,
     )
 
     details = adapter.list_product_details()
 
-    assert len(details) == 60
+    assert len(details) == 120
 
 
 def test_premium_stock_detail_adapter_assigns_stock_risk_levels_from_volatility() -> None:
@@ -479,6 +629,47 @@ def test_premium_stock_detail_adapter_fetches_batches_concurrently() -> None:
 
     assert len(details) == 5
     assert max_in_flight >= 2
+
+
+def test_real_repository_prioritizes_equity_funds_for_growth_profile() -> None:
+    repository = RealDataCandidateRepository(
+        fund_adapter=MultiSourceFundCandidateAdapter(
+            bond_adapter=BondFundCandidateAdapter(
+                fetcher=lambda: FakeFrame(
+                    [
+                        {
+                            "基金代码": "000001",
+                            "基金简称": "稳健债券A",
+                            "日期": "2026-04-02",
+                            "单位净值": "1.1234",
+                            "手续费": "0.15%",
+                        }
+                    ]
+                )
+            ),
+            equity_adapter=EquityFundCandidateAdapter(
+                fetcher=lambda: FakeFrame(
+                    [
+                        {
+                            "基金代码": "161725",
+                            "基金简称": "成长权益A",
+                            "日期": "2026-04-02",
+                            "单位净值": "1.6789",
+                            "手续费": "0.15%",
+                        }
+                    ]
+                )
+            ),
+            max_items=2,
+        )
+    )
+
+    candidates = repository.list_funds(map_user_profile("growth"))
+
+    assert [candidate.id for candidate in candidates] == [
+        "fund-equity-161725",
+        "fund-bond-000001",
+    ]
 
 
 def test_real_repository_falls_back_to_static_funds_on_adapter_failure() -> None:

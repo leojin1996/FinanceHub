@@ -343,11 +343,11 @@ a {
 }
 
 .market-overview__metric-change--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-down);
 }
 
 .market-overview__metric-change--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-up);
 }
 
 .market-overview__metric-change--neutral {
@@ -419,11 +419,11 @@ a {
 }
 
 .market-overview__rank-change--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-down);
 }
 
 .market-overview__rank-change--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-up);
 }
 
 .market-overview__rank-change--neutral {
@@ -539,11 +539,11 @@ a {
 }
 
 .indices-card__value--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-up);
 }
 
 .indices-card__value--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-down);
 }
 
 .indices-card__value--neutral {
@@ -556,11 +556,11 @@ a {
 }
 
 .indices-card__change--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-up);
 }
 
 .indices-card__change--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-down);
 }
 
 .indices-card__change--neutral {
@@ -574,11 +574,11 @@ a {
 }
 
 .indices-card__chart--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-up);
 }
 
 .indices-card__chart--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-down);
 }
 
 .indices-card__chart--neutral {
@@ -657,11 +657,11 @@ a {
 }
 
 .stocks-change--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-up);
 }
 
 .stocks-change--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-down);
 }
 
 .stocks-change--neutral {
@@ -695,11 +695,11 @@ a {
 }
 
 .stocks-sparkline--positive {
-  color: var(--fh-positive);
+  color: var(--fh-market-up);
 }
 
 .stocks-sparkline--negative {
-  color: var(--fh-negative);
+  color: var(--fh-market-down);
 }
 
 .stocks-sparkline--neutral {

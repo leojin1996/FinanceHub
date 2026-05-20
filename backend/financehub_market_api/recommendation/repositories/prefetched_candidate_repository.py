@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from financehub_market_api.cache import SnapshotCache, build_snapshot_cache
 from financehub_market_api.recommendation.candidate_pool.cache import CandidatePoolSnapshotCache
+from financehub_market_api.recommendation.fund_preferences import (
+    order_fund_candidates_for_profile,
+)
 from financehub_market_api.recommendation.repositories.candidate_repository import CandidateRepository
 from financehub_market_api.recommendation.repositories.static_repository import StaticCandidateRepository
 from financehub_market_api.recommendation.schemas import CandidateProduct, UserProfile
@@ -31,7 +34,11 @@ class PrefetchedCandidateRepository(CandidateRepository):
         )
 
     def list_funds(self, user_profile: UserProfile) -> list[CandidateProduct]:
-        return self._list_category("fund", user_profile)
+        products = self._list_category("fund", user_profile)
+        return order_fund_candidates_for_profile(
+            products,
+            risk_profile=user_profile.risk_profile,
+        )
 
     def list_wealth_management(self, user_profile: UserProfile) -> list[CandidateProduct]:
         return self._list_category("wealth_management", user_profile)

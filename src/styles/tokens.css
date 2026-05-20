@@ -12,6 +12,8 @@
   --fh-success: #15995f;
   --fh-positive: #0f7a4c;
   --fh-negative: #d14343;
+  --fh-market-up: #d14343;
+  --fh-market-down: #0f7a4c;
   --fh-tag-bg: rgba(47, 110, 232, 0.12);
   --fh-tag-text: #1d4db5;
   --fh-radius-lg: 16px;

@@ -12,8 +12,8 @@ from financehub_market_api.recommendation.candidate_pool.schemas import (
     ProductDetailSnapshot,
 )
 from financehub_market_api.recommendation.repositories.real_data_adapters import (
-    BondFundDetailAdapter,
     MoneyFundWealthProxyDetailAdapter,
+    MultiSourceFundDetailAdapter,
     PremiumStockDetailAdapter,
     PublicWealthManagementDetailAdapter,
 )
@@ -97,7 +97,7 @@ class RecommendationCandidatePoolRefresher:
         return cls(
             candidate_pool_cache=candidate_pool_cache,
             product_detail_cache=product_detail_cache,
-            fund_provider=BondFundDetailAdapter(),
+            fund_provider=MultiSourceFundDetailAdapter(),
             wealth_provider=wealth_provider,
             stock_provider=PremiumStockDetailAdapter(),
         )

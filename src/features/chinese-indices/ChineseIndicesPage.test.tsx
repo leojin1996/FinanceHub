@@ -24,7 +24,11 @@ describe("ChineseIndicesPage", () => {
       value: localStorageMock,
     });
     window.localStorage.clear();
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+    window.localStorage.setItem("financehub.token", "demo-token");
 
     vi.stubGlobal(
       "ResizeObserver",
@@ -213,13 +217,29 @@ describe("ChineseIndicesPage", () => {
         12,
       );
 
-      expect(screen.getByText("▲ +7.30 (+0.23%)")).toHaveClass("indices-card__change--positive");
-      expect(screen.getByText("▼ -3.60 (-0.17%)")).toHaveClass("indices-card__change--negative");
+      const positiveChange = screen.getByText("▲ +7.30 (+0.23%)");
+      const negativeChange = screen.getByText("▼ -3.60 (-0.17%)");
+      const positiveValue = screen.getByText("3,245.50");
+      const negativeValue = screen.getByText("10,422.90");
+      const neutralValue = screen.getByText("988.60");
+
+      expect(positiveChange).toHaveClass("indices-card__change--positive");
+      expect(negativeChange).toHaveClass("indices-card__change--negative");
+      expect(positiveChange).toHaveAttribute("data-market-move", "up");
+      expect(negativeChange).toHaveAttribute("data-market-move", "down");
       expect(screen.getByText("000001.SH • 中国市场")).toBeInTheDocument();
       expect(screen.getByText("399001.SZ • 中国市场")).toBeInTheDocument();
-      expect(screen.getByText("3,245.50")).toHaveClass("indices-card__value--positive");
-      expect(screen.getByText("10,422.90")).toHaveClass("indices-card__value--negative");
-      expect(screen.getByText("988.60")).toHaveClass("indices-card__value--neutral");
+      expect(positiveValue).toHaveClass("indices-card__value--positive");
+      expect(negativeValue).toHaveClass("indices-card__value--negative");
+      expect(neutralValue).toHaveClass("indices-card__value--neutral");
+      expect(positiveValue).toHaveAttribute("data-market-move", "up");
+      expect(negativeValue).toHaveAttribute("data-market-move", "down");
+      expect(neutralValue).toHaveAttribute("data-market-move", "flat");
+
+      const charts = screen.getAllByTestId("indices-card-chart");
+      expect(charts[0]).toHaveAttribute("data-market-move", "up");
+      expect(charts[1]).toHaveAttribute("data-market-move", "down");
+      expect(charts[3]).toHaveAttribute("data-market-move", "flat");
     },
     15_000,
   );

@@ -8,7 +8,8 @@ export const zhCNMessages: Messages = {
     errorEmailRegistered: "该邮箱已注册，请直接登录。",
     errorInvalidCredentials: "邮箱或密码错误，请重试。",
     errorGeneric: "操作失败，请稍后重试。",
-    errorNetwork: "无法连接服务器。请确认后端已启动（默认 http://127.0.0.1:8000），且前端开发代理指向该地址。",
+    errorNetwork:
+      "无法连接服务器。请确认后端已启动（默认 http://127.0.0.1:8010），且根目录 .env.development 中的 VITE_FINANCEHUB_API 与后端端口一致。",
     highlightMarkets: "追踪市场",
     highlightData: "真实数据",
     highlightInsights: "风险洞察",

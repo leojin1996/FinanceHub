@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from financehub_market_api.recommendation.fund_preferences import fund_preference_rank
 from financehub_market_api.recommendation.schemas import CandidateProduct
 
 _HIGH_LIQUIDITY_LABELS = {"T+0", "T+1", "开放式"}
@@ -30,6 +31,7 @@ class ProductRetrievalService:
         query_text: str,
         candidates: list[CandidateProduct],
         allowed_risk_levels: set[str],
+        risk_profile: str | None = None,
         preferred_categories: set[str] | None = None,
         blocked_categories: set[str] | None = None,
         liquidity_preference: str | None = None,
@@ -82,6 +84,10 @@ class ProductRetrievalService:
             eligible_candidates,
             key=lambda candidate: (
                 0 if candidate.category in preferred_categories else 1,
+                fund_preference_rank(
+                    candidate,
+                    risk_profile=risk_profile or "",
+                ),
                 hit_positions.get(candidate.id, len(hit_positions) + input_positions[candidate.id]),
                 input_positions[candidate.id],
             ),
@@ -97,6 +103,7 @@ class ProductRetrievalService:
         query_text: str,
         candidates: list[CandidateProduct],
         allowed_risk_levels: set[str],
+        risk_profile: str | None = None,
         preferred_categories: set[str] | None = None,
         blocked_categories: set[str] | None = None,
         liquidity_preference: str | None = None,
@@ -106,6 +113,7 @@ class ProductRetrievalService:
             query_text=query_text,
             candidates=candidates,
             allowed_risk_levels=allowed_risk_levels,
+            risk_profile=risk_profile,
             preferred_categories=preferred_categories,
             blocked_categories=blocked_categories,
             liquidity_preference=liquidity_preference,

@@ -156,6 +156,7 @@ function StockTrendSparkline({
     <svg
       aria-hidden="true"
       className={`stocks-sparkline stocks-sparkline--${tone}`}
+      data-market-move={tone === "positive" ? "up" : tone === "negative" ? "down" : "flat"}
       preserveAspectRatio="none"
       viewBox="0 0 100 28"
     >
@@ -265,7 +266,10 @@ export function ChineseStocksPage() {
                           <td className="stocks-board__name">{row.name}</td>
                           <td className="stocks-board__numeric">{formatPrice(row.priceValue, locale)}</td>
                           <td className="stocks-board__numeric">
-                            <span className={`stocks-change stocks-change--${tone}`}>
+                            <span
+                              className={`stocks-change stocks-change--${tone}`}
+                              data-market-move={tone === "positive" ? "up" : tone === "negative" ? "down" : "flat"}
+                            >
                               <span aria-hidden="true" className="stocks-change__arrow">
                                 {arrow}
                               </span>

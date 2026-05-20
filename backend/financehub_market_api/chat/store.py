@@ -12,6 +12,9 @@ from redis.exceptions import RedisError
 from .models import ChatMessage, ChatSession
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_SESSION_TITLE = "New Chat"
+DEFAULT_SESSION_TITLES = {DEFAULT_SESSION_TITLE, "未命名对话"}
+SESSION_SUMMARY_MAX_CHARS = 42
 
 
 class ChatStoreError(Exception):
@@ -62,6 +65,26 @@ def _decode_zset_member(raw: bytes) -> str:
     return raw.decode("utf-8")
 
 
+def _normalize_summary_source(text: str) -> str:
+    return " ".join(text.split()).strip()
+
+
+def _truncate_summary(text: str) -> str:
+    if len(text) <= SESSION_SUMMARY_MAX_CHARS:
+        return text
+    return f"{text[: SESSION_SUMMARY_MAX_CHARS - 1].rstrip()}…"
+
+
+def _build_session_summary(messages: list[ChatMessage]) -> str | None:
+    for message in messages:
+        if message.role != "user":
+            continue
+        normalized = _normalize_summary_source(message.content)
+        if normalized:
+            return _truncate_summary(normalized)
+    return None
+
+
 class ChatSessionStore:
     def __init__(self, redis_client: ChatRedisLike) -> None:
         self._redis = redis_client
@@ -78,7 +101,7 @@ class ChatSessionStore:
             msg = f"Failed to update session timestamp in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
 
-    def create_session(self, user_id: str, title: str = "New Chat") -> ChatSession:
+    def create_session(self, user_id: str, title: str = DEFAULT_SESSION_TITLE) -> ChatSession:
         session_id = uuid.uuid4().hex
         created_at = _utc_iso_now()
         updated_at = created_at
@@ -102,6 +125,7 @@ class ChatSessionStore:
             title=title,
             created_at=created_at,
             updated_at=updated_at,
+            summary=None,
         )
 
     def list_sessions(self, user_id: str, limit: int = 50) -> list[ChatSession]:
@@ -138,17 +162,50 @@ class ChatSessionStore:
         title_b = raw.get(b"title")
         created_b = raw.get(b"created_at")
         updated_b = raw.get(b"updated_at")
+        summary_b = raw.get(b"summary")
         if title_b is None or created_b is None or updated_b is None:
             return None
         try:
+            summary = summary_b.decode("utf-8") if summary_b is not None else None
+            if summary == "":
+                summary = None
+            if summary is None:
+                summary = _build_session_summary(self.get_messages(session_id))
             return ChatSession(
                 id=session_id,
                 title=title_b.decode("utf-8"),
                 created_at=created_b.decode("utf-8"),
                 updated_at=updated_b.decode("utf-8"),
+                summary=summary,
             )
         except UnicodeDecodeError:
             return None
+
+    def _refresh_session_summary(self, session_id: str) -> None:
+        session_key = _session_hash_key(session_id)
+        try:
+            raw = self._redis.hgetall(session_key)
+        except RedisError as exc:
+            msg = f"Failed to load chat session before summary refresh: {exc}"
+            raise ChatStoreError(msg, session_id=session_id) from exc
+        if not raw:
+            msg = f"Unknown chat session: {session_id}"
+            raise ValueError(msg)
+
+        summary = _build_session_summary(self.get_messages(session_id))
+        if summary is None:
+            return
+
+        title_b = raw.get(b"title")
+        current_title = title_b.decode("utf-8") if title_b is not None else DEFAULT_SESSION_TITLE
+        mapping = {b"summary": summary.encode("utf-8")}
+        if current_title in DEFAULT_SESSION_TITLES:
+            mapping[b"title"] = summary.encode("utf-8")
+        try:
+            self._redis.hset(session_key, mapping=mapping)
+        except RedisError as exc:
+            msg = f"Failed to update chat session summary in Redis: {exc}"
+            raise ChatStoreError(msg, session_id=session_id) from exc
 
     def delete_session(self, session_id: str, user_id: str) -> bool:
         session_key = _session_hash_key(session_id)
@@ -188,6 +245,7 @@ class ChatSessionStore:
         except RedisError as exc:
             msg = f"Failed to append chat message in Redis: {exc}"
             raise ChatStoreError(msg, session_id=session_id) from exc
+        self._refresh_session_summary(session_id)
         self._touch_session(session_id, user_id)
 
     def get_messages(self, session_id: str) -> list[ChatMessage]:
@@ -249,7 +307,7 @@ class InMemoryChatSessionStore:
         recent = self._user_recent.get(user_id, [])
         self._user_recent[user_id] = [session_id] + [x for x in recent if x != session_id]
 
-    def create_session(self, user_id: str, title: str = "New Chat") -> ChatSession:
+    def create_session(self, user_id: str, title: str = DEFAULT_SESSION_TITLE) -> ChatSession:
         session_id = uuid.uuid4().hex
         now = _utc_iso_now()
         session = ChatSession(
@@ -257,6 +315,7 @@ class InMemoryChatSessionStore:
             title=title,
             created_at=now,
             updated_at=now,
+            summary=None,
         )
         self._sessions[session_id] = session
         self._messages[session_id] = []
@@ -297,6 +356,13 @@ class InMemoryChatSessionStore:
             msg = f"Unknown chat session: {session_id}"
             raise ValueError(msg)
         self._messages.setdefault(session_id, []).append(message)
+        summary = _build_session_summary(self._messages[session_id])
+        if summary is not None:
+            session = self._sessions[session_id]
+            title = summary if session.title in DEFAULT_SESSION_TITLES else session.title
+            self._sessions[session_id] = session.model_copy(
+                update={"summary": summary, "title": title},
+            )
         self._touch_session(session_id, user_id)
 
     def get_messages(self, session_id: str) -> list[ChatMessage]:

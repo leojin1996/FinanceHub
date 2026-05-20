@@ -30,6 +30,35 @@ function streamErrorMessage(data: Record<string, unknown>): string {
   return "The assistant could not complete this message. Please try again.";
 }
 
+const DEFAULT_SESSION_TITLES = new Set(["New Chat", "未命名对话"]);
+const SESSION_SUMMARY_MAX_CHARS = 42;
+
+function summarizeChatMessage(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (normalized.length <= SESSION_SUMMARY_MAX_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, SESSION_SUMMARY_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function applySessionSummaryFromMessage(session: ChatSession, content: string): ChatSession {
+  const existingSummary = session.summary?.trim();
+  if (existingSummary) {
+    return session;
+  }
+
+  const summary = summarizeChatMessage(content);
+  if (!summary) {
+    return session;
+  }
+
+  return {
+    ...session,
+    summary,
+    title: DEFAULT_SESSION_TITLES.has(session.title) ? summary : session.title,
+  };
+}
+
 export function ChatStateProvider({ children }: ChatStateProviderProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -175,6 +204,11 @@ export function ChatStateProvider({ children }: ChatStateProviderProps) {
       setError(null);
       setIsStreaming(true);
       setMessages((prev) => [...prev, userMessage]);
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionId ? applySessionSummaryFromMessage(session, trimmed) : session,
+        ),
+      );
 
       let accumulated = "";
 

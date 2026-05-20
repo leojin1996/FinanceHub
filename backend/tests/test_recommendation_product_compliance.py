@@ -100,6 +100,48 @@ def test_product_retrieval_service_prioritizes_market_preferred_categories() -> 
     assert [candidate.id for candidate in candidates] == ["fund-001", "wm-001", "stock-001"]
 
 
+def test_product_retrieval_service_prioritizes_equity_funds_for_growth_profiles() -> None:
+    service = ProductRetrievalService(vector_store=_StaticVectorStore())
+
+    candidates = service.retrieve(
+        query_text="长期成长配置",
+        candidates=[
+            CandidateProduct(
+                id="fund-bond-000001",
+                category="fund",
+                name_zh="稳健债券精选",
+                name_en="Stable Bond Select",
+                risk_level="R2",
+                tags_zh=["债券型公募", "稳健底仓"],
+                tags_en=["Public bond fund", "Stable core"],
+                rationale_zh="适合作为稳健配置底仓。",
+                rationale_en="Suitable as a stable core allocation.",
+                liquidity="T+1",
+            ),
+            CandidateProduct(
+                id="fund-equity-161725",
+                category="fund",
+                name_zh="成长权益精选",
+                name_en="Growth Equity Select",
+                risk_level="R4",
+                tags_zh=["股票型公募", "成长弹性"],
+                tags_en=["Public equity fund", "Growth-oriented"],
+                rationale_zh="适合作为成长型基金配置。",
+                rationale_en="Suitable as a growth-oriented fund allocation.",
+                liquidity="T+1",
+            ),
+        ],
+        allowed_risk_levels={"R1", "R2", "R3", "R4"},
+        risk_profile="growth",
+        preferred_categories={"fund"},
+    )
+
+    assert [candidate.id for candidate in candidates] == [
+        "fund-equity-161725",
+        "fund-bond-000001",
+    ]
+
+
 def test_product_retrieval_service_filters_blocked_categories_and_low_liquidity_items() -> None:
     service = ProductRetrievalService(vector_store=_PreferenceVectorStore())
 

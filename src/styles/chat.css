@@ -137,6 +137,70 @@
   white-space: pre-wrap;
 }
 
+.chat-bubble__content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  white-space: normal;
+}
+
+.chat-bubble__paragraph {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.chat-bubble__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-bubble__section-title {
+  color: var(--fh-text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.chat-bubble__section--primary {
+  padding: 10px 10px 10px 12px;
+  border-left: 3px solid var(--fh-accent);
+  border-radius: var(--fh-radius-sm);
+  background: rgba(48, 111, 236, 0.08);
+}
+
+.chat-bubble__section--secondary {
+  padding-top: 2px;
+}
+
+.chat-bubble__list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-bubble__list-item {
+  position: relative;
+  padding-left: 16px;
+  line-height: 1.55;
+}
+
+.chat-bubble__list-item::before {
+  position: absolute;
+  top: 0.75em;
+  left: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fh-accent);
+  content: "";
+  transform: translateY(-50%);
+}
+
 .chat-bubble--user {
   align-self: flex-end;
   background: var(--fh-accent);
@@ -149,6 +213,7 @@
   background: var(--fh-bg-overlay);
   color: var(--fh-text-primary);
   border-bottom-left-radius: 4px;
+  min-width: min(280px, 85%);
 }
 
 /* Typing indicator */
@@ -280,8 +345,8 @@
 
 .chat-session-drawer__item {
   display: flex;
-  align-items: center;
-  padding: 10px 12px;
+  align-items: flex-start;
+  padding: 12px;
   border-radius: var(--fh-radius-sm);
   cursor: pointer;
   gap: 8px;
@@ -296,12 +361,39 @@
   color: var(--fh-accent);
 }
 
-.chat-session-drawer__item-title {
+.chat-session-drawer__item-copy {
   flex: 1;
-  font-size: 14px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-session-drawer__item-title,
+.chat-session-drawer__item-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-session-drawer__item-title {
+  color: var(--fh-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chat-session-drawer__item.is-active .chat-session-drawer__item-title {
+  color: var(--fh-accent);
+}
+
+.chat-session-drawer__item-summary {
+  color: var(--fh-text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.chat-session-drawer__item.is-active .chat-session-drawer__item-summary {
+  color: var(--fh-text-muted);
 }
 
 .chat-session-drawer__item-delete {

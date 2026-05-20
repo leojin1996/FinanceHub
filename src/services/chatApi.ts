@@ -5,6 +5,7 @@ export interface ChatSession {
   title: string;
   created_at: string;
   updated_at: string;
+  summary?: string | null;
 }
 
 export interface ChatMessage {

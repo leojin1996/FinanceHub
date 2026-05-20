@@ -141,7 +141,11 @@ describe("MarketDataProvider", () => {
       value: localStorageMock,
     });
     window.localStorage.clear();
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+    window.localStorage.setItem("financehub.token", "demo-token");
 
     vi.mocked(fetchIndices).mockResolvedValue(buildIndices());
     vi.mocked(fetchStocks).mockResolvedValue(buildStocks());

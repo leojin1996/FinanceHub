@@ -27,6 +27,18 @@ FUNDS: list[CandidateProduct] = [
         rationale_en="Balances bond defense with equity upside and fits well as a middle-layer allocation.",
         liquidity="T+1",
     ),
+    CandidateProduct(
+        id="fund-003",
+        category="fund",
+        name_zh="易方达消费行业股票",
+        name_en="E Fund Consumer Sector Equity",
+        risk_level="R4",
+        tags_zh=["股票型", "成长弹性", "权益增强"],
+        tags_en=["Equity fund", "Growth-oriented", "Equity upside"],
+        rationale_zh="作为权益基金候选，更适合成长型与进取型用户承接基金仓位中的进攻部分。",
+        rationale_en="Works as an equity-fund candidate for the more offensive part of the fund sleeve in growth and aggressive profiles.",
+        liquidity="T+1",
+    ),
 ]
 
 WEALTH_MANAGEMENT: list[CandidateProduct] = [

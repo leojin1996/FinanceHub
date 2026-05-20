@@ -145,7 +145,11 @@ describe("ChineseStocksPage", () => {
       value: localStorageMock,
     });
     window.localStorage.clear();
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+    window.localStorage.setItem("financehub.token", "demo-token");
 
     vi.stubGlobal(
       "fetch",
@@ -230,6 +234,20 @@ describe("ChineseStocksPage", () => {
 
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     expect(screen.getByText("-2.3%")).toBeInTheDocument();
+  });
+
+  it("marks stock changes and sparklines with China-market red-up and green-down semantics", async () => {
+    renderPage();
+
+    const positiveChange = await screen.findByText("+6.2%");
+    const negativeChange = screen.getByText("-2.3%");
+    const positiveRow = screen.getByText("宁德时代").closest("tr");
+    const negativeRow = screen.getByText("贵州茅台").closest("tr");
+
+    expect(positiveChange.closest(".stocks-change")).toHaveAttribute("data-market-move", "up");
+    expect(negativeChange.closest(".stocks-change")).toHaveAttribute("data-market-move", "down");
+    expect(positiveRow?.querySelector(".stocks-sparkline")).toHaveAttribute("data-market-move", "up");
+    expect(negativeRow?.querySelector(".stocks-sparkline")).toHaveAttribute("data-market-move", "down");
   });
 
   it("renders volume and amount with en-US compact suffixes after locale switch", async () => {

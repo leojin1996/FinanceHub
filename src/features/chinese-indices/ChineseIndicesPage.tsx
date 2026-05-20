@@ -26,6 +26,18 @@ function formatChangeLabel(changeValue: number, changePercent: number): string {
   return `${arrow} ${formatSignedNumber(changeValue)} (${formatSignedNumber(changePercent)}%)`;
 }
 
+function getMarketMove(tone: "positive" | "negative" | "neutral"): "up" | "down" | "flat" {
+  if (tone === "positive") {
+    return "up";
+  }
+
+  if (tone === "negative") {
+    return "down";
+  }
+
+  return "flat";
+}
+
 function buildTightCardDomain(series: TrendPoint[]): [number, number] {
   if (series.length === 0) {
     return [0, 1];
@@ -95,6 +107,7 @@ export function ChineseIndicesPage() {
         <section className="chinese-indices__layout">
           {data.cards.map((card) => {
             const axisTicks = buildCardTicks(card.trendSeries);
+            const marketMove = getMarketMove(card.tone);
 
             return (
               <article className="panel indices-card" key={card.code}>
@@ -106,13 +119,22 @@ export function ChineseIndicesPage() {
                 <p className="indices-card__description">{card.description}</p>
               </header>
 
-              <p className={`indices-card__value indices-card__value--${card.tone}`}>{card.value}</p>
-              <p className={`indices-card__change indices-card__change--${card.tone}`}>
+              <p
+                className={`indices-card__value indices-card__value--${card.tone}`}
+                data-market-move={marketMove}
+              >
+                {card.value}
+              </p>
+              <p
+                className={`indices-card__change indices-card__change--${card.tone}`}
+                data-market-move={marketMove}
+              >
                 {formatChangeLabel(card.changeValue, card.changePercent)}
               </p>
 
               <div
                 className={`indices-card__chart indices-card__chart--${card.tone}`}
+                data-market-move={marketMove}
                 data-testid="indices-card-chart"
               >
                 <ResponsiveContainer height={120} width="100%">

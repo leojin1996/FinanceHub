@@ -30,6 +30,18 @@ function classifyChange(value: number): "positive" | "negative" | "neutral" {
   return "neutral";
 }
 
+function getMarketMove(value: number): "up" | "down" | "flat" {
+  if (value > 0) {
+    return "up";
+  }
+
+  if (value < 0) {
+    return "down";
+  }
+
+  return "flat";
+}
+
 function formatSignedNumber(value: number, fractionDigits = 2): string {
   const absolute = Math.abs(value).toFixed(fractionDigits);
 
@@ -116,6 +128,7 @@ function MarketRankCard({
       <ul className="market-overview__rank-list">
         {items.map((item) => {
           const tone = classifyChange(item.changePercent);
+          const marketMove = getMarketMove(item.changePercent);
           return (
             <li className="market-overview__rank-row" key={`${item.code}-${item.name}`}>
               <div className="market-overview__rank-name">
@@ -123,7 +136,10 @@ function MarketRankCard({
                 <strong>{item.name}</strong>
               </div>
               <span className="market-overview__rank-price">{item.price}</span>
-              <span className={`market-overview__rank-change market-overview__rank-change--${tone}`}>
+              <span
+                className={`market-overview__rank-change market-overview__rank-change--${tone}`}
+                data-market-move={marketMove}
+              >
                 {buildChangeDisplay(item.change, item.changePercent)}
               </span>
             </li>
@@ -175,15 +191,21 @@ export function MarketOverviewContent() {
         />
       ) : null}
       <section className="market-overview__metrics">
-        {data.metrics.slice(0, 3).map((metric) => (
-          <article className="panel market-overview__metric-card" key={metric.label}>
-            <p className="market-overview__metric-label">{metric.label}</p>
-            <strong className="market-overview__metric-value">{metric.value}</strong>
-            <span className={`market-overview__metric-change market-overview__metric-change--${metric.tone}`}>
-              {formatMetricChange(metric.changeValue, metric.changePercent)}
-            </span>
-          </article>
-        ))}
+        {data.metrics.slice(0, 3).map((metric) => {
+          const marketMove = getMarketMove(metric.changePercent);
+          return (
+            <article className="panel market-overview__metric-card" key={metric.label}>
+              <p className="market-overview__metric-label">{metric.label}</p>
+              <strong className="market-overview__metric-value">{metric.value}</strong>
+              <span
+                className={`market-overview__metric-change market-overview__metric-change--${metric.tone}`}
+                data-market-move={marketMove}
+              >
+                {formatMetricChange(metric.changeValue, metric.changePercent)}
+              </span>
+            </article>
+          );
+        })}
       </section>
 
       <section className="panel market-overview__chart-card">

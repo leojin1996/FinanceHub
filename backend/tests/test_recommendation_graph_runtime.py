@@ -1612,6 +1612,60 @@ def test_graph_runtime_stores_product_evidence_bundles_in_retrieval_context() ->
     )
 
 
+def test_graph_runtime_prioritizes_equity_funds_for_growth_profiles() -> None:
+    class _GrowthFundVectorStore:
+        def search(self, query_text: str, *, limit: int) -> list[dict[str, object]]:
+            del query_text
+            return [
+                {"id": "fund-bond-000001", "score": 0.99},
+                {"id": "fund-equity-161725", "score": 0.95},
+            ][:limit]
+
+    runtime = _build_runtime(
+        agent_runtime=_SubsetSelectionRuntime(),
+        product_candidates=[
+            CandidateProduct(
+                id="fund-bond-000001",
+                category="fund",
+                name_zh="稳健债券A",
+                name_en="Stable Bond A",
+                risk_level="R2",
+                tags_zh=["债券型公募", "稳健底仓"],
+                tags_en=["Public bond fund", "Stable core"],
+                rationale_zh="债券基金候选",
+                rationale_en="Bond fund candidate",
+                liquidity="T+1",
+            ),
+            CandidateProduct(
+                id="fund-equity-161725",
+                category="fund",
+                name_zh="成长权益A",
+                name_en="Growth Equity A",
+                risk_level="R4",
+                tags_zh=["股票型公募", "成长弹性"],
+                tags_en=["Public equity fund", "Growth-oriented"],
+                rationale_zh="成长型基金候选",
+                rationale_en="Growth fund candidate",
+                liquidity="T+1",
+            ),
+        ],
+        product_retrieval_service=ProductRetrievalService(
+            vector_store=_GrowthFundVectorStore()
+        ),
+    )
+
+    final_state = runtime.run(
+        _build_generation_request("growth", user_intent_text="我想做长期成长配置")
+    )
+
+    retrieval_context = final_state["retrieval_context"]
+    assert retrieval_context is not None
+    assert [item.product_id for item in retrieval_context.candidates] == [
+        "fund-equity-161725",
+        "fund-bond-000001",
+    ]
+
+
 def test_graph_runtime_injects_product_evidence_into_product_match_prompt_context() -> None:
     runtime_double = _RecordingAgentRuntime()
     runtime = _build_runtime(

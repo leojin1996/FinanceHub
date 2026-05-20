@@ -36,6 +36,36 @@ def _verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 
+def _mysql_operational_hint(exc: OperationalError) -> str | None:
+    """Map common PyMySQL errno values to actionable messages (dev ergonomics)."""
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return None
+    args = getattr(orig, "args", ())
+    if len(args) < 2 or not isinstance(args[0], int):
+        return None
+    errno, msg = args[0], args[1]
+    if errno == 1142:
+        return (
+            "MySQL user has no CREATE privilege on `financehub` (errno 1142). "
+            "Run as admin: "
+            "`GRANT ALL PRIVILEGES ON financehub.* TO 'test'@'localhost'; FLUSH PRIVILEGES;` "
+            "(adjust user/host to match FINANCEHUB_MYSQL_URL), then restart the API."
+        )
+    if errno == 1146:
+        return (
+            "A required table is missing (errno 1146). Fix MySQL privileges so the API can run "
+            "`create_tables()` on startup, then restart."
+        )
+    if errno in (1045, 2003, 2005):
+        return (
+            "Cannot reach MySQL or login was refused. Check that the server is running and "
+            "FINANCEHUB_MYSQL_URL credentials match."
+        )
+    _ = msg  # logged via LOGGER.exception above
+    return None
+
+
 def _create_token(user: User) -> str:
     expire_hours = int(os.environ.get("FINANCEHUB_JWT_EXPIRE_HOURS", "24"))
     payload = {
@@ -74,13 +104,14 @@ def register(
     except OperationalError as exc:
         db.rollback()
         LOGGER.exception("Database error during register")
+        fallback = (
+            "Database unavailable. Ensure MySQL is running, database `financehub` exists, "
+            "and credentials match FINANCEHUB_MYSQL_URL (default: test/test123 on "
+            "localhost:3306 — mysql+pymysql://test:test123@localhost:3306/financehub)."
+        )
         raise HTTPException(
             status_code=503,
-            detail=(
-                "Database unavailable. Ensure MySQL is running, database `financehub` exists, "
-                "and credentials match FINANCEHUB_MYSQL_URL (default: test/test123 on "
-                "localhost:3306 — mysql+pymysql://test:test123@localhost:3306/financehub)."
-            ),
+            detail=_mysql_operational_hint(exc) or fallback,
         ) from exc
 
     token = _create_token(user)

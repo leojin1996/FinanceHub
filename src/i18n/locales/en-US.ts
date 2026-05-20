@@ -9,7 +9,7 @@ export const enUSMessages: Messages = {
     errorInvalidCredentials: "Invalid email or password. Please try again.",
     errorGeneric: "Something went wrong. Please try again later.",
     errorNetwork:
-      "Cannot reach the server. Make sure the API is running (default http://127.0.0.1:8000) and the dev proxy targets it.",
+      "Cannot reach the server. Make sure the API is running (default http://127.0.0.1:8010) and VITE_FINANCEHUB_API in .env.development matches it.",
     highlightMarkets: "Market focus",
     highlightData: "Live data",
     highlightInsights: "Risk insights",

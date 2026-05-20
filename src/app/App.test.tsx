@@ -55,6 +55,20 @@ function buildCachedOverviewPayload() {
   };
 }
 
+function persistAuthenticatedSession() {
+  window.localStorage.setItem(
+    "financehub.session",
+    JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+  );
+  window.localStorage.setItem("financehub.token", "demo-token");
+}
+
+async function submitDemoLogin(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText("邮箱地址"), "demo@financehub.com");
+  await user.type(screen.getByLabelText("密码"), "demo-password");
+  await user.click(screen.getByRole("button", { name: "登录" }));
+}
+
 describe("App routing shell", () => {
   beforeEach(() => {
     const localStorageMock = createStorageMock();
@@ -69,6 +83,18 @@ describe("App routing shell", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+
+        if (url.endsWith("/api/auth/login")) {
+          return jsonResponse({
+            access_token: "demo-token",
+            token_type: "bearer",
+            user: {
+              created_at: "2026-04-01T00:00:00+00:00",
+              email: "demo@financehub.com",
+              id: "demo-user",
+            },
+          });
+        }
 
         if (url.endsWith("/api/market-overview")) {
           return jsonResponse({
@@ -356,7 +382,7 @@ describe("App routing shell", () => {
     "enforces the five-route Chinese shell contract and navigation paths",
     async () => {
       window.history.pushState({}, "", "/");
-      window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+      persistAuthenticatedSession();
       const user = userEvent.setup();
 
       render(<App />);
@@ -404,7 +430,7 @@ describe("App routing shell", () => {
 
   it("renders the top navigation in Chinese by default and switches nav chrome to English", async () => {
     window.history.pushState({}, "", "/");
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     const user = userEvent.setup();
 
     render(<App />);
@@ -429,7 +455,7 @@ describe("App routing shell", () => {
 
   it("updates shell copy when switching locale with i18n catalogs", async () => {
     window.history.pushState({}, "", "/risk-assessment");
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     const user = userEvent.setup();
 
     render(<App />);
@@ -444,7 +470,7 @@ describe("App routing shell", () => {
     expect(screen.getByRole("button", { name: "Logout" })).toBeInTheDocument();
   });
 
-  it("redirects unauthenticated users to login and returns them to the requested route after demo sign-in", async () => {
+  it("redirects unauthenticated users to login and returns them to the requested route after sign-in", async () => {
     window.history.pushState({}, "", "/stocks");
     const user = userEvent.setup();
 
@@ -453,7 +479,7 @@ describe("App routing shell", () => {
     expect(screen.getByRole("heading", { name: "欢迎来到 FinanceHub" })).toBeInTheDocument();
     expect(screen.getByLabelText("邮箱地址")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "体验 Demo 账户" }));
+    await submitDemoLogin(user);
 
     expect(await screen.findByRole("heading", { name: "中国股票" })).toBeInTheDocument();
     expect(screen.getByText("demo@financehub.com")).toBeInTheDocument();
@@ -467,7 +493,7 @@ describe("App routing shell", () => {
 
     expect(screen.getByRole("heading", { name: "欢迎来到 FinanceHub" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "体验 Demo 账户" }));
+    await submitDemoLogin(user);
 
     expect(await screen.findByRole("heading", { name: "中国股票" })).toBeInTheDocument();
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
@@ -480,7 +506,7 @@ describe("App routing shell", () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "体验 Demo 账户" }));
+    await submitDemoLogin(user);
     expect(await screen.findByRole("heading", { name: "中国股票" })).toBeInTheDocument();
 
     firstRender.unmount();
@@ -492,7 +518,7 @@ describe("App routing shell", () => {
   });
 
   it("loads protected routes directly on cold start when a valid session is already persisted", () => {
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     window.history.pushState({}, "", "/stocks");
 
     render(<App />);
@@ -501,9 +527,24 @@ describe("App routing shell", () => {
     expect(screen.getByRole("heading", { name: "中国股票" })).toBeInTheDocument();
   });
 
+  it("clears a persisted session without a token and redirects home to login", () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+
+    render(<App />);
+
+    expect(window.localStorage.getItem("financehub.session")).toBeNull();
+    expect(window.location.pathname).toBe("/login");
+    expect(screen.getByRole("heading", { name: "欢迎来到 FinanceHub" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "市场概览" })).not.toBeInTheDocument();
+  });
+
   it("clears persisted session and redirects to login when logging out from the top navigation", async () => {
     window.history.pushState({}, "", "/");
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     const user = userEvent.setup();
 
     render(<App />);
@@ -517,7 +558,7 @@ describe("App routing shell", () => {
 
   it("shows localized login actions after logout and supports switching login copy to English", async () => {
     window.history.pushState({}, "", "/recommendations");
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     const user = userEvent.setup();
 
     render(<App />);
@@ -528,13 +569,13 @@ describe("App routing shell", () => {
 
     expect(await screen.findByRole("heading", { name: "欢迎来到 FinanceHub" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "登录" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "体验 Demo 账户" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "没有账户？去注册" })).toBeInTheDocument();
 
     await user.selectOptions(screen.getByRole("combobox"), "en-US");
 
     expect(await screen.findByRole("heading", { name: "Welcome to FinanceHub" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign In" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Try Demo Account" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Don't have an account? Register" })).toBeInTheDocument();
   });
 
   it("does not expose a hardcoded English label for login highlights", () => {
@@ -556,7 +597,7 @@ describe("App routing shell", () => {
 
   it("shows cached market content immediately after app restart before network resolves", () => {
     window.history.pushState({}, "", "/");
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    persistAuthenticatedSession();
     window.localStorage.setItem(
       "financehub.market.overview",
       JSON.stringify({

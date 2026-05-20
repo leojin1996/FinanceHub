@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from .auth.database import create_tables
 from .auth.dependencies import AuthenticatedUser, get_current_user
 from .auth.router import auth_router
-from .cache import build_snapshot_cache
+from .cache import SnapshotCache, build_snapshot_cache
 from .chat.router import chat_router
 from .models import (
     IndicesResponse,
@@ -21,7 +21,12 @@ from .models import (
     RecommendationResponse,
     StocksResponse,
 )
+from .recommendation.candidate_pool.scheduler import (
+    RecommendationCandidatePoolScheduler,
+    build_recommendation_candidate_pool_scheduler_from_env,
+)
 from .recommendation.graph.runtime import RecommendationGraphRuntime
+from .recommendation.repositories import PrefetchedCandidateRepository
 from .recommendation.services import ProductDetailService
 from .recommendations import RecommendationService
 from .service import DataUnavailableError, MarketDataService
@@ -33,12 +38,17 @@ LOGGER = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    scheduler = get_recommendation_refresh_scheduler()
     try:
         create_tables()
         LOGGER.info("FinanceHub API started — database tables verified")
     except Exception:
         LOGGER.warning("Could not create database tables — will retry on first request", exc_info=True)
-    yield
+    await scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
 
 
 app = FastAPI(title="FinanceHub Market API", lifespan=lifespan)
@@ -48,11 +58,23 @@ app.include_router(chat_router)
 
 
 @lru_cache(maxsize=1)
+def get_snapshot_cache() -> SnapshotCache:
+    return build_snapshot_cache()
+
+
+@lru_cache(maxsize=1)
 def get_market_data_service() -> MarketDataService:
     return MarketDataService(
         stock_client=DoltHubClient(),
         index_client=IndexDataClient(),
-        cache=build_snapshot_cache(),
+        cache=get_snapshot_cache(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_recommendation_refresh_scheduler() -> RecommendationCandidatePoolScheduler:
+    return build_recommendation_candidate_pool_scheduler_from_env(
+        snapshot_cache=get_snapshot_cache()
     )
 
 
@@ -60,6 +82,9 @@ def get_market_data_service() -> MarketDataService:
 def get_recommendation_service() -> RecommendationService:
     return RecommendationService(
         graph_runtime=RecommendationGraphRuntime.with_default_services(
+            repository=PrefetchedCandidateRepository.with_default_cache(
+                snapshot_cache=get_snapshot_cache()
+            ),
             use_ai_agents=True
         )
     )
@@ -67,7 +92,7 @@ def get_recommendation_service() -> RecommendationService:
 
 @lru_cache(maxsize=1)
 def get_product_detail_service() -> ProductDetailService:
-    return ProductDetailService.with_default_cache()
+    return ProductDetailService.with_default_cache(snapshot_cache=get_snapshot_cache())
 
 
 def _normalize_recommendation_payload(

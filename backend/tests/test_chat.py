@@ -213,6 +213,37 @@ def test_add_message_and_get_messages_roundtrip() -> None:
     assert messages[1].content == "hello!"
 
 
+def test_session_summary_is_derived_from_first_user_message() -> None:
+    store = _make_store()
+    session = store.create_session(_TEST_USER_ID)
+
+    store.add_message(
+        session.id,
+        ChatMessage(
+            id=uuid.uuid4().hex,
+            role="user",
+            content="帮我分析一下宁德时代最近的走势，以及还能不能继续关注",
+            created_at="2026-04-13T00:00:00+00:00",
+        ),
+        _TEST_USER_ID,
+    )
+    store.add_message(
+        session.id,
+        ChatMessage(
+            id=uuid.uuid4().hex,
+            role="assistant",
+            content="可以，从趋势、估值和行业景气度看。",
+            created_at="2026-04-13T00:00:01+00:00",
+        ),
+        _TEST_USER_ID,
+    )
+
+    listed = store.list_sessions(_TEST_USER_ID)
+
+    assert listed[0].summary == "帮我分析一下宁德时代最近的走势，以及还能不能继续关注"
+    assert listed[0].title == "帮我分析一下宁德时代最近的走势，以及还能不能继续关注"
+
+
 def test_add_message_raises_for_unknown_session() -> None:
     store = _make_store()
     msg = ChatMessage(
@@ -312,6 +343,30 @@ def test_list_sessions_endpoint(_override_dependencies: ChatSessionStore) -> Non
 
     body = resp.json()
     assert len(body["sessions"]) == 2
+
+
+def test_list_sessions_endpoint_includes_session_summary(
+    _override_dependencies: ChatSessionStore,
+) -> None:
+    store = _override_dependencies
+    session = store.create_session(_TEST_USER_ID)
+    store.add_message(
+        session.id,
+        ChatMessage(
+            id=uuid.uuid4().hex,
+            role="user",
+            content="帮我总结一下今天A股市场和新能源板块机会",
+            created_at="2026-04-13T00:00:00+00:00",
+        ),
+        _TEST_USER_ID,
+    )
+    client = TestClient(app)
+
+    resp = client.get("/api/chat/sessions")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions"][0]["summary"] == "帮我总结一下今天A股市场和新能源板块机会"
 
 
 def test_get_messages_returns_404_for_unknown_session(

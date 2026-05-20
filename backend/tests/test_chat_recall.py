@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import httpx
@@ -114,7 +115,7 @@ def test_build_chat_message_metadata_extracts_preference_tags_and_fingerprint() 
 
     metadata = build_chat_message_metadata(
         content="我更看重流动性，希望一年内随时能用钱，最多接受小幅回撤。",
-        created_at="2026-04-16T08:00:00+00:00",
+        created_at=(datetime.now(UTC) - timedelta(days=10)).isoformat(),
     )
 
     assert metadata.content_normalized

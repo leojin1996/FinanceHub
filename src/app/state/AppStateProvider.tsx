@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { RecommendationResponse } from "../../services/chinaMarketApi";
 import type { RiskAssessmentResult } from "../../features/risk-assessment/risk-scoring";
-import { clearStoredToken } from "../../services/authApi";
+import { clearStoredToken, getStoredToken } from "../../services/authApi";
 
 import {
   AppStateContext,
@@ -68,7 +68,7 @@ function readInitialSessionState(): InitialSessionState {
   }
 
   const parsedSession = parseSession(rawSession);
-  if (parsedSession) {
+  if (parsedSession && getStoredToken()) {
     return { cleanupInvalidStoredSession: false, session: parsedSession };
   }
 
@@ -105,6 +105,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     } catch {
       // Ignore storage removal failures and fall back to signed-out state.
     }
+    clearStoredToken();
   }, [cleanupInvalidStoredSession]);
 
   const setRecommendationCacheEntry = (key: string, value: RecommendationResponse) => {

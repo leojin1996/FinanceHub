@@ -42,19 +42,101 @@ _PRODUCT_LOOKUP = {
 }
 
 
+def _summary_subtitle_for_allocation(allocation: AllocationDisplay) -> tuple[str, str]:
+    if allocation.stock > 0:
+        return DEFAULT_SUMMARY_SUBTITLE_ZH, DEFAULT_SUMMARY_SUBTITLE_EN
+    if allocation.fund > 0 and allocation.wealthManagement > 0:
+        return (
+            "以稳健资产打底，优先配置基金与银行理财，等待更清晰的进攻信号。",
+            "Build the base with steadier assets, prioritizing funds and wealth management until clearer risk-taking signals emerge.",
+        )
+    if allocation.fund > 0:
+        return (
+            "以基金配置为核心，先控制组合波动并保留调整空间。",
+            "Use funds as the core while controlling portfolio volatility and preserving room to adjust.",
+        )
+    if allocation.wealthManagement > 0:
+        return (
+            "以银行理财配置为核心，优先兼顾稳定性与流动性。",
+            "Use wealth management as the core while prioritizing stability and liquidity.",
+        )
+    return (
+        "当前条件不足以形成可执行配置，请等待人工复核后再决策。",
+        "Current conditions are insufficient for an executable allocation; wait for manual review before acting.",
+    )
+
+
+def _risk_notice_for_allocation(allocation: AllocationDisplay) -> tuple[list[str], list[str]]:
+    zh: list[str] = []
+    en: list[str] = []
+    if allocation.fund > 0 or allocation.wealthManagement > 0:
+        zh.append(RISK_NOTICE_ZH[0])
+        en.append(RISK_NOTICE_EN[0])
+    if allocation.stock > 0:
+        zh.append(RISK_NOTICE_ZH[1])
+        en.append(RISK_NOTICE_EN[1])
+    if not zh:
+        zh.append("当前推荐未形成可执行配置，请等待人工复核后再决策。")
+        en.append("This result did not form an executable allocation. Wait for manual review before acting.")
+    return zh, en
+
+
+def _section_for_allocation(
+    section: RecommendationSection,
+    allocation_value: int,
+) -> RecommendationSection:
+    if allocation_value > 0:
+        return section
+    return section.model_copy(update={"items": []})
+
+
+def _sections_for_allocation_display(
+    sections: RecommendationSections,
+    allocation: AllocationDisplay,
+) -> RecommendationSections:
+    return RecommendationSections(
+        funds=_section_for_allocation(sections.funds, allocation.fund),
+        wealthManagement=_section_for_allocation(
+            sections.wealthManagement,
+            allocation.wealthManagement,
+        ),
+        stocks=_section_for_allocation(sections.stocks, allocation.stock),
+    )
+
+
 def assemble_domain_recommendation_response(
     recommendation: FinalRecommendation,
     *,
     include_aggressive_option: bool = True,
 ) -> RecommendationResponse:
     profile = recommendation.user_profile
+    allocation_display = recommendation.allocation_plan.to_display()
+    subtitle_zh, subtitle_en = _summary_subtitle_for_allocation(allocation_display)
+    risk_notice_zh, risk_notice_en = _risk_notice_for_allocation(allocation_display)
+    raw_sections = RecommendationSections(
+        funds=RecommendationSection(
+            titleZh="基金推荐",
+            titleEn="Fund ideas",
+            items=[item.to_api_model() for item in recommendation.fund_items],
+        ),
+        wealthManagement=RecommendationSection(
+            titleZh="银行理财推荐",
+            titleEn="Wealth management ideas",
+            items=[item.to_api_model() for item in recommendation.wealth_management_items],
+        ),
+        stocks=RecommendationSection(
+            titleZh="股票增强",
+            titleEn="Equity boost",
+            items=[item.to_api_model() for item in recommendation.stock_items],
+        ),
+    )
 
     return RecommendationResponse(
         summary=RecommendationSummary(
             titleZh=f"适合您的{profile.label_zh}配置建议",
             titleEn=f"A {profile.label_en} plan that fits you",
-            subtitleZh=DEFAULT_SUMMARY_SUBTITLE_ZH,
-            subtitleEn=DEFAULT_SUMMARY_SUBTITLE_EN,
+            subtitleZh=subtitle_zh,
+            subtitleEn=subtitle_en,
         ),
         profileSummary=LocalizedText(
             zh=f"您的测评结果更接近{profile.label_zh}，适合先控制回撤，再追求稳步增值。",
@@ -64,24 +146,8 @@ def assemble_domain_recommendation_response(
             zh=recommendation.market_context.summary_zh,
             en=recommendation.market_context.summary_en,
         ),
-        allocationDisplay=recommendation.allocation_plan.to_display(),
-        sections=RecommendationSections(
-            funds=RecommendationSection(
-                titleZh="基金推荐",
-                titleEn="Fund ideas",
-                items=[item.to_api_model() for item in recommendation.fund_items],
-            ),
-            wealthManagement=RecommendationSection(
-                titleZh="银行理财推荐",
-                titleEn="Wealth management ideas",
-                items=[item.to_api_model() for item in recommendation.wealth_management_items],
-            ),
-            stocks=RecommendationSection(
-                titleZh="股票增强",
-                titleEn="Equity boost",
-                items=[item.to_api_model() for item in recommendation.stock_items],
-            ),
-        ),
+        allocationDisplay=allocation_display,
+        sections=_sections_for_allocation_display(raw_sections, allocation_display),
         aggressiveOption=(
             RecommendationOption(
                 titleZh=AGGRESSIVE_OPTION_TITLES[0],
@@ -94,8 +160,8 @@ def assemble_domain_recommendation_response(
             else None
         ),
         riskNotice=LocalizedTextList(
-            zh=list(RISK_NOTICE_ZH),
-            en=list(RISK_NOTICE_EN),
+            zh=risk_notice_zh,
+            en=risk_notice_en,
         ),
         whyThisPlan=LocalizedTextList(
             zh=list(recommendation.why_this_plan_zh),
@@ -342,7 +408,15 @@ def assemble_graph_recommendation_response(
             "The recommendation is generated by a multi-agent graph and reviewed by compliance.",
             "A layered allocation balances resilience with upside potential.",
         ]
-    sections = _assemble_graph_sections(graph_state)
+    raw_sections = _assemble_graph_sections(graph_state)
+    allocation_display = _recommendation_allocation_display(
+        risk_profile=risk_profile,
+        recommendation_status=recommendation_status,
+        sections=raw_sections,
+    )
+    sections = _sections_for_allocation_display(raw_sections, allocation_display)
+    subtitle_zh, subtitle_en = _summary_subtitle_for_allocation(allocation_display)
+    risk_notice_zh, risk_notice_en = _risk_notice_for_allocation(allocation_display)
     profile_insights = (
         None
         if user_intelligence is None
@@ -371,8 +445,8 @@ def assemble_graph_recommendation_response(
         summary=RecommendationSummary(
             titleZh=f"适合您的{profile_label_zh}配置建议",
             titleEn=f"A {profile_label_en} plan that fits you",
-            subtitleZh=DEFAULT_SUMMARY_SUBTITLE_ZH,
-            subtitleEn=DEFAULT_SUMMARY_SUBTITLE_EN,
+            subtitleZh=subtitle_zh,
+            subtitleEn=subtitle_en,
         ),
         profileSummary=LocalizedText(
             zh=(
@@ -416,11 +490,7 @@ def assemble_graph_recommendation_response(
             ),
         ),
         marketIntelligence=market_intelligence_payload,
-        allocationDisplay=_recommendation_allocation_display(
-            risk_profile=risk_profile,
-            recommendation_status=recommendation_status,
-            sections=sections,
-        ),
+        allocationDisplay=allocation_display,
         sections=sections,
         aggressiveOption=(
             RecommendationOption(
@@ -430,15 +500,15 @@ def assemble_graph_recommendation_response(
                 subtitleEn=AGGRESSIVE_OPTION_SUBTITLES[1],
                 allocation=_graph_allocation_display(
                     allocation=AGGRESSIVE_ALLOCATIONS[risk_profile].to_display(),
-                    sections=sections,
+                    sections=raw_sections,
                 ),
             )
             if include_aggressive_option
             else None
         ),
         riskNotice=LocalizedTextList(
-            zh=list(RISK_NOTICE_ZH),
-            en=list(RISK_NOTICE_EN),
+            zh=risk_notice_zh,
+            en=risk_notice_en,
         ),
         whyThisPlan=LocalizedTextList(
             zh=why_this_plan_zh,

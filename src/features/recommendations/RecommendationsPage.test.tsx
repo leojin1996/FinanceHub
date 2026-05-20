@@ -70,7 +70,11 @@ describe("RecommendationsPage", () => {
       configurable: true,
       value: localStorageMock,
     });
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+    window.localStorage.setItem("financehub.token", "demo-token");
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -570,7 +574,7 @@ describe("RecommendationsPage", () => {
     expect(screen.queryByText("当前推荐已回退到规则引擎结果")).not.toBeInTheDocument();
   }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
-  it("renders a compact AI trace when tool calls are returned", async () => {
+  it("does not expose AI trace details when tool calls are returned", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
@@ -656,13 +660,13 @@ describe("RecommendationsPage", () => {
     await user.click(screen.getByRole("link", { name: "推荐" }));
 
     expect(await screen.findByRole("heading", { name: "标题", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText("AI 分析足迹")).toBeInTheDocument();
-    expect(screen.getByText("已记录 2 个阶段，3 次工具调用。")).toBeInTheDocument();
-    expect(screen.getByText("画像分析")).toBeInTheDocument();
-    expect(screen.getByText("市场研判")).toBeInTheDocument();
-    expect(screen.getByText("profile_intelligence_score")).toBeInTheDocument();
-    expect(screen.getByText("market_snapshot")).toBeInTheDocument();
-    expect(screen.getByText("candidate_ranker")).toBeInTheDocument();
+    expect(screen.queryByText("AI 分析足迹")).not.toBeInTheDocument();
+    expect(screen.queryByText("已记录 2 个阶段，3 次工具调用。")).not.toBeInTheDocument();
+    expect(screen.queryByText("画像分析")).not.toBeInTheDocument();
+    expect(screen.queryByText("市场研判")).not.toBeInTheDocument();
+    expect(screen.queryByText("profile_intelligence_score")).not.toBeInTheDocument();
+    expect(screen.queryByText("market_snapshot")).not.toBeInTheDocument();
+    expect(screen.queryByText("candidate_ranker")).not.toBeInTheDocument();
   }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("ignores incomplete agent trace events without crashing the page", async () => {
@@ -775,7 +779,26 @@ describe("RecommendationsPage", () => {
               titleEn: "Fund ideas",
               titleZh: "基金推荐",
             },
-            stocks: { items: [], titleEn: "Equity boost", titleZh: "股票增强" },
+            stocks: {
+              items: [
+                {
+                  asOfDate: "2026-04-09",
+                  category: "stock",
+                  code: "600036",
+                  detailRoute: "/recommendations/products/stock-hidden-001",
+                  id: "stock-hidden-001",
+                  nameEn: "Hidden Equity Candidate",
+                  nameZh: "不应展示的股票候选",
+                  rationaleEn: "This stock should be hidden because the stock allocation is zero.",
+                  rationaleZh: "股票配置为 0 时不应展示该候选。",
+                  riskLevel: "R3",
+                  tagsEn: ["Hidden"],
+                  tagsZh: ["不展示"],
+                },
+              ],
+              titleEn: "Equity boost",
+              titleZh: "股票增强",
+            },
             wealthManagement: {
               items: [],
               titleEn: "Wealth management ideas",
@@ -809,6 +832,7 @@ describe("RecommendationsPage", () => {
     expect(screen.getByRole("heading", { name: "基金推荐", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "银行理财推荐", level: 2 })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "股票增强", level: 2 })).not.toBeInTheDocument();
+    expect(screen.queryByText("不应展示的股票候选")).not.toBeInTheDocument();
   }, RECOMMENDATIONS_FLOW_TIMEOUT_MS);
 
   it("opens an in-app product detail page from the recommendation card", async () => {

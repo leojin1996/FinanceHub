@@ -149,7 +149,11 @@ describe("MarketOverviewPage", () => {
       value: localStorageMock,
     });
     window.localStorage.clear();
-    window.localStorage.setItem("financehub.session", JSON.stringify({ email: "demo@financehub.com" }));
+    window.localStorage.setItem(
+      "financehub.session",
+      JSON.stringify({ email: "demo@financehub.com", userId: "demo-user" }),
+    );
+    window.localStorage.setItem("financehub.token", "demo-token");
 
     vi.stubGlobal(
       "fetch",
@@ -195,8 +199,17 @@ describe("MarketOverviewPage", () => {
     expect(screen.getByText("招商银行")).toBeInTheDocument();
     expect(screen.getByText("300750")).toBeInTheDocument();
     expect(screen.getByText("188.55")).toBeInTheDocument();
-    expect(screen.getByText("▲ +11.02 / +6.20%")).toBeInTheDocument();
-    expect(screen.getByText("▼ -1.56 / -3.50%")).toBeInTheDocument();
+    const topGainerChange = screen.getByText("▲ +11.02 / +6.20%");
+    const topLoserChange = screen.getByText("▼ -1.56 / -3.50%");
+    const metricGain = screen.getByText("+12.24 (+0.38%)");
+    const metricDrop = screen.getByText("-16.42 (-0.16%)");
+
+    expect(topGainerChange).toBeInTheDocument();
+    expect(topLoserChange).toBeInTheDocument();
+    expect(topGainerChange).toHaveAttribute("data-market-move", "up");
+    expect(topLoserChange).toHaveAttribute("data-market-move", "down");
+    expect(metricGain).toHaveAttribute("data-market-move", "up");
+    expect(metricDrop).toHaveAttribute("data-market-move", "down");
     expect(container.querySelectorAll(".market-overview__metric-card")).toHaveLength(3);
   });
 

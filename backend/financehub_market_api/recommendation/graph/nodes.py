@@ -363,6 +363,7 @@ def product_match_expert_node(
         query_text=query_text,
         candidates=product_candidates,
         allowed_risk_levels=_allowed_risk_levels_for_tier(user_intelligence.risk_tier),
+        risk_profile=state["request_context"].payload.riskAssessmentResult.finalProfile,
         preferred_categories=set(market_intelligence.preferred_categories),
         blocked_categories=set(market_intelligence.avoided_categories),
         liquidity_preference=user_intelligence.liquidity_preference,
