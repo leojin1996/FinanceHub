@@ -2,6 +2,80 @@
 
 FinanceHub 是一个面向中国市场的投研与工具型 Web 应用：**React + Vite + TypeScript** 前端，**FastAPI** 后端。后端提供行情概览、指数与股票数据、基于 LangGraph 的多智能体投顾推荐、带会话记忆的 AI 聊天、基本面分析、市场新闻、自选股等能力；上游数据与 LLM 通过环境变量配置。
 
+## 架构图
+
+### 多 Agent 推荐系统架构图
+
+```mermaid
+flowchart TD
+    UI[前端推荐页 / 风险测评] --> API[FastAPI 推荐接口<br/>/api/recommendations/generate]
+    API --> Service[RecommendationService]
+    Service --> Runtime[RecommendationGraphRuntime<br/>LangGraph 状态机]
+
+    Runtime --> Profile[User Profile Analyst<br/>用户画像分析]
+    Profile --> Market[Market Intelligence Analyst<br/>市场情报分析]
+    Market --> Match[Product Match Expert<br/>产品匹配]
+    Match --> Compliance[Compliance Risk Officer<br/>合规与风险审查]
+    Compliance --> Manager[Manager Coordinator<br/>组合与解释汇总]
+    Manager --> Assembler[Response Assembler<br/>组装推荐响应]
+    Assembler --> UI
+
+    CandidateScheduler[候选池定时刷新<br/>stock / fund / wealth] --> SnapshotCache[SnapshotCache / Redis]
+    SnapshotCache --> PrefetchedRepo[PrefetchedCandidateRepository]
+    PrefetchedRepo --> Runtime
+
+    MarketData[MarketDataService<br/>DoltHub / IndexData / Redis] --> Market
+    MarketNews[MarketNewsService] --> Market
+    ChatRecall[ChatHistoryRecallService<br/>历史偏好召回] --> Profile
+    ProductKnowledge[ProductKnowledgeRetrievalService<br/>产品知识 Qdrant] --> Match
+    ComplianceKnowledge[ComplianceKnowledgeRetrievalService<br/>合规知识 Qdrant] --> Compliance
+    ComplianceFacts[ComplianceFactsService] --> Compliance
+    AgentRuntime[RecommendationAgentRuntime<br/>OpenAI 兼容 LLM] --> Profile
+    AgentRuntime --> Market
+    AgentRuntime --> Match
+    AgentRuntime --> Compliance
+    AgentRuntime --> Manager
+
+    Compliance -- approve / limited / blocked --> Manager
+```
+
+### 财经助手架构图
+
+```mermaid
+flowchart TD
+    ChatUI[前端 ChatWidget / ChatStateProvider] --> ChatAPI[FastAPI Chat Router<br/>/api/chat/sessions/*]
+    ChatAPI --> Auth[JWT Auth]
+    ChatAPI --> Store[ChatSessionStore<br/>Redis 或内存回退]
+    Store --> History[当前会话消息历史]
+
+    ChatAPI --> Recall[ChatHistoryRecallService]
+    Recall --> Embedding[Embedding Client]
+    Embedding --> ChatVectorStore[Qdrant chat_messages_v2]
+    ChatVectorStore --> Recall
+    Recall --> Context[历史偏好 System Context]
+
+    History --> OpenAIMessages[OpenAI 消息序列]
+    Context --> OpenAIMessages
+    OpenAIMessages --> Agent[ChatAgent<br/>ReAct 流式工具调用]
+    Agent --> LLM[OpenAI 兼容 Chat Completion]
+
+    Agent --> MarketTool[get_market_overview / search_stocks]
+    Agent --> NewsTool[get_market_news]
+    Agent --> FundamentalTool[analyze_fundamentals]
+    Agent --> RecommendTool[generate_recommendations]
+
+    MarketTool --> MarketData[MarketDataService]
+    NewsTool --> MarketNews[MarketNewsService]
+    FundamentalTool --> Fundamental[FundamentalAnalysisService]
+
+    LLM --> SSE[SSE: delta / tool_call / done / error]
+    SSE --> ChatUI
+    SSE --> PersistAssistant[持久化助手回复]
+    PersistAssistant --> Store
+
+    ChatAPI -.后台索引用户消息.-> Recall
+```
+
 ## 仓库结构
 
 | 路径 | 说明 |
