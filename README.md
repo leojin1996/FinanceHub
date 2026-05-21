@@ -35,12 +35,12 @@ sequenceDiagram
     M-->>G: Market sentiment, allocation stance, preferred and avoided categories
 
     G->>R: Profile + market stance + candidate product pool
-    Note right of R: PrefetchedCandidateRepository provides stock/fund/wealth candidates; product Qdrant knowledge adds evidence
+    Note right of R: Candidate pool plus product knowledge evidence
     R-->>G: Recommended candidates, ranking, product rationale
 
     G->>C: Candidate basket + user risk tier + product evidence
     Note right of C: Compliance Qdrant knowledge and ComplianceFactsService check suitability
-    C-->>G: Compliance verdict approve / limited / blocked
+    C-->>G: Compliance verdict approve, limited, or blocked
 
     alt approve or limited
         G->>GM: Summarize profile, market, products, and compliance review
@@ -63,10 +63,10 @@ sequenceDiagram
     autonumber
     participant UI as ChatWidget
     participant API as Chat Router
-    participant S as Short-Term Memory<br/>ChatSessionStore
-    participant R as Long-Term Memory<br/>ChatHistoryRecallService
-    participant V as Qdrant<br/>chat_messages_v2
-    participant A as Financial Assistant Agent<br/>ChatAgent
+    participant S as Short-Term Memory Store
+    participant R as Long-Term Memory Recall
+    participant V as Qdrant Chat Memory
+    participant A as Financial Assistant Agent
     participant L as LLM
     participant T as Financial Tools
 
@@ -87,7 +87,7 @@ sequenceDiagram
         alt Model needs live facts
             L-->>A: tool_call
             A->>T: Execute tool
-            Note right of T: get_market_overview / search_stocks<br/>get_market_news<br/>analyze_fundamentals<br/>generate_recommendations
+            Note right of T: Market data, news, fundamentals, and recommendations
             T-->>A: Tool JSON result
             A->>L: Add tool result to context and continue reasoning
         else Model can answer directly
@@ -95,7 +95,7 @@ sequenceDiagram
         end
     end
 
-    A-->>API: SSE: delta / tool_call / done / error
+    A-->>API: SSE events delta, tool_call, done, or error
     API-->>UI: Stream answer text and tool status
     API->>S: Persist full assistant reply
 ```
